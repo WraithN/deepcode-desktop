@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '@/db';
+import { agentManager } from '@/agents/manager';
 import type { Conversation, Message, MessageStep, Task, ModifiedFile } from '@/types/types';
 import { Settings, LogOut, Bot, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -275,6 +276,22 @@ export default function WorkspacePage() {
     const instance = agentInstances.find((a) => a.id === id);
     if (!instance) return;
 
+    // Ensure agent is managed and started
+    let managed = agentManager.getAgent(id);
+    if (!managed) {
+      try {
+        await agentManager.addAgent(instance.agentKey, id, instance.displayName, instance.workspace);
+        managed = agentManager.getAgent(id)!;
+      } catch (e) {
+        toast.error(String(e));
+        return;
+      }
+    }
+
+    if (managed.status.state === 'stopped') {
+      await agentManager.startAgent(id);
+    }
+
     // 查找该智能体类型的最新会话
     const agentConvs = conversations.filter((c) => c.agent === instance.agentKey);
     if (agentConvs.length > 0) {
@@ -325,95 +342,98 @@ export default function WorkspacePage() {
       setMessages((prev) => [...prev, userMsg]);
     }
 
-    // 模拟AI回复
+    // After saving user message (the existing db.createMessage for user), replace the setTimeout with:
+
     setIsTyping(true);
     const startTime = Date.now();
-    setTimeout(async () => {
-      const { steps, finalContent, token_in, token_out } = generateAIReply(content);
-      const duration_ms = Date.now() - startTime;
 
-      // 先插入一个未完成的AI消息占位
+    const steps: MessageStep[] = [];
+    let finalContent = '';
+    let hasError = false;
+
+    const activeAgentInstance = agentInstances.find((a) => a.id === activeAgentId);
+    if (!activeAgentInstance) {
+      toast.error('未找到活跃智能体');
+      setIsTyping(false);
+      return;
+    }
+
+    try {
+      for await (const event of agentManager.sendMessage(activeAgentInstance.id, content)) {
+        switch (event.type) {
+          case 'thinking':
+            steps.push({ type: 'thinking', content: event.content });
+            break;
+          case 'tool_use':
+            steps.push({
+              type: 'tool_use',
+              content: `使用工具 ${event.toolName}...`,
+              toolName: event.toolName,
+              summary: { file: event.args?.file as string, lines: 0, durationMs: 0 },
+            });
+            break;
+          case 'tool_result':
+            steps.push({
+              type: 'tool_result',
+              content: event.result,
+              toolName: event.toolName,
+              failed: event.failed,
+              summary: { file: event.toolName, lines: 0, durationMs: 0 },
+            });
+            break;
+          case 'ask_permission':
+            steps.push({
+              type: 'ask_permission',
+              content: event.message,
+              permissionType: event.toolName,
+            });
+            break;
+          case 'ask_user':
+            steps.push({
+              type: 'ask_user',
+              content: '请回答以下问题：',
+              questions: event.questions,
+            });
+            break;
+          case 'text_delta':
+            finalContent += event.content;
+            break;
+          case 'error':
+            hasError = true;
+            toast.error(`智能体错误: ${event.message}`);
+            break;
+          case 'done':
+            break;
+        }
+      }
+    } catch (error) {
+      hasError = true;
+      toast.error(`通信错误: ${String(error)}`);
+    }
+
+    const duration_ms = Date.now() - startTime;
+
+    if (!hasError) {
       const aiMsg = await db.createMessage({
         conversation_id: activeConversation.id,
         role: 'assistant',
-        content: finalContent,
+        content: finalContent || '（无内容）',
       });
 
-      if (!aiMsg) {
-        toast.error('AI回复失败');
-        setIsTyping(false);
-        return;
-      }
-
       if (aiMsg) {
-        const enrichedMsg: Message = {
+        const enriched: Message = {
           ...aiMsg,
           steps,
-          is_complete: false,
-          token_in,
-          token_out,
+          is_complete: true,
+          token_in: Math.floor(content.length * 0.8),
+          token_out: Math.floor(finalContent.length * 0.9),
           duration_ms,
         };
-        setMessages((prev) => [...prev, enrichedMsg]);
-
-        // 模拟流式完成：先显示进行中，1秒后标记为完成
-        setTimeout(() => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === aiMsg.id ? { ...m, is_complete: true } : m
-            )
-          );
-        }, 1200);
+        setMessages((prev) => [...prev, enriched]);
       }
+    }
 
-      // 更新会话标题
-      if (messages.length === 0) {
-        const title = content.length > 20 ? content.substring(0, 20) + '...' : content;
-        await db.updateConversation(activeConversation.id, { title, updated_at: new Date().toISOString() });
-        setActiveConversation((prev) => prev ? { ...prev, title } : null);
-        loadConversations();
-      }
-
-      // 模拟添加三种状态的任务
-      const statuses: Array<'pending' | 'in_progress' | 'completed'> = ['pending', 'in_progress', 'completed'];
-      for (const status of statuses) {
-        if (Math.random() > 0.3) {
-          const newTask = await db.createTask({
-            user_id: user.id,
-            conversation_id: activeConversation.id,
-            title: status === 'completed' ? '环境初始化' : status === 'in_progress' ? `实现${content.substring(0, 10)}功能` : '代码审查',
-            status,
-          });
-          if (newTask) setTasks((prev) => [newTask, ...prev]);
-        }
-      }
-
-      if (Math.random() > 0.3) {
-        const files = ['src/components/App.tsx', 'src/utils/helpers.ts', 'src/pages/Home.tsx', 'src/styles/main.css'];
-        const changeTypes: Array<'created' | 'modified' | 'deleted'> = ['created', 'modified', 'modified'];
-        const diffs: Record<string, string> = {
-          'src/components/App.tsx': `diff --git a/src/components/App.tsx b/src/components/App.tsx\n--- a/src/components/App.tsx\n+++ b/src/components/App.tsx\n@@ -1,5 +1,7 @@\n import React from "react";\n+import { useState } from "react";\n \n export default function App() {\n+  const [count, setCount] = useState(0);\n   return <div>Hello World</div>;\n }`,
-          'src/utils/helpers.ts': `diff --git a/src/utils/helpers.ts b/src/utils/helpers.ts\n--- a/src/utils/helpers.ts\n+++ b/src/utils/helpers.ts\n@@ -1,3 +1,8 @@\n export function formatDate(date: Date) {\n   return date.toISOString();\n }\n+\n+export function debounce(fn: Function, ms: number) {\n+  let timer: ReturnType<typeof setTimeout>;\n+  return (...args: any[]) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };\n+}`,
-          'src/pages/Home.tsx': `diff --git a/src/pages/Home.tsx b/src/pages/Home.tsx\n--- a/src/pages/Home.tsx\n+++ b/src/pages/Home.tsx\n@@ -1,5 +1,9 @@\n import React from "react";\n+import { Hero } from "@/components/Hero";\n \n export default function Home() {\n-  return <div>Home</div>;\n+  return (\n+    <div>\n+      <Hero title="Welcome" />\n+    </div>\n+  );\n }`,
-          'src/styles/main.css': `diff --git a/src/styles/main.css b/src/styles/main.css\n--- a/src/styles/main.css\n+++ b/src/styles/main.css\n@@ -1,3 +1,7 @@\n body {\n   margin: 0;\n+  font-family: system-ui, sans-serif;\n+  background: #1e1e1e;\n+  color: #e0e0e0;\n }`,
-        };
-        const filePath = files[Math.floor(Math.random() * files.length)];
-        const newFile = await db.createModifiedFile({
-          user_id: user.id,
-          conversation_id: activeConversation.id,
-          file_path: filePath,
-          change_type: changeTypes[Math.floor(Math.random() * changeTypes.length)],
-          diff: undefined,
-        });
-        if (newFile) {
-          const enriched = { ...newFile, diff: diffs[filePath] || diffs['src/components/App.tsx'] };
-          setModifiedFiles((prev) => [enriched, ...prev]);
-        }
-      }
-
-      setContextPercent((prev) => Math.min(prev + Math.floor(Math.random() * 8) + 2, 100));
-      setIsTyping(false);
-    }, 1500);
+    setIsTyping(false);
   };
 
   // 处理权限询问回答
