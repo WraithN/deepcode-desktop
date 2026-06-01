@@ -1,6 +1,6 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Command } from '@tauri-apps/plugin-shell';
 import type { AgentAdapter, AgentEvent, AgentStartConfig, AgentStatus } from '../types';
-import { parseOpencodeEvent } from './parser';
+import { parseOpencodeJsonLine } from './parser';
 
 export class OpencodeAdapter implements AgentAdapter {
   readonly agentKey = 'opencode';
@@ -8,129 +8,148 @@ export class OpencodeAdapter implements AgentAdapter {
 
   async isInstalled(): Promise<boolean> {
     try {
-      const result = await invoke<string>('check_opencode_installed');
-      return !!result;
+      const result = await Command.create('opencode', ['--version']).execute();
+      return result.code === 0 && result.stdout.includes('.');
     } catch {
       return false;
     }
   }
 
-  async start(config: AgentStartConfig): Promise<void> {
-    await invoke('start_sidecar', {
-      instanceId: config.instanceId,
-      agentKey: this.agentKey,
-      workspace: config.workspace,
-    });
+  async start(_config: AgentStartConfig): Promise<void> {
+    // OpenCode 不需要长期运行的 sidecar 进程
+    return;
   }
 
-  async stop(instanceId: string): Promise<void> {
-    await invoke('stop_sidecar', { instanceId });
+  async stop(_instanceId: string): Promise<void> {
+    // 无需停止进程
+    return;
   }
 
-  async *sendMessage(instanceId: string, message: string): AsyncGenerator<AgentEvent, void, unknown> {
-    const status = await this.getStatus(instanceId);
-    if (status.state !== 'running') {
-      yield { type: 'error', message: '智能体未运行' };
+  async *sendMessage(
+    _instanceId: string,
+    message: string,
+    options?: { workspace?: string; sessionId?: string; continueSession?: boolean },
+  ): AsyncGenerator<AgentEvent, void, unknown> {
+    const args = ['run', '--format', 'json'];
+
+    if (options?.workspace) {
+      args.push('--cwd', options.workspace);
+    }
+
+    if (options?.sessionId) {
+      args.push('--session', options.sessionId);
+    } else if (options?.continueSession) {
+      args.push('--continue');
+    }
+
+    args.push(message);
+
+    const result = await Command.create('opencode', args).execute();
+
+    if (result.code !== 0) {
+      yield {
+        type: 'error',
+        message: `opencode 执行失败 (exit ${result.code}): ${result.stderr || '未知错误'}`,
+      };
       return;
     }
 
-    const port = (status as Extract<AgentStatus, { state: 'running' }>).port;
-    const url = `http://127.0.0.1:${port}/v1/messages`;
+    const lines = result.stdout.split('\n').filter((l) => l.trim());
+    const textBuffer: string[] = [];
+    let currentStepHasTool = false;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
-    });
+    for (const line of lines) {
+      const raw = parseOpencodeJsonLine(line);
+      if (!raw) continue;
 
-    if (!response.ok) {
-      yield { type: 'error', message: `HTTP ${response.status}: ${response.statusText}` };
-      return;
-    }
+      const event = this.mapOpencodeEvent(raw, textBuffer, () => currentStepHasTool);
+      if (!event) continue;
 
-    const reader = response.body?.getReader();
-    if (!reader) {
-      yield { type: 'error', message: '无法读取响应流' };
-      return;
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        let currentEvent: string | null = null;
-        for (const line of lines) {
-          if (line.startsWith('event:')) {
-            currentEvent = line;
-          } else if (line.startsWith('data:') && currentEvent) {
-            const event = parseOpencodeEvent(currentEvent, line);
-            if (event) yield event;
-            currentEvent = null;
-          }
-        }
-      }
-
-      if (buffer.trim()) {
-        const lines = buffer.split('\n');
-        let currentEvent: string | null = null;
-        for (const line of lines) {
-          if (line.startsWith('event:')) {
-            currentEvent = line;
-          } else if (line.startsWith('data:') && currentEvent) {
-            const event = parseOpencodeEvent(currentEvent, line);
-            if (event) yield event;
-            currentEvent = null;
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
+      if (event.type === 'tool_use') currentStepHasTool = true;
+      yield event;
     }
 
     yield { type: 'done' };
   }
 
-  async setMode(instanceId: string, mode: 'build' | 'plan'): Promise<void> {
-    const status = await this.getStatus(instanceId);
-    if (status.state !== 'running') return;
-    const port = (status as Extract<AgentStatus, { state: 'running' }>).port;
-    const url = `http://127.0.0.1:${port}/v1/agents/mode`;
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode }),
-    });
+  private mapOpencodeEvent(
+    raw: Record<string, unknown>,
+    textBuffer: string[],
+    hasTool: () => boolean,
+  ): AgentEvent | null {
+    const type = raw.type as string;
+
+    switch (type) {
+      case 'step_start': {
+        textBuffer.length = 0;
+        return { type: 'thinking', content: '思考中...' };
+      }
+
+      case 'text': {
+        const part = raw.part as Record<string, unknown> | undefined;
+        const text = part?.text as string | undefined;
+        if (text) {
+          textBuffer.push(text);
+          return { type: 'text_delta', content: text };
+        }
+        return null;
+      }
+
+      case 'tool_use': {
+        const part = raw.part as Record<string, unknown> | undefined;
+        const toolName = (part?.tool as string) || 'unknown';
+        const state = (part?.state as Record<string, unknown>) || {};
+        const input = (state?.input as Record<string, unknown>) || {};
+        const output = state?.output as string | undefined;
+        const status = state?.status as string | undefined;
+
+        if (output || status === 'completed') {
+          return {
+            type: 'tool_result',
+            toolName,
+            result: output || '完成',
+            failed: status === 'failed' || status === 'error',
+          };
+        }
+
+        return {
+          type: 'tool_use',
+          toolName,
+          args: input,
+        };
+      }
+
+      case 'step_finish': {
+        if (!hasTool() && textBuffer.length > 0) {
+          const content = textBuffer.join('');
+          textBuffer.length = 0;
+          return { type: 'text_delta', content };
+        }
+        return null;
+      }
+
+      case 'error': {
+        const error = raw.error as Record<string, unknown> | undefined;
+        return {
+          type: 'error',
+          message: (error?.message as string) || (error?.data as Record<string, unknown>)?.message as string || 'OpenCode 错误',
+        };
+      }
+
+      default:
+        return null;
+    }
   }
 
-  async getStatus(instanceId: string): Promise<AgentStatus> {
-    try {
-      const result = await invoke<{
-        instanceId: string;
-        agentKey: string;
-        port: number;
-        status: string;
-        pid: number;
-        workspace: string;
-      }>('get_sidecar_status', { instanceId });
+  async setMode(_instanceId: string, _mode: 'build' | 'plan'): Promise<void> {
+    console.warn('OpenCode CLI 模式切换暂未实现');
+  }
 
-      if (result.status === 'running') {
-        return { state: 'running', port: result.port, pid: result.pid };
-      } else if (result.status === 'crashed') {
-        return { state: 'crashed' };
-      } else if (result.status === 'starting') {
-        return { state: 'starting' };
-      }
-      return { state: 'stopped' };
-    } catch {
-      return { state: 'stopped' };
+  async getStatus(_instanceId: string): Promise<AgentStatus> {
+    const installed = await this.isInstalled();
+    if (installed) {
+      return { state: 'running', port: 0, pid: 0 };
     }
+    return { state: 'stopped' };
   }
 }

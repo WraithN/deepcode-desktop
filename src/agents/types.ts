@@ -35,7 +35,11 @@ export interface AgentAdapter {
   isInstalled(): Promise<boolean>;
   start(config: AgentStartConfig): Promise<void>;
   stop(instanceId: string): Promise<void>;
-  sendMessage(instanceId: string, message: string): AsyncGenerator<AgentEvent, void, unknown>;
+  sendMessage(
+    instanceId: string,
+    message: string,
+    options?: { workspace?: string; sessionId?: string; continueSession?: boolean },
+  ): AsyncGenerator<AgentEvent, void, unknown>;
   setMode(instanceId: string, mode: 'build' | 'plan'): Promise<void>;
   getStatus(instanceId: string): Promise<AgentStatus>;
 }

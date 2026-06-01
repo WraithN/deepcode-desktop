@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '@/db';
 import { agentManager } from '@/agents/manager';
+import { sessionLogger } from '@/services/logger';
 import type { Conversation, Message, MessageStep, Task, ModifiedFile } from '@/types/types';
 import { Settings, LogOut, Bot, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -342,6 +343,19 @@ export default function WorkspacePage() {
       setMessages((prev) => [...prev, userMsg]);
     }
 
+    // 启动会话日志跟踪
+    await sessionLogger.startTrace(activeConversation.id, {
+      agent: activeAgent?.agentKey,
+      model: currentModel,
+      userId: user.id,
+    });
+
+    await sessionLogger.logGeneration(
+      `gen-${Date.now()}`,
+      content,
+      undefined,
+      { conversationId: activeConversation.id, role: 'user' },
+    );
 
     setIsTyping(true);
     const startTime = Date.now();
@@ -359,6 +373,8 @@ export default function WorkspacePage() {
 
     try {
       for await (const event of agentManager.sendMessage(activeAgentInstance.id, content)) {
+        await sessionLogger.logEvent(event, { conversationId: activeConversation.id });
+
         switch (event.type) {
           case 'thinking':
             steps.push({ type: 'thinking', content: event.content });
@@ -400,6 +416,7 @@ export default function WorkspacePage() {
           case 'error':
             hasError = true;
             toast.error(`智能体错误: ${event.message}`);
+            await sessionLogger.logError(event.message, { conversationId: activeConversation.id });
             break;
           case 'done':
             break;
@@ -407,7 +424,9 @@ export default function WorkspacePage() {
       }
     } catch (error) {
       hasError = true;
-      toast.error(`通信错误: ${String(error)}`);
+      const errMsg = String(error);
+      toast.error(`通信错误: ${errMsg}`);
+      await sessionLogger.logError(errMsg, { conversationId: activeConversation.id });
     }
 
     const duration_ms = Date.now() - startTime;
@@ -430,6 +449,13 @@ export default function WorkspacePage() {
         };
         setMessages((prev) => [...prev, enriched]);
       }
+
+      await sessionLogger.logGeneration(
+        `gen-${Date.now()}`,
+        content,
+        finalContent,
+        { conversationId: activeConversation.id, role: 'assistant', durationMs: duration_ms },
+      );
     }
 
     setIsTyping(false);

@@ -416,6 +416,7 @@ fn db_create_modified_file(state: State<DbState>, data: Value) -> Result<Value, 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let db_path = db_path(app);
             let conn = Connection::open(&db_path).expect("打开数据库失败");

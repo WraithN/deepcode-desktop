@@ -8,6 +8,7 @@ export interface ManagedAgent {
   workspace: string;
   status: AgentStatus;
   adapter: AgentAdapter;
+  sessionId?: string;
 }
 
 type Listener = () => void;
@@ -128,7 +129,15 @@ class AgentManager {
       throw new Error(`智能体实例不存在: ${instanceId}`);
     }
 
-    yield* managedAgent.adapter.sendMessage(instanceId, message);
+    const options = {
+      workspace: managedAgent.workspace,
+      sessionId: managedAgent.sessionId,
+      continueSession: !!managedAgent.sessionId,
+    };
+
+    for await (const event of managedAgent.adapter.sendMessage(instanceId, message, options)) {
+      yield event;
+    }
   }
 
   async setMode(instanceId: string, mode: 'build' | 'plan'): Promise<void> {
