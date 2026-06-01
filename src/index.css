@@ -1,0 +1,198 @@
+/* stylelint-disable */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* AI Coding Desktop - VS Code风格深色主题 */
+
+@layer base {
+  :root {
+    --radius: 0.125rem;
+    /* 深色主题作为默认 */
+    --background: 222 47% 11%;
+    --foreground: 210 40% 96%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 213 94% 68%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 220 13% 18%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 220 13% 18%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 220 13% 18%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 40% 96%;
+    --border: 220 13% 18%;
+    --input: 220 13% 18%;
+    --ring: 213 94% 68%;
+    --chart-1: 213 94% 68%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --sidebar-background: 222 47% 11%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 213 94% 68%;
+    --sidebar-primary-foreground: 222 47% 11%;
+    --sidebar-accent: 220 13% 18%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 220 13% 18%;
+    --sidebar-ring: 213 94% 68%;
+    /* 自定义变量 */
+    --panel-bg: 222 47% 11%;
+    --panel-border: 220 13% 18%;
+    --success: 142 71% 45%;
+    --warning: 38 92% 50%;
+    --info: 213 94% 68%;
+  }
+
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 96%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 213 94% 68%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 220 13% 18%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 220 13% 18%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 220 13% 18%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 40% 96%;
+    --border: 220 13% 18%;
+    --input: 220 13% 18%;
+    --ring: 213 94% 68%;
+    --chart-1: 213 94% 68%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --sidebar-background: 222 47% 11%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 213 94% 68%;
+    --sidebar-primary-foreground: 222 47% 11%;
+    --sidebar-accent: 220 13% 18%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 220 13% 18%;
+    --sidebar-ring: 213 94% 68%;
+    --panel-bg: 222 47% 11%;
+    --panel-border: 220 13% 18%;
+    --success: 142 71% 45%;
+    --warning: 38 92% 50%;
+    --info: 213 94% 68%;
+  }
+
+  .light {
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 213 94% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 213 94% 50%;
+    --chart-1: 213 94% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5% 26%;
+    --sidebar-primary: 213 94% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 5% 96%;
+    --sidebar-accent-foreground: 240 5% 26%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 213 94% 50%;
+    --panel-bg: 0 0% 100%;
+    --panel-border: 214 32% 91%;
+    --success: 142 71% 45%;
+    --warning: 38 92% 50%;
+    --info: 213 94% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 3px;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+  }
+}
+
+/* 打字机光标动画 */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.typing-cursor::after {
+  content: '▋';
+  animation: blink 1s infinite;
+  color: hsl(var(--primary));
+}
+
+/* Agent执行进度条动画 */
+@keyframes loading-bar {
+  0% { left: -33%; }
+  50% { left: 100%; }
+  100% { left: -33%; }
+}
+
+/* 代码块样式 */
+.code-block {
+  background: hsl(222 47% 8%);
+  border: 1px solid hsl(var(--border));
+  border-radius: 2px;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 面板分割线 */
+.panel-divider {
+  border-right: 1px solid hsl(var(--border));
+}
+
+.panel-divider-h {
+  border-bottom: 1px solid hsl(var(--border));
+}
