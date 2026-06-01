@@ -55,85 +55,62 @@ export class OpencodeAdapter implements AgentAdapter {
     }
 
     const lines = result.stdout.split('\n').filter((l) => l.trim());
-    const textBuffer: string[] = [];
-    let currentStepHasTool = false;
 
     for (const line of lines) {
       const raw = parseOpencodeJsonLine(line);
       if (!raw) continue;
 
-      const event = this.mapOpencodeEvent(raw, textBuffer, () => currentStepHasTool);
-      if (!event) continue;
-
-      if (event.type === 'tool_use') currentStepHasTool = true;
-      yield event;
+      const event = this.mapToAgentEvent(raw);
+      if (event) yield event;
     }
 
     yield { type: 'done' };
   }
 
-  private mapOpencodeEvent(
-    raw: Record<string, unknown>,
-    textBuffer: string[],
-    hasTool: () => boolean,
-  ): AgentEvent | null {
-    const type = raw.type as string;
-
-    switch (type) {
-      case 'step_start': {
-        textBuffer.length = 0;
-        return { type: 'thinking', content: '思考中...' };
-      }
-
+  /**
+   * 将 OpenCode 扁平化事件映射为前端统一的 AgentEvent
+   *
+   * 映射关系：
+   * - text          → text_delta
+   * - tool_start    → tool_use
+   * - tool_result   → tool_result
+   * - step_start    → thinking
+   * - step_complete → 忽略（前端不显示步骤完成事件）
+   */
+  private mapToAgentEvent(raw: import('./parser').OpencodeRawEvent): AgentEvent | null {
+    switch (raw.type) {
       case 'text': {
-        const part = raw.part as Record<string, unknown> | undefined;
-        const text = part?.text as string | undefined;
-        if (text) {
-          textBuffer.push(text);
-          return { type: 'text_delta', content: text };
-        }
-        return null;
+        if (!raw.text) return null;
+        return { type: 'text_delta', content: raw.text };
       }
 
-      case 'tool_use': {
-        const part = raw.part as Record<string, unknown> | undefined;
-        const toolName = (part?.tool as string) || 'unknown';
-        const state = (part?.state as Record<string, unknown>) || {};
-        const input = (state?.input as Record<string, unknown>) || {};
-        const output = state?.output as string | undefined;
-        const status = state?.status as string | undefined;
-
-        if (output || status === 'completed') {
-          return {
-            type: 'tool_result',
-            toolName,
-            result: output || '完成',
-            failed: status === 'failed' || status === 'error',
-          };
-        }
-
+      case 'tool_start': {
         return {
           type: 'tool_use',
-          toolName,
-          args: input,
+          toolName: raw.tool || 'unknown',
+          args: raw.args || {},
         };
       }
 
-      case 'step_finish': {
-        if (!hasTool() && textBuffer.length > 0) {
-          const content = textBuffer.join('');
-          textBuffer.length = 0;
-          return { type: 'text_delta', content };
-        }
-        return null;
-      }
-
-      case 'error': {
-        const error = raw.error as Record<string, unknown> | undefined;
+      case 'tool_result': {
         return {
-          type: 'error',
-          message: (error?.message as string) || (error?.data as Record<string, unknown>)?.message as string || 'OpenCode 错误',
+          type: 'tool_result',
+          toolName: raw.tool || 'unknown',
+          result: raw.content || '',
+          failed: false,
         };
+      }
+
+      case 'step_start': {
+        const content = raw.description
+          ? `${raw.step}: ${raw.description}`
+          : raw.step || '思考中...';
+        return { type: 'thinking', content };
+      }
+
+      case 'step_complete': {
+        // 前端不显示步骤完成事件，返回 null
+        return null;
       }
 
       default:
