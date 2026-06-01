@@ -8,8 +8,10 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use sidecar_manager::{SidecarManager, check_opencode_installed, get_sidecar_status, start_sidecar, stop_sidecar};
+use agent_db::{AgentDbManager, agent_db_create_conversation, agent_db_load_conversations, agent_db_create_message, agent_db_load_messages, agent_db_delete_agent};
 
 mod sidecar_manager;
+mod agent_db;
 
 pub struct DbState(pub Mutex<Connection>);
 
@@ -419,6 +421,7 @@ fn main() {
             let conn = Connection::open(&db_path).expect("Failed to open database");
             init_db(&conn).expect("Failed to init database");
             app.manage(DbState(Mutex::new(conn)));
+            app.manage(AgentDbManager::new());
             app.manage(SidecarManager::new());
             Ok(())
         })
@@ -436,6 +439,11 @@ fn main() {
             db_create_task,
             db_load_modified_files,
             db_create_modified_file,
+            agent_db_create_conversation,
+            agent_db_load_conversations,
+            agent_db_create_message,
+            agent_db_load_messages,
+            agent_db_delete_agent,
             start_sidecar,
             stop_sidecar,
             get_sidecar_status,
