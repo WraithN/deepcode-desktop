@@ -187,7 +187,7 @@ export default function SelectAgentPage() {
         </Button>
 
         <p className="text-center text-xs text-muted-foreground mt-4">
-          登录用户：{user?.email?.replace('@miaoda.com', '') || '未知'}
+          登录用户：{user?.email?.replace('@local.dev', '') || '未知'}
         </p>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/db/supabase';
+import { db } from '@/db';
 import type { Conversation, Message, MessageStep, Task, ModifiedFile } from '@/types/types';
 import { Settings, LogOut, Bot, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -80,63 +80,27 @@ export default function WorkspacePage() {
   // 加载会话列表
   const loadConversations = useCallback(async () => {
     if (!user) return;
-    const { data, error } = await supabase
-      .from('conversations')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending: false })
-      .limit(50);
-    if (error) {
-      console.error('加载会话失败:', error);
-      return;
-    }
+    const data = await db.loadConversations(user.id, 50);
     setConversations(Array.isArray(data) ? data : []);
   }, [user]);
 
   // 加载任务
   const loadTasks = useCallback(async () => {
     if (!user) return;
-    const { data, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(20);
-    if (error) {
-      console.error('加载任务失败:', error);
-      return;
-    }
+    const data = await db.loadTasks(user.id, 20);
     setTasks(Array.isArray(data) ? data : []);
   }, [user]);
 
   // 加载修改文件
   const loadModifiedFiles = useCallback(async () => {
     if (!user) return;
-    const { data, error } = await supabase
-      .from('modified_files')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(20);
-    if (error) {
-      console.error('加载修改文件失败:', error);
-      return;
-    }
+    const data = await db.loadModifiedFiles(user.id, 20);
     setModifiedFiles(Array.isArray(data) ? data : []);
   }, [user]);
 
   // 加载消息
   const loadMessages = useCallback(async (conversationId: string) => {
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true })
-      .limit(100);
-    if (error) {
-      console.error('加载消息失败:', error);
-      return;
-    }
+    const data = await db.loadMessages(conversationId, 100);
     setMessages(Array.isArray(data) ? data : []);
   }, []);
 
@@ -157,15 +121,12 @@ export default function WorkspacePage() {
         { title: '等待代码审查', status: 'pending' as const },
       ];
       for (const task of mockTasks) {
-        const { data } = await supabase
-          .from('tasks')
-          .insert({
-            user_id: user.id,
-            title: task.title,
-            status: task.status,
-          })
-          .select()
-          .maybeSingle();
+        const data = await db.createTask({
+          user_id: user.id,
+          title: task.title,
+          status: task.status,
+          conversation_id: null,
+        });
         if (data) setTasks((prev) => [data, ...prev]);
       }
     };
@@ -209,22 +170,18 @@ export default function WorkspacePage() {
         }
       }
 
-      const { data, error } = await supabase
-        .from('conversations')
-        .insert({
-          user_id: user.id,
-          title: '新会话',
-          agent: currentAgent,
-          model: 'gpt-4',
-        })
-        .select()
-        .maybeSingle();
+      const data = await db.createConversation({
+        user_id: user.id,
+        title: '新会话',
+        agent: currentAgent,
+        model: 'gpt-4',
+      });
 
-      if (!error && data) {
+      if (data) {
         setConversations((prev) => [data, ...prev]);
         setActiveConversation(data);
         setMessages([]);
-      } else if (error) {
+      } else {
         toast.error('创建会话失败');
       }
     }, 200);
@@ -255,17 +212,13 @@ export default function WorkspacePage() {
   const handleNewConversation = async () => {
     if (!user) return;
     const agentKey = activeAgent?.agentKey || 'opencode';
-    const { data, error } = await supabase
-      .from('conversations')
-      .insert({
-        user_id: user.id,
-        title: '新会话',
-        agent: agentKey,
-        model: 'gpt-4',
-      })
-      .select()
-      .maybeSingle();
-    if (error) {
+    const data = await db.createConversation({
+      user_id: user.id,
+      title: '新会话',
+      agent: agentKey,
+      model: 'gpt-4',
+    });
+    if (!data) {
       toast.error('创建会话失败');
       return;
     }
@@ -302,17 +255,13 @@ export default function WorkspacePage() {
 
     // 自动为该智能体创建一个新会话
     if (user) {
-      const { data, error } = await supabase
-        .from('conversations')
-        .insert({
-          user_id: user.id,
-          title: '新会话',
-          agent: agentKey,
-          model: 'gpt-4',
-        })
-        .select()
-        .maybeSingle();
-      if (!error && data) {
+      const data = await db.createConversation({
+        user_id: user.id,
+        title: '新会话',
+        agent: agentKey,
+        model: 'gpt-4',
+      });
+      if (data) {
         setConversations((prev) => [data, ...prev]);
         setActiveConversation(data);
         setMessages([]);
@@ -333,17 +282,13 @@ export default function WorkspacePage() {
       await loadMessages(agentConvs[0].id);
     } else if (user) {
       // 没有会话则自动创建
-      const { data, error } = await supabase
-        .from('conversations')
-        .insert({
-          user_id: user.id,
-          title: '新会话',
-          agent: instance.agentKey,
-          model: 'gpt-4',
-        })
-        .select()
-        .maybeSingle();
-      if (!error && data) {
+      const data = await db.createConversation({
+        user_id: user.id,
+        title: '新会话',
+        agent: instance.agentKey,
+        model: 'gpt-4',
+      });
+      if (data) {
         setConversations((prev) => [data, ...prev]);
         setActiveConversation(data);
         setMessages([]);
@@ -365,17 +310,13 @@ export default function WorkspacePage() {
       return;
     }
 
-    const { data: userMsg, error: msgError } = await supabase
-      .from('messages')
-      .insert({
-        conversation_id: activeConversation.id,
-        role: 'user',
-        content,
-      })
-      .select()
-      .maybeSingle();
+    const userMsg = await db.createMessage({
+      conversation_id: activeConversation.id,
+      role: 'user',
+      content,
+    });
 
-    if (msgError) {
+    if (!userMsg) {
       toast.error('发送消息失败');
       return;
     }
@@ -392,17 +333,13 @@ export default function WorkspacePage() {
       const duration_ms = Date.now() - startTime;
 
       // 先插入一个未完成的AI消息占位
-      const { data: aiMsg, error: aiError } = await supabase
-        .from('messages')
-        .insert({
-          conversation_id: activeConversation.id,
-          role: 'assistant',
-          content: finalContent,
-        })
-        .select()
-        .maybeSingle();
+      const aiMsg = await db.createMessage({
+        conversation_id: activeConversation.id,
+        role: 'assistant',
+        content: finalContent,
+      });
 
-      if (aiError) {
+      if (!aiMsg) {
         toast.error('AI回复失败');
         setIsTyping(false);
         return;
@@ -432,10 +369,7 @@ export default function WorkspacePage() {
       // 更新会话标题
       if (messages.length === 0) {
         const title = content.length > 20 ? content.substring(0, 20) + '...' : content;
-        await supabase
-          .from('conversations')
-          .update({ title, updated_at: new Date().toISOString() })
-          .eq('id', activeConversation.id);
+        await db.updateConversation(activeConversation.id, { title, updated_at: new Date().toISOString() });
         setActiveConversation((prev) => prev ? { ...prev, title } : null);
         loadConversations();
       }
@@ -444,16 +378,12 @@ export default function WorkspacePage() {
       const statuses: Array<'pending' | 'in_progress' | 'completed'> = ['pending', 'in_progress', 'completed'];
       for (const status of statuses) {
         if (Math.random() > 0.3) {
-          const { data: newTask } = await supabase
-            .from('tasks')
-            .insert({
-              user_id: user.id,
-              conversation_id: activeConversation.id,
-              title: status === 'completed' ? '环境初始化' : status === 'in_progress' ? `实现${content.substring(0, 10)}功能` : '代码审查',
-              status,
-            })
-            .select()
-            .maybeSingle();
+          const newTask = await db.createTask({
+            user_id: user.id,
+            conversation_id: activeConversation.id,
+            title: status === 'completed' ? '环境初始化' : status === 'in_progress' ? `实现${content.substring(0, 10)}功能` : '代码审查',
+            status,
+          });
           if (newTask) setTasks((prev) => [newTask, ...prev]);
         }
       }
@@ -468,16 +398,13 @@ export default function WorkspacePage() {
           'src/styles/main.css': `diff --git a/src/styles/main.css b/src/styles/main.css\n--- a/src/styles/main.css\n+++ b/src/styles/main.css\n@@ -1,3 +1,7 @@\n body {\n   margin: 0;\n+  font-family: system-ui, sans-serif;\n+  background: #1e1e1e;\n+  color: #e0e0e0;\n }`,
         };
         const filePath = files[Math.floor(Math.random() * files.length)];
-        const { data: newFile } = await supabase
-          .from('modified_files')
-          .insert({
-            user_id: user.id,
-            conversation_id: activeConversation.id,
-            file_path: filePath,
-            change_type: changeTypes[Math.floor(Math.random() * changeTypes.length)],
-          })
-          .select()
-          .maybeSingle();
+        const newFile = await db.createModifiedFile({
+          user_id: user.id,
+          conversation_id: activeConversation.id,
+          file_path: filePath,
+          change_type: changeTypes[Math.floor(Math.random() * changeTypes.length)],
+          diff: undefined,
+        });
         if (newFile) {
           const enriched = { ...newFile, diff: diffs[filePath] || diffs['src/components/App.tsx'] };
           setModifiedFiles((prev) => [enriched, ...prev]);
@@ -639,7 +566,7 @@ export default function WorkspacePage() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground mr-2">
-            {user?.email?.replace('@miaoda.com', '')}
+            {user?.email?.replace('@local.dev', '')}
           </span>
           <Button
             variant="ghost"

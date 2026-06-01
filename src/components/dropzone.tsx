@@ -1,5 +1,21 @@
 import { cn } from '@/lib/utils'
-import { type UseSupabaseUploadReturn } from '@/hooks/use-supabase-upload'
+interface FileUploadState {
+  files: FileWithPreview[]
+  setFiles: React.Dispatch<React.SetStateAction<FileWithPreview[]>>
+  successes: string[]
+  isSuccess: boolean
+  loading: boolean
+  errors: { name: string; message: string }[]
+  setErrors: React.Dispatch<React.SetStateAction<{ name: string; message: string }[]>>
+  onUpload: () => Promise<void>
+  maxFileSize: number
+  maxFiles: number
+  isDragActive: boolean
+  isDragReject: boolean
+  inputRef: React.RefObject<HTMLInputElement | null>
+  getRootProps: <T extends React.HTMLAttributes<HTMLElement>>(props?: T) => T
+  getInputProps: <T extends React.HTMLAttributes<HTMLInputElement>>(props?: T) => T
+}
 import { Button } from '@/components/ui/button'
 import { CheckCircle, File, Loader2, Upload, X } from 'lucide-react'
 import { createContext, type PropsWithChildren, useCallback, useContext } from 'react'
@@ -18,11 +34,11 @@ export const formatBytes = (
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
 }
 
-type DropzoneContextType = Omit<UseSupabaseUploadReturn, 'getRootProps' | 'getInputProps'>
+type DropzoneContextType = Omit<FileUploadState, 'getRootProps' | 'getInputProps'>
 
 const DropzoneContext = createContext<DropzoneContextType | undefined>(undefined)
 
-type DropzoneProps = UseSupabaseUploadReturn & {
+type DropzoneProps = FileUploadState & {
   className?: string
 }
 

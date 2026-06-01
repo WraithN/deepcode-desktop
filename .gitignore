@@ -29,3 +29,8 @@ history/*.json
 .vite_cache
 .skills
 tasks
+.opencode
+
+# Tauri
+src-tauri/target
+src-tauri/gen

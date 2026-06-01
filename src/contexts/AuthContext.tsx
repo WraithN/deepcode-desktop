@@ -1,26 +1,14 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-// @ts-ignore
-import { supabase } from '@/db/supabase';
-import type { User } from '@supabase/supabase-js';
-// @ts-ignore
+import { db, type AuthUser } from '@/db';
 import type { Profile } from '@/types/types';
 import { toast } from 'sonner';
 
 export async function getProfile(userId: string): Promise<Profile | null> {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (error) {
-    console.error('获取用户信息失败:', error);
-    return null;
-  }
-  return data;
+  return db.getProfile(userId);
 }
+
 interface AuthContextType {
-  user: User | null;
+  user: AuthUser | null;
   profile: Profile | null;
   loading: boolean;
   signInWithUsername: (username: string, password: string) => Promise<{ error: Error | null }>;
@@ -33,7 +21,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -42,33 +30,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setProfile(null);
       return;
     }
-
     const profileData = await getProfile(user.id);
     setProfile(profileData);
   };
 
   useEffect(() => {
-    supabase
-      .auth
-      .getSession()
-      // @ts-ignore
-      .then(({ data: { session } }) => {
+    db.getSession()
+      .then((session) => {
         setUser(session?.user ?? null);
         if (session?.user) {
           getProfile(session.user.id).then(setProfile);
         }
       })
-      // @ts-ignore
-      .catch(error => {
+      .catch((error) => {
         toast.error(`获取用户信息失败: ${error.message}`);
       })
       .finally(() => {
         setLoading(false);
       });
 
-    // @ts-ignore
-    // In this function, do NOT use any await calls. Use `.then()` instead to avoid deadlocks.
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { unsubscribe } = db.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       if (session?.user) {
         getProfile(session.user.id).then(setProfile);
@@ -77,17 +58,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => unsubscribe();
   }, []);
 
   const signInWithUsername = async (username: string, password: string) => {
     try {
-      const email = `${username}@miaoda.com`;
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
+      const { error } = await db.signIn(username, password);
       if (error) throw error;
       return { error: null };
     } catch (error) {
@@ -97,12 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signUpWithUsername = async (username: string, password: string) => {
     try {
-      const email = `${username}@miaoda.com`;
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-      });
-
+      const { error } = await db.signUp(username, password);
       if (error) throw error;
       return { error: null };
     } catch (error) {
@@ -112,91 +83,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const mockSignIn = async (username: string) => {
     const safeUsername = username.replace(/[^a-zA-Z0-9_]/g, '_') || 'guest';
-    const email = `${safeUsername}@miaoda.com`;
-    const password = 'MockPass123!';
 
-    // 尝试注册
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-    });
+    // 先尝试注册
+    const { data: signUpUser, error: signUpError } = await db.signUp(safeUsername, 'MockPass123!');
 
-    if (signUpData.user) {
-      // 新用户注册成功，等待trigger创建profile
-      const newUser = signUpData.user;
-      setUser(newUser);
-      // 延迟获取profile
+    if (signUpUser) {
+      setUser(signUpUser);
       setTimeout(async () => {
-        const profileData = await getProfile(newUser.id);
+        const profileData = await getProfile(signUpUser.id);
         setProfile(profileData);
-        if (profileData) {
-          localStorage.setItem('mock_user', JSON.stringify({ user: newUser, profile: profileData }));
-        }
-      }, 500);
+      }, 100);
       return;
     }
 
     // 用户已存在，尝试登录
-    if (signUpError?.message?.includes('already registered') || signUpError?.message?.includes('User already registered')) {
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-      if (signInData.user) {
-        setUser(signInData.user);
-        const profileData = await getProfile(signInData.user.id);
+    if (signUpError?.message?.includes('已存在') || signUpError?.message?.includes('already')) {
+      const { data: signInUser, error: signInError } = await db.signIn(safeUsername, 'MockPass123!');
+      if (signInUser) {
+        setUser(signInUser);
+        const profileData = await getProfile(signInUser.id);
         setProfile(profileData);
-        if (profileData) {
-          localStorage.setItem('mock_user', JSON.stringify({ user: signInData.user, profile: profileData }));
-        }
         return;
       }
       console.error('Mock login signin error:', signInError);
     }
 
-    // 兜底：纯本地mock模式
+    // 兜底：使用内存 mock 模式（如果 db 不可用）
     console.warn('Using pure mock mode due to auth error:', signUpError);
     const mockId = `mock-${safeUsername}-${Date.now()}`;
-    const mockUser = {
+    const mockUser: AuthUser = {
       id: mockId,
-      email,
-      app_metadata: {},
-      aud: 'authenticated',
+      email: `${safeUsername}@local.dev`,
+      username: safeUsername,
       created_at: new Date().toISOString(),
-      user_metadata: { username: safeUsername },
-    } as unknown as User;
+    };
     const mockProfile: Profile = {
       id: mockId,
       username: safeUsername,
-      email,
+      email: `${safeUsername}@local.dev`,
       phone: null,
       role: 'user',
       created_at: new Date().toISOString(),
     };
     setUser(mockUser);
     setProfile(mockProfile);
-    localStorage.setItem('mock_user', JSON.stringify({ user: mockUser, profile: mockProfile }));
+    localStorage.setItem('aicoding_mock_user', JSON.stringify({ user: mockUser, profile: mockProfile }));
   };
 
-  // 恢复mock会话
+  // 恢复 mock 会话
   useEffect(() => {
-    const mockData = localStorage.getItem('mock_user');
+    const mockData = localStorage.getItem('aicoding_mock_user');
     if (mockData && !user) {
       try {
         const parsed = JSON.parse(mockData);
         if (parsed.user) {
-          setUser(parsed.user as User);
+          setUser(parsed.user as AuthUser);
           setProfile(parsed.profile as Profile);
         }
       } catch {
-        localStorage.removeItem('mock_user');
+        localStorage.removeItem('aicoding_mock_user');
       }
     }
   }, []);
 
   const signOut = async () => {
-    await supabase.auth.signOut();
-    localStorage.removeItem('mock_user');
+    await db.signOut();
+    localStorage.removeItem('aicoding_mock_user');
     setUser(null);
     setProfile(null);
   };
