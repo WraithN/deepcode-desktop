@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
-import { X, Sparkles, Bot } from 'lucide-react';
+import { X, Sparkles } from 'lucide-react';
 import DirectoryPickerButton from '@/components/DirectoryPickerButton';
+import AgentIcon from './AgentIcon';
 
 interface AddAgentDialogProps {
   open: boolean;
@@ -11,8 +12,6 @@ interface AddAgentDialogProps {
   onAddAgent: (agentKey: string, displayName: string, workspace: string) => void;
   existingNames: string[];
 }
-
-const LOBE_CDN = 'https://unpkg.com/@lobehub/icons-static-svg@latest/icons';
 
 const agents = [
   {
@@ -22,7 +21,6 @@ const agents = [
     color: 'text-green-400',
     bg: 'bg-green-400/15',
     border: 'border-green-400/20',
-    iconUrl: `${LOBE_CDN}/open-code.svg`,
   },
   {
     key: 'claude-code',
@@ -31,7 +29,6 @@ const agents = [
     color: 'text-orange-400',
     bg: 'bg-orange-400/15',
     border: 'border-orange-400/20',
-    iconUrl: `${LOBE_CDN}/claude-code.svg`,
   },
   {
     key: 'cursor-agent',
@@ -40,7 +37,6 @@ const agents = [
     color: 'text-blue-400',
     bg: 'bg-blue-400/15',
     border: 'border-blue-400/20',
-    iconUrl: `${LOBE_CDN}/cursor.svg`,
   },
   {
     key: 'codex',
@@ -49,7 +45,6 @@ const agents = [
     color: 'text-purple-400',
     bg: 'bg-purple-400/15',
     border: 'border-purple-400/20',
-    iconUrl: `${LOBE_CDN}/codex.svg`,
   },
   {
     key: 'custom',
@@ -58,7 +53,6 @@ const agents = [
     color: 'text-primary',
     bg: 'bg-primary/15',
     border: 'border-primary/20',
-    lucideIcon: Bot,
   },
 ];
 
@@ -160,33 +154,26 @@ export default function AddAgentDialog({ open, onOpenChange, onAddAgent, existin
           <div className="space-y-2">
             <label className="text-xs text-muted-foreground block">选择智能体类型</label>
             <div className="space-y-2">
-              {agents.map((agent) => {
-                const LucideIcon = 'lucideIcon' in agent ? agent.lucideIcon : undefined;
-                return (
-                  <button
-                    key={agent.key}
-                    type="button"
-                    onClick={() => setSelectedAgent(agent.key)}
-                    className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
-                      selectedAgent === agent.key
-                        ? `${agent.border} ${agent.bg} ring-1 ring-primary/30`
-                        : 'border-border bg-secondary/20 hover:bg-secondary/40'
-                    }`}
-                  >
-                    <span className={`w-10 h-10 rounded-lg flex items-center justify-center ${agent.bg} ${agent.color}`}>
-                      {agent.iconUrl ? (
-                        <img src={agent.iconUrl} alt={agent.name} className="w-6 h-6 object-contain" />
-                      ) : LucideIcon ? (
-                        <LucideIcon className="w-5 h-5" />
-                      ) : null}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-foreground">{agent.name}</div>
-                      <div className="text-xs text-muted-foreground mt-0.5">{agent.desc}</div>
-                    </div>
-                  </button>
-                );
-              })}
+              {agents.map((agent) => (
+                <button
+                  key={agent.key}
+                  type="button"
+                  onClick={() => setSelectedAgent(agent.key)}
+                  className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
+                    selectedAgent === agent.key
+                      ? `${agent.border} ${agent.bg} ring-1 ring-primary/30`
+                      : 'border-border bg-secondary/20 hover:bg-secondary/40'
+                  }`}
+                >
+                  <span className={`w-10 h-10 rounded-lg flex items-center justify-center ${agent.bg} ${agent.color}`}>
+                    <AgentIcon agentKey={agent.key} size={22} />
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-foreground">{agent.name}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">{agent.desc}</div>
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
 

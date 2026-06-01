@@ -13,6 +13,7 @@ import ChatPanel from '@/components/workspace/ChatPanel';
 import RightPanel from '@/components/workspace/RightPanel';
 import SettingsDialog from '@/components/workspace/SettingsDialog';
 import AddAgentDialog from '@/components/workspace/AddAgentDialog';
+import AgentIcon from '@/components/workspace/AgentIcon';
 
 const defaultAgents: AgentInstance[] = [
   { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' } },
@@ -725,12 +726,11 @@ export default function WorkspacePage() {
             </PopoverTrigger>
             <PopoverContent side="top" align="start" className="w-48 p-1">
               {agentInstances.map((instance) => {
-                const LOBE_CDN = 'https://unpkg.com/@lobehub/icons-static-svg@latest/icons';
-                const agentConfig: Record<string, { color: string; bg: string; letter: string; iconUrl?: string }> = {
-                  opencode: { color: 'text-green-400', bg: 'bg-green-400/15', letter: 'O', iconUrl: `${LOBE_CDN}/open-code.svg` },
-                  'claude-code': { color: 'text-orange-400', bg: 'bg-orange-400/15', letter: 'C', iconUrl: `${LOBE_CDN}/claude-code.svg` },
-                  'cursor-agent': { color: 'text-blue-400', bg: 'bg-blue-400/15', letter: 'C', iconUrl: `${LOBE_CDN}/cursor.svg` },
-                  codex: { color: 'text-purple-400', bg: 'bg-purple-400/15', letter: 'X', iconUrl: `${LOBE_CDN}/codex.svg` },
+                const agentConfig: Record<string, { color: string; bg: string; letter: string }> = {
+                  opencode: { color: 'text-green-400', bg: 'bg-green-400/15', letter: 'O' },
+                  'claude-code': { color: 'text-orange-400', bg: 'bg-orange-400/15', letter: 'C' },
+                  'cursor-agent': { color: 'text-blue-400', bg: 'bg-blue-400/15', letter: 'C' },
+                  codex: { color: 'text-purple-400', bg: 'bg-purple-400/15', letter: 'X' },
                   custom: { color: 'text-primary', bg: 'bg-primary/15', letter: 'C' },
                 };
                 const config = agentConfig[instance.agentKey] || agentConfig.opencode;
@@ -745,11 +745,7 @@ export default function WorkspacePage() {
                     }`}
                   >
                     <span className={`w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center ${config.bg} ${config.color} overflow-hidden`}>
-                      {config.iconUrl ? (
-                        <img src={config.iconUrl} alt="" className="w-4 h-4 object-contain" />
-                      ) : (
-                        config.letter
-                      )}
+                      <AgentIcon agentKey={instance.agentKey} size={14} />
                     </span>
                     <span className="flex-1 text-left truncate">{instance.displayName}</span>
                     {isActive && <span className="text-[10px] text-primary">当前</span>}
