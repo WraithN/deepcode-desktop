@@ -17,3 +17,6 @@ class AgentRegistry {
 }
 
 export const agentRegistry = new AgentRegistry();
+
+import { OpencodeAdapter } from './opencode/adapter';
+agentRegistry.register(new OpencodeAdapter());
