@@ -56,6 +56,56 @@ impl SidecarManager {
             Err(_) => 0,
         }
     }
+
+    /// 健康检查：扫描所有子进程，发现已退出的进程则标记为 crashed 并释放端口
+    pub fn health_check(&self) {
+        let mut processes = match self.processes.lock() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let mut instances = match self.instances.lock() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
+
+        let mut crashed: Vec<(String, u16)> = Vec::new();
+
+        for (instance_id, child) in processes.iter_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    let port = instances.get(instance_id).map(|i| i.port).unwrap_or(0);
+                    crashed.push((instance_id.clone(), port));
+                }
+                Ok(None) => {
+                    // 进程仍在运行
+                }
+                Err(_) => {
+                    // 调用出错，保守处理也视为已退出
+                    let port = instances.get(instance_id).map(|i| i.port).unwrap_or(0);
+                    crashed.push((instance_id.clone(), port));
+                }
+            }
+        }
+
+        for (instance_id, _port) in &crashed {
+            processes.remove(instance_id);
+            if let Some(instance) = instances.get_mut(instance_id) {
+                instance.status = SidecarStatus::Crashed {
+                    error: Some("进程意外退出".to_string()),
+                };
+                instance.pid = None;
+            }
+        }
+
+        drop(processes);
+        drop(instances);
+
+        for (_, port) in crashed {
+            if port > 0 {
+                self.release_port(port);
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -66,16 +116,16 @@ pub fn start_sidecar(
     workspace: String,
 ) -> Result<Value, String> {
     if state.instance_count() >= 6 {
-        return Err("Maximum number of sidecar instances reached".to_string());
+        return Err("已达到最大智能体实例数量（6个）".to_string());
     }
 
-    let port = state.get_available_port().ok_or("No available ports")?;
+    let port = state.get_available_port().ok_or("没有可用端口")?;
 
     let child = std::process::Command::new("opencode")
         .args(["serve", "--port", &port.to_string(), "--cors", "*"])
         .current_dir(&workspace)
         .spawn()
-        .map_err(|e| format!("Failed to spawn opencode: {}", e))?;
+        .map_err(|e| format!("启动 opencode 失败: {}", e))?;
 
     let pid = child.id();
 
@@ -113,7 +163,7 @@ pub fn stop_sidecar(
 ) -> Result<(), String> {
     let (pid, port) = {
         let mut instances = state.instances.lock().map_err(|e| e.to_string())?;
-        let instance = instances.remove(&instance_id).ok_or("Instance not found")?;
+        let instance = instances.remove(&instance_id).ok_or("实例不存在")?;
         (instance.pid, instance.port)
     };
 
@@ -121,7 +171,7 @@ pub fn stop_sidecar(
         std::process::Command::new("kill")
             .arg(pid.to_string())
             .output()
-            .map_err(|e| format!("Failed to kill process: {}", e))?;
+            .map_err(|e| format!("终止进程失败: {}", e))?;
     }
 
     {
@@ -140,7 +190,7 @@ pub fn get_sidecar_status(
     instance_id: String,
 ) -> Result<Value, String> {
     let instances = state.instances.lock().map_err(|e| e.to_string())?;
-    let instance = instances.get(&instance_id).ok_or("Instance not found")?;
+    let instance = instances.get(&instance_id).ok_or("实例不存在")?;
     Ok(serde_json::to_value(instance).map_err(|e| e.to_string())?)
 }
 
@@ -156,7 +206,7 @@ pub fn check_opencode_installed() -> Result<String, String> {
             let path = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
             Ok(path.trim().to_string())
         } else {
-            Err("opencode is not installed".to_string())
+            Err("未安装 opencode，请运行 `npm install -g opencode` 或 `pnpm add -g opencode` 进行安装".to_string())
         }
     }
     #[cfg(target_os = "windows")]
@@ -169,7 +219,7 @@ pub fn check_opencode_installed() -> Result<String, String> {
             let path = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
             Ok(path.trim().to_string())
         } else {
-            Err("opencode is not installed".to_string())
+            Err("未安装 opencode，请运行 `npm install -g opencode` 或 `pnpm add -g opencode` 进行安装".to_string())
         }
     }
 }

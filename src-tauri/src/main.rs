@@ -418,11 +418,23 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let db_path = db_path(app);
-            let conn = Connection::open(&db_path).expect("Failed to open database");
-            init_db(&conn).expect("Failed to init database");
+            let conn = Connection::open(&db_path).expect("打开数据库失败");
+            init_db(&conn).expect("初始化数据库失败");
             app.manage(DbState(Mutex::new(conn)));
             app.manage(AgentDbManager::new());
             app.manage(SidecarManager::new());
+
+            // 启动 Sidecar 健康检查后台线程（每 5 秒）
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    if let Some(manager) = app_handle.try_state::<SidecarManager>() {
+                        manager.health_check();
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
