@@ -342,7 +342,6 @@ export default function WorkspacePage() {
       setMessages((prev) => [...prev, userMsg]);
     }
 
-    // After saving user message (the existing db.createMessage for user), replace the setTimeout with:
 
     setIsTyping(true);
     const startTime = Date.now();
@@ -449,105 +448,6 @@ export default function WorkspacePage() {
     setContextPercent((prev) => Math.min(prev + 3, 100));
   };
 
-  // 模拟AI回复
-  const generateAIReply = (userMsg: string): { steps: MessageStep[]; finalContent: string; token_in: number; token_out: number } => {
-    const toolNames = ['read_file', 'list_dir', 'generate_code', 'apply_diff'];
-    const randomTool = toolNames[Math.floor(Math.random() * toolNames.length)];
-
-    const shouldFail = Math.random() > 0.7;
-    const shouldCompress = Math.random() > 0.6;
-
-    const steps: MessageStep[] = [
-      {
-        type: 'thinking',
-        content: `正在分析用户请求："${userMsg.substring(0, 60)}${userMsg.length > 60 ? '...' : ''}"\n\n1. 识别需求类型：功能开发\n2. 确定涉及文件范围\n3. 规划实现步骤`,
-      },
-      {
-        type: 'ask_permission',
-        content: `AI 需要使用 ${randomTool} 工具来读取和修改项目文件。此操作将访问本地代码文件系统，是否允许？`,
-        permissionType: randomTool,
-      },
-      {
-        type: 'tool_use',
-        content: `正在读取项目文件结构，分析现有代码...`,
-        toolName: 'list_dir',
-        summary: { file: 'src/', lines: 12, durationMs: 340 },
-      },
-      {
-        type: 'tool_result',
-        content: `已获取项目结构信息：\n- src/components/ 目录存在\n- src/pages/ 目录存在\n- 依赖包已安装`,
-        toolName: 'list_dir',
-        summary: { file: 'src/', lines: 12, durationMs: 340 },
-      },
-      {
-        type: 'tool_use',
-        content: `正在读取目标文件内容...`,
-        toolName: 'read_file',
-        summary: { file: 'src/components/App.tsx', lines: 45, durationMs: 210 },
-      },
-      {
-        type: 'tool_result',
-        content: `读取到文件内容，包含现有组件定义。\n\n\`\`\`typescript\nimport React from "react";\n\nexport default function App() {\n  return <div>Hello World</div>;\n}\n\`\`\`\n\n分析：当前为简单的功能组件，需要扩展以支持新功能。`,
-        toolName: 'read_file',
-        summary: { file: 'src/components/App.tsx', lines: 45, durationMs: 210 },
-      },
-      shouldFail ? {
-        type: 'tool_use',
-        content: `尝试写入文件...`,
-        toolName: 'apply_diff',
-        summary: { file: 'src/components/App.tsx', lines: 8, durationMs: 560 },
-        failed: true,
-      } : {
-        type: 'tool_use',
-        content: `正在生成代码补丁...`,
-        toolName: 'apply_diff',
-        summary: { file: 'src/components/App.tsx', lines: 8, durationMs: 560 },
-      },
-      shouldFail ? {
-        type: 'tool_result',
-        content: `写入失败：权限不足，无法修改 src/components/App.tsx`,
-        toolName: 'apply_diff',
-        failed: true,
-      } : {
-        type: 'tool_result',
-        content: `文件写入成功。`,
-        toolName: 'apply_diff',
-        summary: { file: 'src/components/App.tsx', lines: 8, durationMs: 560 },
-        diff: `diff --git a/src/components/App.tsx b/src/components/App.tsx\n--- a/src/components/App.tsx\n+++ b/src/components/App.tsx\n@@ -1,5 +1,8 @@\n import React from "react";\n+import { useState } from "react";\n \n-export default function App() {\n+export default function App(): JSX.Element {\n+  const [count, setCount] = useState(0);\n   return <div>Hello World</div>;\n }`,
-      },
-      {
-        type: 'ask_user',
-        content: '为了更好地实现功能，请回答以下问题：',
-        questions: [
-          { id: 'q1', label: '你希望使用哪种状态管理方案？', type: 'choice', options: ['React Context', 'Zustand', 'Redux Toolkit', 'Jotai'] },
-          { id: 'q2', label: '样式方案偏好', type: 'choice', options: ['Tailwind CSS', 'CSS Modules', 'Styled Components', 'SCSS'] },
-        ],
-      },
-    ];
-
-    if (shouldCompress) {
-      steps.push({
-        type: 'compress',
-        content: '正在压缩生成的资源文件...',
-        compressInfo: { originalSize: 12480, compressedSize: 4320, ratio: 0.346, status: 'compressing' },
-      });
-      steps.push({
-        type: 'compress',
-        content: '资源压缩完成',
-        compressInfo: { originalSize: 12480, compressedSize: 4320, ratio: 0.346, status: 'done' },
-      });
-    }
-
-    steps.push({
-      type: 'final',
-      content: `已完成你的需求！我分析了项目结构并生成了相应的代码。\n\n主要改动：\n1. 创建了新组件\n2. 更新了相关页面\n3. 添加了必要的样式\n\n\`\`\`typescript\n// 示例代码\nfunction implementFeature() {\n  console.log("功能已实现");\n  return true;\n}\n\`\`\`\n\n你可以在右侧「变更」面板查看修改的文件列表，在「任务」面板跟踪进度。`,
-    });
-
-    const finalContent = steps[steps.length - 1].content;
-    const token_in = Math.floor(userMsg.length * 0.8) + Math.floor(Math.random() * 200);
-    const token_out = Math.floor(finalContent.length * 0.9) + Math.floor(Math.random() * 300);
-    return { steps, finalContent, token_in, token_out };
-  };
 
   // 编辑用户消息（将内容填入输入区域）
   const handleEditUserMessage = (content: string) => {
