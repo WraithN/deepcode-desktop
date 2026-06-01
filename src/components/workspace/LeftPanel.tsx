@@ -27,10 +27,14 @@ export interface AgentInstance {
   modelConfig?: AgentModelConfig;
 }
 
-const agentConfig: Record<string, { name: string; color: string; bg: string; letter: string; desc: string; border: string }> = {
-  opencode: { name: 'OpenCode', color: 'text-green-400', bg: 'bg-green-400/15', letter: 'O', desc: '全能型编程助手', border: 'border-green-400/20' },
-  'claude-code': { name: 'Claude Code', color: 'text-orange-400', bg: 'bg-orange-400/15', letter: 'C', desc: '代码理解与重构专家', border: 'border-orange-400/20' },
-  'cursor-agent': { name: 'Cursor Agent', color: 'text-blue-400', bg: 'bg-blue-400/15', letter: 'C', desc: '智能补全与生成', border: 'border-blue-400/20' },
+const LOBE_CDN = 'https://unpkg.com/@lobehub/icons-static-svg@latest/icons';
+
+const agentConfig: Record<string, { name: string; color: string; bg: string; letter: string; desc: string; border: string; iconUrl?: string }> = {
+  opencode: { name: 'OpenCode', color: 'text-green-400', bg: 'bg-green-400/15', letter: 'O', desc: '全能型编程助手', border: 'border-green-400/20', iconUrl: `${LOBE_CDN}/open-code.svg` },
+  'claude-code': { name: 'Claude Code', color: 'text-orange-400', bg: 'bg-orange-400/15', letter: 'C', desc: '代码理解与重构专家', border: 'border-orange-400/20', iconUrl: `${LOBE_CDN}/claude-code.svg` },
+  'cursor-agent': { name: 'Cursor Agent', color: 'text-blue-400', bg: 'bg-blue-400/15', letter: 'C', desc: '智能补全与生成', border: 'border-blue-400/20', iconUrl: `${LOBE_CDN}/cursor.svg` },
+  codex: { name: 'Codex', color: 'text-purple-400', bg: 'bg-purple-400/15', letter: 'X', desc: 'OpenAI软件工程模型', border: 'border-purple-400/20', iconUrl: `${LOBE_CDN}/codex.svg` },
+  custom: { name: '自定义', color: 'text-primary', bg: 'bg-primary/15', letter: 'C', desc: '自由配置的智能体', border: 'border-primary/20' },
 };
 
 interface LeftPanelProps {
@@ -452,8 +456,12 @@ export default function LeftPanel({
                         isAct ? 'bg-primary/5' : 'hover:bg-secondary/40'
                       }`}
                     >
-                      <span className={`w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center shrink-0 ${cfg.bg} ${cfg.color}`}>
-                        {cfg.letter}
+                      <span className={`w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center shrink-0 ${cfg.bg} ${cfg.color} overflow-hidden`}>
+                        {cfg.iconUrl ? (
+                          <img src={cfg.iconUrl} alt="" className="w-4 h-4 object-contain" />
+                        ) : (
+                          cfg.letter
+                        )}
                       </span>
                       <div className="flex-1 min-w-0">
                         <div className={`text-[11px] truncate ${isAct ? 'text-foreground font-medium' : 'text-foreground'}`}>
@@ -521,8 +529,12 @@ export default function LeftPanel({
                         : 'border-border bg-secondary/20 hover:bg-secondary/40'
                     }`}
                   >
-                    <span className={`w-7 h-7 rounded-md text-sm font-bold flex items-center justify-center shrink-0 ${config.bg} ${config.color}`}>
-                      {config.letter}
+                    <span className={`w-7 h-7 rounded-md text-sm font-bold flex items-center justify-center shrink-0 ${config.bg} ${config.color} overflow-hidden`}>
+                      {config.iconUrl ? (
+                        <img src={config.iconUrl} alt="" className="w-5 h-5 object-contain" />
+                      ) : (
+                        config.letter
+                      )}
                     </span>
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-medium text-foreground">{instance.displayName}</div>

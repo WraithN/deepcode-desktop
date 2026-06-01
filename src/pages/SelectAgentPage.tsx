@@ -3,33 +3,47 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { Bot, ArrowRight, Sparkles, Code2, Terminal } from 'lucide-react';
+import { Bot, ArrowRight, Sparkles } from 'lucide-react';
 import DirectoryPickerButton from '@/components/DirectoryPickerButton';
+
+const LOBE_CDN = 'https://unpkg.com/@lobehub/icons-static-svg@latest/icons';
 
 const agents = [
   {
     id: 'opencode',
     name: 'OpenCode',
     description: '开源编码智能体，支持多种编程语言和框架，提供智能代码补全和重构建议。',
-    icon: Code2,
-    color: 'text-green-400',
+    iconUrl: `${LOBE_CDN}/open-code.svg`,
     bgColor: 'bg-green-400/10',
   },
   {
     id: 'claude-code',
     name: 'Claude Code',
     description: 'Anthropic推出的编码助手，擅长复杂逻辑推理和大型项目架构设计。',
-    icon: Sparkles,
-    color: 'text-orange-400',
+    iconUrl: `${LOBE_CDN}/claude-code.svg`,
     bgColor: 'bg-orange-400/10',
   },
   {
     id: 'cursor-agent',
     name: 'Cursor Agent',
     description: '基于GPT-4的智能编码代理，专注于代码生成和自动化测试。',
-    icon: Terminal,
-    color: 'text-blue-400',
+    iconUrl: `${LOBE_CDN}/cursor.svg`,
     bgColor: 'bg-blue-400/10',
+  },
+  {
+    id: 'codex',
+    name: 'Codex',
+    description: 'OpenAI Codex，专为软件工程优化的AI模型，支持多文件上下文和高级代码理解。',
+    iconUrl: `${LOBE_CDN}/codex.svg`,
+    bgColor: 'bg-purple-400/10',
+  },
+  {
+    id: 'custom',
+    name: '自定义智能体',
+    description: '创建属于你自己的AI编码助手，自由配置模型和能力参数。',
+    lucideIcon: Bot,
+    color: 'text-primary',
+    bgColor: 'bg-primary/10',
   },
 ];
 
@@ -136,8 +150,8 @@ export default function SelectAgentPage() {
         {/* 智能体列表 */}
         <div className="space-y-3 mb-8">
           {agents.map((agent) => {
-            const Icon = agent.icon;
             const isSelected = selected === agent.id;
+            const LucideIcon = 'lucideIcon' in agent ? agent.lucideIcon : undefined;
             return (
               <button
                 key={agent.id}
@@ -150,7 +164,11 @@ export default function SelectAgentPage() {
                 }`}
               >
                 <div className={`w-12 h-12 rounded-lg ${agent.bgColor} flex items-center justify-center shrink-0`}>
-                  <Icon className={`w-6 h-6 ${agent.color}`} />
+                  {agent.iconUrl ? (
+                    <img src={agent.iconUrl} alt={agent.name} className="w-7 h-7 object-contain" />
+                  ) : LucideIcon ? (
+                    <LucideIcon className={`w-6 h-6 ${agent.color}`} />
+                  ) : null}
                 </div>
                 <div className="flex-1 min-w-0">
                   <h3 className="font-semibold text-foreground">{agent.name}</h3>

@@ -26,6 +26,8 @@ const AGENT_TYPES = [
   { key: 'opencode', name: 'OpenCode', desc: '开源编码智能体，支持多种编程语言和框架' },
   { key: 'claude-code', name: 'Claude Code', desc: 'Anthropic推出的编码助手，擅长复杂逻辑推理' },
   { key: 'cursor-agent', name: 'Cursor Agent', desc: '基于GPT-4的智能编码代理' },
+  { key: 'codex', name: 'Codex', desc: 'OpenAI Codex，专为软件工程优化的AI模型' },
+  { key: 'custom', name: '自定义智能体', desc: '创建属于你的AI编码助手，自由配置模型和能力参数' },
 ];
 
 interface AgentTypeConfig {
@@ -45,6 +47,8 @@ function getStoredAgentTypeConfigs(): Record<string, AgentTypeConfig> {
     opencode: { type: 'builtin', modelId: 'gpt-4' },
     'claude-code': { type: 'builtin', modelId: 'claude-3-opus' },
     'cursor-agent': { type: 'builtin', modelId: 'deepseek-v3' },
+    codex: { type: 'builtin', modelId: 'gpt-4' },
+    custom: { type: 'builtin', modelId: 'gpt-4' },
   };
 }
 
