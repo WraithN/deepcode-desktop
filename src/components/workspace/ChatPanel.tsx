@@ -386,7 +386,25 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
             </span>
           )}
         </div>
-        {message.steps && message.steps.length > 0 ? (
+        {!isComplete ? (
+          // 流式生成中：同时显示实时文本和步骤
+          <>
+            <div className="text-sm text-foreground leading-relaxed">{renderContent(message.content)}</div>
+            {message.steps && message.steps.length > 0 && (
+              <div className="space-y-1.5 mt-2">{message.steps.map((step, i) => (
+                <StepItem
+                  key={`${message.id}-step-${i}`}
+                  step={step}
+                  index={i}
+                  onAnswerPermission={onAnswerPermission ? (answer) => onAnswerPermission(i, answer) : undefined}
+                  onAnswerUser={onAnswerUser ? (answers) => onAnswerUser(i, answers) : undefined}
+                  onRetry={onRetryStep ? () => onRetryStep(i) : undefined}
+                />
+              ))}</div>
+            )}
+          </>
+        ) : message.steps && message.steps.length > 0 ? (
+          // 已完成且有 steps：只显示步骤摘要
           <div className="space-y-1.5">{message.steps.map((step, i) => (
             <StepItem
               key={`${message.id}-step-${i}`}
@@ -398,6 +416,7 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
             />
           ))}</div>
         ) : (
+          // 已完成且无 steps：显示文本内容
           <div className="text-sm text-foreground leading-relaxed">{renderContent(message.content)}</div>
         )}
         {/* AI消息底部Token和耗时统计 */}

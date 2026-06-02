@@ -38,7 +38,7 @@ export default defineConfig({
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     outDir: "dist",
     rollupOptions: {
-      external: [/^@lobehub\/ui/, "antd"],
+      external: ["antd"],
     },
   },
 });

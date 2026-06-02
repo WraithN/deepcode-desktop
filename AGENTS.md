@@ -132,6 +132,19 @@ pnpm tauri dev      # 开发模式
 pnpm tauri build    # 打包桌面应用
 ```
 
+### 开发后启动测试
+> ⚠️ **硬性规则**：每次完成代码修改并构建完成后，**必须启动 Tauri 桌面应用**，让用户在真实环境中验证功能。
+
+```bash
+# 构建桌面端
+pnpm tauri build
+
+# 启动已构建的应用（Linux）
+./src-tauri/target/release/ai-coding-desktop
+```
+
+启动后等待应用窗口出现，再告知用户进行测试。
+
 ### 环境要求
 - Node.js ≥ 20
 - npm ≥ 10
