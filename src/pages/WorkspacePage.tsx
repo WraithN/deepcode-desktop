@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '@/db';
 import { agentManager } from '@/agents/manager';
 import { sessionLogger } from '@/services/logger';
+import { appLog } from '@/utils/logEmitter';
 import type { Conversation, Message, MessageStep, Task, ModifiedFile } from '@/types/types';
 import { Settings, LogOut, Bot, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -16,6 +17,8 @@ import RightPanel from '@/components/workspace/RightPanel';
 import SettingsDialog from '@/components/workspace/SettingsDialog';
 import AddAgentDialog from '@/components/workspace/AddAgentDialog';
 import AgentIcon from '@/components/workspace/AgentIcon';
+import { sessionLog } from '@/store/session-log';
+import SessionLogDrawer from '@/components/workspace/SessionLogDrawer';
 
 const defaultAgents: AgentInstance[] = [
   { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' } },
@@ -63,12 +66,26 @@ export default function WorkspacePage() {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [editContent, setEditContent] = useState<string | undefined>(undefined);
+  const [logDrawerOpen, setLogDrawerOpen] = useState(false);
+  const [sessionLogs, setSessionLogs] = useState<import('@/store/session-log').LogEntry[]>([]);
+  const clickCountRef = useRef(0);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 智能体实例管理
   const [agentInstances, setAgentInstances] = useState<AgentInstance[]>(getStoredAgents);
   const [activeAgentId, setActiveAgentId] = useState<string>(getStoredActiveAgentId);
 
   const activeAgent = agentInstances.find((a) => a.id === activeAgentId) || agentInstances[0];
+
+  // 确保智能体实例始终存在（如果 localStorage 数据损坏或为空）
+  useEffect(() => {
+    if (agentInstances.length === 0) {
+      setAgentInstances(defaultAgents);
+      setActiveAgentId(defaultAgents[0].id);
+    } else if (!agentInstances.find((a) => a.id === activeAgentId)) {
+      setActiveAgentId(agentInstances[0].id);
+    }
+  }, []);
 
   // 持久化智能体状态
   useEffect(() => {
@@ -112,6 +129,29 @@ export default function WorkspacePage() {
     loadTasks();
     loadModifiedFiles();
   }, [loadConversations, loadTasks, loadModifiedFiles]);
+
+  // Subscribe to session log store
+  useEffect(() => {
+    if (!activeConversation) {
+      setSessionLogs([]);
+      return;
+    }
+    const update = () => setSessionLogs(sessionLog.getLogs(activeConversation.id));
+    update();
+    const unsubscribe = sessionLog.subscribe(update);
+    return unsubscribe;
+  }, [activeConversation]);
+
+  // 自动测试发送消息（开发调试用）
+  // useEffect(() => {
+  //   if (!activeConversation || !activeAgentId) return;
+  //   const timer = setTimeout(() => {
+  //     console.log('[WorkspacePage] auto-sending test message');
+  //     handleSendMessage('你好，这是一个测试消息');
+  //   }, 3000);
+  //   return () => clearTimeout(timer);
+  //   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // }, [activeConversation, activeAgentId]);
 
   // 如果没有任务，创建mock任务（三种状态各一个）
   useEffect(() => {
@@ -314,6 +354,22 @@ export default function WorkspacePage() {
     }
   };
 
+  const handleSettingsClick = () => {
+    clickCountRef.current += 1;
+    if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    clickTimerRef.current = setTimeout(() => {
+      clickCountRef.current = 0;
+    }, 1000);
+
+    if (clickCountRef.current >= 5) {
+      clickCountRef.current = 0;
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+      setLogDrawerOpen((v) => !v);
+    } else {
+      setSettingsOpen(true);
+    }
+  };
+
   // 底部栏切换智能体
   const [agentSwitcherOpen, setAgentSwitcherOpen] = useState(false);
   const handleSwitchAgentFromFooter = (id: string) => {
@@ -323,7 +379,9 @@ export default function WorkspacePage() {
 
   // 发送消息
   const handleSendMessage = async (content: string) => {
+    appLog.log('WorkspacePage', 'handleSendMessage called', { content, hasUser: !!user, hasConversation: !!activeConversation });
     if (!user || !activeConversation) {
+      appLog.log('WorkspacePage', 'missing user or conversation', { hasUser: !!user, hasConversation: !!activeConversation });
       toast.error('请先创建或选择一个会话');
       return;
     }
@@ -363,55 +421,153 @@ export default function WorkspacePage() {
     const steps: MessageStep[] = [];
     let finalContent = '';
     let hasError = false;
+    let streamingMsgId: string | null = null;
 
     const activeAgentInstance = agentInstances.find((a) => a.id === activeAgentId);
+    appLog.log('WorkspacePage', 'activeAgentInstance', { agentId: activeAgentId, found: !!activeAgentInstance });
     if (!activeAgentInstance) {
       toast.error('未找到活跃智能体');
       setIsTyping(false);
       return;
     }
 
+    // Ensure agent is registered in agentManager
+    let managed = agentManager.getAgent(activeAgentInstance.id);
+    appLog.log('WorkspacePage', 'checking agentManager', { managed: !!managed });
+    if (!managed) {
+      try {
+        appLog.log('WorkspacePage', 'registering agent', { agentKey: activeAgentInstance.agentKey, id: activeAgentInstance.id });
+        await agentManager.addAgent(activeAgentInstance.agentKey, activeAgentInstance.id, activeAgentInstance.displayName, activeAgentInstance.workspace);
+        await agentManager.startAgent(activeAgentInstance.id);
+        managed = agentManager.getAgent(activeAgentInstance.id)!;
+        appLog.log('WorkspacePage', 'agent registered successfully');
+      } catch (e) {
+        appLog.error('WorkspacePage', 'failed to register agent', { error: String(e) });
+        toast.error(`注册智能体失败: ${String(e)}`);
+        setIsTyping(false);
+        return;
+      }
+    }
+
+    // 创建流式临时消息，用户可实时看到生成过程
+    const streamingMsg: Message = {
+      id: `streaming-${Date.now()}`,
+      conversation_id: activeConversation.id,
+      role: 'assistant',
+      content: '',
+      steps: [],
+      is_complete: false,
+      created_at: new Date().toISOString(),
+    };
+    streamingMsgId = streamingMsg.id;
+    setMessages((prev) => [...prev, streamingMsg]);
+    appLog.log('WorkspacePage', 'streaming message created', { streamingMsgId });
+
     try {
+      appLog.log('WorkspacePage', 'starting agentManager.sendMessage', { agentId: activeAgentInstance.id, content });
       for await (const event of agentManager.sendMessage(activeAgentInstance.id, content)) {
+        appLog.log('WorkspacePage', 'received event', { eventType: event.type, event });
         await sessionLogger.logEvent(event, { conversationId: activeConversation.id });
 
         switch (event.type) {
-          case 'thinking':
-            steps.push({ type: 'thinking', content: event.content });
+          case 'thinking': {
+            const newStep: MessageStep = { type: 'thinking', content: event.content };
+            steps.push(newStep);
+            if (streamingMsgId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === streamingMsgId
+                    ? { ...msg, steps: [...steps], content: finalContent }
+                    : msg,
+                ),
+              );
+            }
             break;
-          case 'tool_use':
-            steps.push({
+          }
+          case 'tool_use': {
+            const newStep: MessageStep = {
               type: 'tool_use',
               content: `使用工具 ${event.toolName}...`,
               toolName: event.toolName,
               summary: { file: event.args?.file as string, lines: 0, durationMs: 0 },
-            });
+            };
+            steps.push(newStep);
+            if (streamingMsgId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === streamingMsgId
+                    ? { ...msg, steps: [...steps], content: finalContent }
+                    : msg,
+                ),
+              );
+            }
             break;
-          case 'tool_result':
-            steps.push({
+          }
+          case 'tool_result': {
+            const newStep: MessageStep = {
               type: 'tool_result',
               content: event.result,
               toolName: event.toolName,
               failed: event.failed,
               summary: { file: event.toolName, lines: 0, durationMs: 0 },
-            });
+            };
+            steps.push(newStep);
+            if (streamingMsgId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === streamingMsgId
+                    ? { ...msg, steps: [...steps], content: finalContent }
+                    : msg,
+                ),
+              );
+            }
             break;
-          case 'ask_permission':
-            steps.push({
+          }
+          case 'ask_permission': {
+            const newStep: MessageStep = {
               type: 'ask_permission',
               content: event.message,
               permissionType: event.toolName,
-            });
+            };
+            steps.push(newStep);
+            if (streamingMsgId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === streamingMsgId
+                    ? { ...msg, steps: [...steps], content: finalContent }
+                    : msg,
+                ),
+              );
+            }
             break;
-          case 'ask_user':
-            steps.push({
+          }
+          case 'ask_user': {
+            const newStep: MessageStep = {
               type: 'ask_user',
               content: '请回答以下问题：',
               questions: event.questions,
-            });
+            };
+            steps.push(newStep);
+            if (streamingMsgId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === streamingMsgId
+                    ? { ...msg, steps: [...steps], content: finalContent }
+                    : msg,
+                ),
+              );
+            }
             break;
+          }
           case 'text_delta':
             finalContent += event.content;
+            if (streamingMsgId) {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === streamingMsgId ? { ...msg, content: finalContent } : msg,
+                ),
+              );
+            }
             break;
           case 'error':
             hasError = true;
@@ -425,12 +581,14 @@ export default function WorkspacePage() {
     } catch (error) {
       hasError = true;
       const errMsg = String(error);
+      appLog.error('WorkspacePage', 'sendMessage error', { error: errMsg, stack: error instanceof Error ? error.stack : undefined });
       toast.error(`通信错误: ${errMsg}`);
       await sessionLogger.logError(errMsg, { conversationId: activeConversation.id });
     }
 
     const duration_ms = Date.now() - startTime;
 
+    appLog.log('WorkspacePage', 'sendMessage loop ended', { hasError, finalContentLength: finalContent.length, stepsCount: steps.length });
     if (!hasError) {
       const aiMsg = await db.createMessage({
         conversation_id: activeConversation.id,
@@ -447,7 +605,11 @@ export default function WorkspacePage() {
           token_out: Math.floor(finalContent.length * 0.9),
           duration_ms,
         };
-        setMessages((prev) => [...prev, enriched]);
+        // 替换临时消息为最终消息
+        setMessages((prev) =>
+          prev.map((msg) => (msg.id === streamingMsgId ? enriched : msg)),
+        );
+        appLog.log('WorkspacePage', 'ai message saved', { aiMsgId: aiMsg.id, content: finalContent });
       }
 
       await sessionLogger.logGeneration(
@@ -456,6 +618,11 @@ export default function WorkspacePage() {
         finalContent,
         { conversationId: activeConversation.id, role: 'assistant', durationMs: duration_ms },
       );
+    } else {
+      // 有错误时移除临时消息
+      if (streamingMsgId) {
+        setMessages((prev) => prev.filter((msg) => msg.id !== streamingMsgId));
+      }
     }
 
     setIsTyping(false);
@@ -517,7 +684,7 @@ export default function WorkspacePage() {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => setSettingsOpen(true)}
+            onClick={handleSettingsClick}
             className="h-7 w-7 text-muted-foreground hover:text-foreground"
           >
             <Settings className="w-4 h-4" />
@@ -534,7 +701,7 @@ export default function WorkspacePage() {
       </header>
 
       {/* 主内容区 */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 relative">
         {/* 左侧两级边栏 */}
         <LeftPanel
           conversations={conversations}
@@ -581,6 +748,14 @@ export default function WorkspacePage() {
           collapsed={rightCollapsed}
           onToggleCollapse={() => setRightCollapsed((v) => !v)}
         />
+
+        {logDrawerOpen && activeConversation && (
+          <SessionLogDrawer
+            logs={sessionLogs}
+            onClose={() => setLogDrawerOpen(false)}
+            onClear={() => sessionLog.clear(activeConversation.id)}
+          />
+        )}
       </div>
 
       {/* 底部状态栏 */}
