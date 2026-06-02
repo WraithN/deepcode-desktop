@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { ArrowRight, Sparkles, Bot } from 'lucide-react';
 import DirectoryPickerButton from '@/components/DirectoryPickerButton';
 import AgentIcon from '@/components/workspace/AgentIcon';
+import { invoke } from '@tauri-apps/api/core';
 
 const agents = [
   {
@@ -60,18 +61,19 @@ export default function SelectAgentPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [displayName, setDisplayName] = useState(generateName());
-  const [workspace, setWorkspace] = useState('.');
+  const [workspace, setWorkspace] = useState('');
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const handleConfirm = async () => {
-    if (!selected) {
+  const handleConfirm = async (agentId?: string) => {
+    const targetAgent = agentId || selected;
+    if (!targetAgent) {
       toast.error('请选择一个编码智能体');
       return;
     }
     setLoading(true);
     try {
-      localStorage.setItem('selected_agent', selected);
+      localStorage.setItem('selected_agent', targetAgent);
       localStorage.setItem('should_create_new_session', 'true');
 
       // 保存默认智能体名称和工作目录
@@ -79,7 +81,7 @@ export default function SelectAgentPage() {
       localStorage.setItem('default_agent_name', trimmed);
       localStorage.setItem('default_agent_workspace', workspace);
 
-      toast.success(`已选择 ${agents.find((a) => a.id === selected)?.name}`);
+      toast.success(`已选择 ${agents.find((a) => a.id === targetAgent)?.name}`);
       navigate('/workspace');
     } finally {
       setLoading(false);
@@ -89,6 +91,12 @@ export default function SelectAgentPage() {
   const handleRandomName = () => {
     setDisplayName(generateName([displayName]));
   };
+
+  useEffect(() => {
+    invoke<string>('get_current_dir')
+      .then((dir) => setWorkspace(dir))
+      .catch(() => setWorkspace(''));
+  }, []);
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
@@ -149,6 +157,7 @@ export default function SelectAgentPage() {
                 key={agent.id}
                 type="button"
                 onClick={() => setSelected(agent.id)}
+                onDoubleClick={() => handleConfirm(agent.id)}
                 className={`w-full flex items-center gap-4 p-4 rounded-lg border transition-all text-left ${
                   isSelected
                     ? 'border-primary bg-primary/5 shadow-sm'
@@ -174,7 +183,7 @@ export default function SelectAgentPage() {
 
         {/* 确认按钮 */}
         <Button
-          onClick={handleConfirm}
+          onClick={() => handleConfirm()}
           disabled={!selected || loading}
           className="w-full bg-primary text-primary-foreground hover:bg-primary/90 h-11"
         >

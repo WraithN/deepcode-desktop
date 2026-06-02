@@ -18,6 +18,7 @@ import AddAgentDialog from '@/components/workspace/AddAgentDialog';
 import AgentIcon from '@/components/workspace/AgentIcon';
 import { sessionLog } from '@/store/session-log';
 import SessionLogDrawer from '@/components/workspace/SessionLogDrawer';
+import { invoke } from '@tauri-apps/api/core';
 
 const defaultAgents: AgentInstance[] = [
   { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' } },
@@ -84,6 +85,31 @@ export default function WorkspacePage() {
     } else if (!agentInstances.find((a) => a.id === activeAgentId)) {
       setActiveAgentId(agentInstances[0].id);
     }
+  }, []);
+
+  // 将相对路径的工作目录解析为绝对路径
+  useEffect(() => {
+    const resolveWorkspaces = async () => {
+      const needsResolve = agentInstances.some((a) => a.workspace === '.' || !a.workspace.startsWith('/'));
+      if (!needsResolve) return;
+      try {
+        const cwd = await invoke<string>('get_current_dir');
+        const updated = agentInstances.map((a) => {
+          if (a.workspace === '.' || a.workspace === '') {
+            return { ...a, workspace: cwd };
+          }
+          if (!a.workspace.startsWith('/')) {
+            return { ...a, workspace: `${cwd}/${a.workspace}` };
+          }
+          return a;
+        });
+        setAgentInstances(updated);
+      } catch {
+        // ignore
+      }
+    };
+    resolveWorkspaces();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 持久化智能体状态
@@ -353,7 +379,7 @@ export default function WorkspacePage() {
     }
   };
 
-  const handleSettingsClick = () => {
+  const handleLogoClick = () => {
     clickCountRef.current += 1;
     if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
     clickTimerRef.current = setTimeout(() => {
@@ -364,8 +390,6 @@ export default function WorkspacePage() {
       clickCountRef.current = 0;
       if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
       setLogDrawerOpen((v) => !v);
-    } else {
-      setSettingsOpen(true);
     }
   };
 
@@ -378,8 +402,12 @@ export default function WorkspacePage() {
 
   // 发送消息
   const handleSendMessage = async (content: string) => {
+    if (!activeConversation) {
+      toast.error('请先创建或选择一个会话');
+      return;
+    }
     sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'handleSendMessage called', { content, hasUser: !!user, hasConversation: !!activeConversation });
-    if (!user || !activeConversation) {
+    if (!user) {
       sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'missing user or conversation', { hasUser: !!user, hasConversation: !!activeConversation });
       toast.error('请先创建或选择一个会话');
       return;
@@ -400,19 +428,28 @@ export default function WorkspacePage() {
       setMessages((prev) => [...prev, userMsg]);
     }
 
-    // 启动会话日志跟踪
-    await sessionLogger.startTrace(activeConversation.id, {
-      agent: activeAgent?.agentKey,
-      model: currentModel,
-      userId: user.id,
-    });
+    try {
+      await sessionLogger.startTrace(activeConversation.id, {
+        agent: activeAgent?.agentKey,
+        model: currentModel,
+        userId: user.id,
+      });
+      sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'sessionLogger.startTrace ok');
+    } catch (e) {
+      sessionLog.add(activeConversation.id, 'error', 'WorkspacePage', 'sessionLogger.startTrace failed', { error: String(e) });
+    }
 
-    await sessionLogger.logGeneration(
-      `gen-${Date.now()}`,
-      content,
-      undefined,
-      { conversationId: activeConversation.id, role: 'user' },
-    );
+    try {
+      await sessionLogger.logGeneration(
+        `gen-${Date.now()}`,
+        content,
+        undefined,
+        { conversationId: activeConversation.id, role: 'user' },
+      );
+      sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'sessionLogger.logGeneration ok');
+    } catch (e) {
+      sessionLog.add(activeConversation.id, 'error', 'WorkspacePage', 'sessionLogger.logGeneration failed', { error: String(e) });
+    }
 
     setIsTyping(true);
     const startTime = Date.now();
@@ -464,7 +501,7 @@ export default function WorkspacePage() {
 
     try {
       sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'starting agentManager.sendMessage', { agentId: activeAgentInstance.id, content });
-      for await (const event of agentManager.sendMessage(activeAgentInstance.id, content)) {
+      for await (const event of agentManager.sendMessage(activeAgentInstance.id, content, activeConversation.id)) {
         sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'received event', { eventType: event.type });
         await sessionLogger.logEvent(event, { conversationId: activeConversation.id });
 
@@ -672,7 +709,11 @@ export default function WorkspacePage() {
     <div className="flex flex-col h-screen bg-background">
       {/* 顶部栏 */}
       <header className="h-10 border-b border-border flex items-center justify-between px-4 shrink-0 bg-card">
-        <div className="flex items-center gap-2">
+        <div
+          className="flex items-center gap-2 cursor-pointer select-none"
+          onClick={handleLogoClick}
+          title="快速点击5次打开日志抽屉"
+        >
           <Bot className="w-5 h-5 text-primary" />
           <span className="font-semibold text-sm text-foreground">AI Coding</span>
         </div>
@@ -683,7 +724,7 @@ export default function WorkspacePage() {
           <Button
             variant="ghost"
             size="icon"
-            onClick={handleSettingsClick}
+            onClick={() => setSettingsOpen(true)}
             className="h-7 w-7 text-muted-foreground hover:text-foreground"
           >
             <Settings className="w-4 h-4" />
@@ -700,53 +741,55 @@ export default function WorkspacePage() {
       </header>
 
       {/* 主内容区 */}
-      <div className="flex flex-1 min-h-0 relative">
-        {/* 左侧两级边栏 */}
-        <LeftPanel
-          conversations={conversations}
-          activeConversation={activeConversation}
-          agentInstances={agentInstances}
-          activeAgentId={activeAgentId}
-          messages={messages}
-          collapsed={leftCollapsed}
-          onToggleCollapse={() => setLeftCollapsed((v) => !v)}
-          onSelectConversation={handleSelectConversation}
-          onDoubleClickConversation={handleDoubleClickConversation}
-          onNewConversation={handleNewConversation}
-          onAddAgent={handleAddAgent}
-          onActivateAgent={handleActivateAgent}
-        />
+      <div className="flex flex-col flex-1 min-h-0">
+        <div className="flex flex-1 min-h-0">
+          {/* 左侧两级边栏 */}
+          <LeftPanel
+            conversations={conversations}
+            activeConversation={activeConversation}
+            agentInstances={agentInstances}
+            activeAgentId={activeAgentId}
+            messages={messages}
+            collapsed={leftCollapsed}
+            onToggleCollapse={() => setLeftCollapsed((v) => !v)}
+            onSelectConversation={handleSelectConversation}
+            onDoubleClickConversation={handleDoubleClickConversation}
+            onNewConversation={handleNewConversation}
+            onAddAgent={handleAddAgent}
+            onActivateAgent={handleActivateAgent}
+          />
 
-        {/* 中间会话区 */}
-        <ChatPanel
-          messages={messages}
-          isTyping={isTyping}
-          activeConversation={activeConversation}
-          conversations={conversations}
-          activeAgentName={activeAgent.displayName}
-          currentModel={currentModel}
-          contextPercent={contextPercent}
-          agentMode={agentMode}
-          currentSkill={currentSkill}
-          editContent={editContent}
-          onSendMessage={handleSendMessage}
-          onAgentModeChange={setAgentMode}
-          onModelChange={setCurrentModel}
-          onSkillChange={setCurrentSkill}
-          onSelectConversation={handleSelectConversation}
-          onAnswerPermission={handleAnswerPermission}
-          onAnswerUserQuestions={handleAnswerUserQuestions}
-          onEditUserMessage={handleEditUserMessage}
-          onRetryStep={handleRetryStep}
-        />
+          {/* 中间会话区 */}
+          <ChatPanel
+            messages={messages}
+            isTyping={isTyping}
+            activeConversation={activeConversation}
+            conversations={conversations}
+            activeAgentName={activeAgent.displayName}
+            currentModel={currentModel}
+            contextPercent={contextPercent}
+            agentMode={agentMode}
+            currentSkill={currentSkill}
+            editContent={editContent}
+            onSendMessage={handleSendMessage}
+            onAgentModeChange={setAgentMode}
+            onModelChange={setCurrentModel}
+            onSkillChange={setCurrentSkill}
+            onSelectConversation={handleSelectConversation}
+            onAnswerPermission={handleAnswerPermission}
+            onAnswerUserQuestions={handleAnswerUserQuestions}
+            onEditUserMessage={handleEditUserMessage}
+            onRetryStep={handleRetryStep}
+          />
 
-        {/* 右侧栏 */}
-        <RightPanel
-          tasks={tasks}
-          modifiedFiles={modifiedFiles}
-          collapsed={rightCollapsed}
-          onToggleCollapse={() => setRightCollapsed((v) => !v)}
-        />
+          {/* 右侧栏 */}
+          <RightPanel
+            tasks={tasks}
+            modifiedFiles={modifiedFiles}
+            collapsed={rightCollapsed}
+            onToggleCollapse={() => setRightCollapsed((v) => !v)}
+          />
+        </div>
 
         {logDrawerOpen && activeConversation && (
           <SessionLogDrawer

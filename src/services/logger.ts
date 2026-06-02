@@ -1,4 +1,8 @@
 import { writeTextFile, mkdir, BaseDirectory } from '@tauri-apps/plugin-fs';
+
+function isTauri(): boolean {
+  return !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
+}
 import type { AgentEvent } from '@/agents/types';
 
 interface LogEntry {
@@ -11,11 +15,12 @@ class SessionLogger {
   private logDir = 'logs';
   private currentFile: string | null = null;
   private initialized = false;
+  private baseDir = isTauri() ? BaseDirectory.AppLog : BaseDirectory.Temp;
 
   private async init(): Promise<void> {
     if (this.initialized) return;
     try {
-      await mkdir(this.logDir, { baseDir: BaseDirectory.Config, recursive: true });
+      await mkdir(this.logDir, { baseDir: this.baseDir, recursive: true });
     } catch {
       // 目录可能已存在
     }
@@ -28,14 +33,15 @@ class SessionLogger {
   }
 
   private async append(entry: LogEntry): Promise<void> {
+    if (!isTauri()) return; // 浏览器环境下不写入文件
     await this.init();
     const file = this.currentFile || this.getLogFile('default');
     const line = JSON.stringify(entry) + '\n';
     try {
-      await writeTextFile(file, line, { baseDir: BaseDirectory.Config, append: true });
+      await writeTextFile(file, line, { baseDir: this.baseDir, append: true });
     } catch {
       // 文件不存在时创建
-      await writeTextFile(file, line, { baseDir: BaseDirectory.Config, append: false });
+      await writeTextFile(file, line, { baseDir: this.baseDir, append: false });
     }
   }
 

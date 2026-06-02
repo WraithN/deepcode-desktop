@@ -120,6 +120,31 @@ export default function LoginPage() {
               {loading ? '处理中...' : isLogin ? '登录' : '注册'}
             </Button>
           </form>
+
+          <div className="relative my-4">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-border" />
+            </div>
+            <div className="relative flex justify-center text-xs">
+              <span className="bg-card px-2 text-muted-foreground">或</span>
+            </div>
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            disabled={loading}
+            onClick={async () => {
+              setLoading(true);
+              await mockSignIn('guest');
+              toast.success('访客登录成功');
+              navigate('/select-agent');
+              setLoading(false);
+            }}
+            className="w-full"
+          >
+            访客登录
+          </Button>
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6">

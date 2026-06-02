@@ -62,7 +62,7 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ logs, onClose, onCl
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-0 left-0 right-0 bg-gray-950 border-t border-gray-800 flex flex-col z-50"
+      className="bg-gray-950 border-t border-gray-800 flex flex-col shrink-0"
       style={{ height }}
     >
       {/* Drag handle */}

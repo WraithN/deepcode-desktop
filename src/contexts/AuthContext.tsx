@@ -85,7 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const safeUsername = username.replace(/[^a-zA-Z0-9_]/g, '_') || 'guest';
 
     // 先尝试注册
-    const { data: signUpUser, error: signUpError } = await db.signUp(safeUsername, 'MockPass123!');
+    const { user: signUpUser, error: signUpError } = await db.signUp(safeUsername, 'MockPass123!');
 
     if (signUpUser) {
       setUser(signUpUser);
@@ -98,7 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // 用户已存在，尝试登录
     if (signUpError?.message?.includes('已存在') || signUpError?.message?.includes('already')) {
-      const { data: signInUser, error: signInError } = await db.signIn(safeUsername, 'MockPass123!');
+      const { user: signInUser, error: signInError } = await db.signIn(safeUsername, 'MockPass123!');
       if (signInUser) {
         setUser(signInUser);
         const profileData = await getProfile(signInUser.id);

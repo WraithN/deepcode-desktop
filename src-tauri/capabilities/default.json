@@ -5,14 +5,35 @@
   "windows": ["main"],
   "permissions": [
     "fs:default",
-    "fs:allow-write-text-file",
-    "fs:allow-read-text-file",
-    "fs:allow-mkdir",
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$APPLOG/**" },
+        { "path": "$APPCONFIG/**" },
+        { "path": "$TEMP/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$APPLOG/**" },
+        { "path": "$APPCONFIG/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$APPLOG/**" },
+        { "path": "$APPCONFIG/**" },
+        { "path": "$TEMP/**" }
+      ]
+    },
     {
       "identifier": "shell:allow-execute",
       "allow": [
         { "name": "opencode", "cmd": "opencode", "args": true }
       ]
-    }
+    },
+    "dialog:allow-open"
   ]
 }

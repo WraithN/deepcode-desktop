@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -76,14 +77,16 @@ function generateName(existing: string[]): string {
 export default function AddAgentDialog({ open, onOpenChange, onAddAgent, existingNames }: AddAgentDialogProps) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');
-  const [workspace, setWorkspace] = useState('.');
+  const [workspace, setWorkspace] = useState('');
 
   // 每次打开时重置
   useEffect(() => {
     if (open) {
       setSelectedAgent(null);
       setDisplayName(generateName(existingNames));
-      setWorkspace('.');
+      invoke<string>('get_current_dir')
+        .then((dir) => setWorkspace(dir))
+        .catch(() => setWorkspace(''));
     }
   }, [open, existingNames]);
 

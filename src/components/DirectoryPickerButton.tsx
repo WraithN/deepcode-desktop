@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { FolderOpen } from 'lucide-react';
+import { open } from '@tauri-apps/plugin-dialog';
 
 interface DirectoryPickerButtonProps {
   onSelect: (path: string) => void;
@@ -8,8 +9,19 @@ interface DirectoryPickerButtonProps {
 export default function DirectoryPickerButton({ onSelect }: DirectoryPickerButtonProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleClick = () => {
-    inputRef.current?.click();
+  const handleClick = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+      });
+      if (selected && typeof selected === 'string') {
+        onSelect(selected);
+      }
+    } catch {
+      // Tauri dialog 不可用，降级到原生文件选择
+      inputRef.current?.click();
+    }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {

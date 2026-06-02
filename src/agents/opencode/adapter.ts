@@ -1,7 +1,7 @@
 import { Command } from '@tauri-apps/plugin-shell';
 import type { AgentAdapter, AgentEvent, AgentStartConfig, AgentStatus } from '../types';
 import { parseOpencodeJsonLine } from './parser';
-import { debugLogger } from '@/services/debug-logger';
+import { sessionLog } from '@/store/session-log';
 
 function isTauri(): boolean {
   return !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
@@ -13,12 +13,9 @@ export class OpencodeAdapter implements AgentAdapter {
 
   async isInstalled(): Promise<boolean> {
     try {
-      await debugLogger.log('OpencodeAdapter', 'checking isInstalled');
       const result = await Command.create('opencode', ['--version']).execute();
-      await debugLogger.log('OpencodeAdapter', 'isInstalled result', { code: result.code, stdout: result.stdout });
       return result.code === 0 && result.stdout.includes('.');
     } catch (e) {
-      await debugLogger.log('OpencodeAdapter', 'isInstalled failed', { error: String(e) });
       return false;
     }
   }
@@ -34,13 +31,15 @@ export class OpencodeAdapter implements AgentAdapter {
   async *sendMessage(
     _instanceId: string,
     message: string,
-    options?: { workspace?: string; sessionId?: string; continueSession?: boolean },
+    options?: { workspace?: string; sessionId?: string; continueSession?: boolean; conversationId?: string },
   ): AsyncGenerator<AgentEvent, void, unknown> {
-    await debugLogger.log('OpencodeAdapter', 'sendMessage called', { message, options });
+    const conversationId = options?.conversationId || 'unknown';
+    sessionLog.add(conversationId, 'info', 'OpencodeAdapter', 'sendMessage called', { message, options: { ...options, message: undefined } });
+    sessionLog.add(conversationId, 'info', 'OpencodeAdapter', 'isTauri check', { isTauri: isTauri() });
 
     // 浏览器环境下返回模拟数据（用于测试）
     if (!isTauri()) {
-      await debugLogger.log('OpencodeAdapter', 'browser mode, returning mock data');
+      sessionLog.add(conversationId, 'info', 'OpencodeAdapter', 'browser mode, returning mock data');
       yield { type: 'thinking', content: '正在思考...' };
       yield { type: 'text_delta', content: `收到消息: ${message}` };
       yield { type: 'done' };
@@ -61,13 +60,13 @@ export class OpencodeAdapter implements AgentAdapter {
 
     args.push(message);
 
-    await debugLogger.log('OpencodeAdapter', 'executing command', { program: 'opencode', args });
+    sessionLog.add(conversationId, 'info', 'OpencodeAdapter', 'executing command', { program: 'opencode', args });
 
     let result;
     try {
       result = await Command.create('opencode', args).execute();
     } catch (execError) {
-      await debugLogger.log('OpencodeAdapter', 'execute failed', { error: String(execError) });
+      sessionLog.add(conversationId, 'error', 'OpencodeAdapter', 'execute failed', { error: String(execError) });
       yield {
         type: 'error',
         message: `启动 opencode 失败: ${execError instanceof Error ? execError.message : String(execError)}`,
@@ -75,7 +74,7 @@ export class OpencodeAdapter implements AgentAdapter {
       return;
     }
 
-    await debugLogger.log('OpencodeAdapter', 'execute completed', {
+    sessionLog.add(conversationId, 'info', 'OpencodeAdapter', 'execute completed', {
       code: result.code,
       signal: result.signal,
       stdoutLength: result.stdout?.length,
@@ -83,7 +82,7 @@ export class OpencodeAdapter implements AgentAdapter {
     });
 
     if (result.code !== 0) {
-      await debugLogger.log('OpencodeAdapter', 'non-zero exit code', { code: result.code, stderr: result.stderr });
+      sessionLog.add(conversationId, 'error', 'OpencodeAdapter', 'non-zero exit code', { code: result.code, stderr: result.stderr });
       yield {
         type: 'error',
         message: `opencode 执行失败 (exit ${result.code}): ${result.stderr || '未知错误'}`,
@@ -92,40 +91,40 @@ export class OpencodeAdapter implements AgentAdapter {
     }
 
     const lines = result.stdout.split('\n').filter((l) => l.trim());
-    await debugLogger.log('OpencodeAdapter', 'parsed lines count', { count: lines.length });
+    sessionLog.add(conversationId, 'info', 'OpencodeAdapter', 'parsed lines count', { count: lines.length });
 
     let eventCount = 0;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      await debugLogger.log('OpencodeAdapter', `line ${i}`, { line: line.substring(0, 200) });
+      sessionLog.add(conversationId, 'info', 'OpencodeAdapter', `line ${i}`, { line: line.substring(0, 200) });
 
       const raw = parseOpencodeJsonLine(line);
-      await debugLogger.log('OpencodeAdapter', `parsed line ${i}`, { raw });
+      sessionLog.add(conversationId, 'info', 'OpencodeAdapter', `parsed line ${i}`, { raw });
 
       if (!raw) {
-        await debugLogger.log('OpencodeAdapter', `line ${i} parse returned null`);
+        sessionLog.add(conversationId, 'info', 'OpencodeAdapter', `line ${i} parse returned null`);
         continue;
       }
 
       const event = this.mapToAgentEvent(raw);
-      await debugLogger.log('OpencodeAdapter', `mapped event ${i}`, { event });
+      sessionLog.add(conversationId, 'info', 'OpencodeAdapter', `mapped event ${i}`, { event });
 
       if (event) {
         eventCount++;
-        await debugLogger.log('OpencodeAdapter', `yielding event ${i}`, { type: event.type });
+        sessionLog.add(conversationId, 'info', 'OpencodeAdapter', `yielding event ${i}`, { type: event.type });
         yield event;
       } else {
-        await debugLogger.log('OpencodeAdapter', `event ${i} mapped to null, skipping`);
+        sessionLog.add(conversationId, 'info', 'OpencodeAdapter', `event ${i} mapped to null, skipping`);
       }
     }
 
     // 兜底：如果没有任何事件被解析出来，将原始 stdout 作为 text_delta 返回
     if (eventCount === 0 && result.stdout) {
-      await debugLogger.log('OpencodeAdapter', 'no events parsed, yielding raw stdout as fallback');
+      sessionLog.add(conversationId, 'info', 'OpencodeAdapter', 'no events parsed, yielding raw stdout as fallback');
       yield { type: 'text_delta', content: `【原始输出】\n${result.stdout.substring(0, 2000)}` };
     }
 
-    await debugLogger.log('OpencodeAdapter', 'yielding done event');
+    sessionLog.add(conversationId, 'info', 'OpencodeAdapter', 'yielding done event');
     yield { type: 'done' };
   }
 
@@ -165,7 +164,7 @@ export class OpencodeAdapter implements AgentAdapter {
   }
 
   async setMode(_instanceId: string, _mode: 'build' | 'plan'): Promise<void> {
-    await debugLogger.log('OpencodeAdapter', 'OpenCode CLI 模式切换暂未实现');
+    // OpenCode CLI 模式切换暂未实现
   }
 
   async getStatus(_instanceId: string): Promise<AgentStatus> {

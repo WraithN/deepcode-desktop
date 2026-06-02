@@ -669,9 +669,13 @@ export default function ChatPanel({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isTyping]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim()) return;
-    onSendMessage(input.trim());
+    try {
+      await onSendMessage(input.trim());
+    } catch (e) {
+      console.error('[ChatPanel] onSendMessage failed:', e);
+    }
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   };

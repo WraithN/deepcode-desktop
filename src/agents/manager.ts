@@ -123,9 +123,14 @@ class AgentManager {
     this.notify();
   }
 
-  async *sendMessage(instanceId: string, message: string): AsyncGenerator<AgentEvent> {
+  async *sendMessage(instanceId: string, message: string, conversationId?: string): AsyncGenerator<AgentEvent> {
+    const { sessionLog } = await import('@/store/session-log');
+    const convId = conversationId || 'unknown';
+    sessionLog.add(convId, 'info', 'AgentManager', 'sendMessage start', { instanceId, hasAgent: true });
+    
     const managedAgent = this.agents.get(instanceId);
     if (!managedAgent) {
+      sessionLog.add(convId, 'error', 'AgentManager', 'managedAgent not found', { instanceId });
       throw new Error(`智能体实例不存在: ${instanceId}`);
     }
 
@@ -133,11 +138,21 @@ class AgentManager {
       workspace: managedAgent.workspace,
       sessionId: managedAgent.sessionId,
       continueSession: !!managedAgent.sessionId,
+      conversationId,
     };
 
-    for await (const event of managedAgent.adapter.sendMessage(instanceId, message, options)) {
-      yield event;
+    sessionLog.add(convId, 'info', 'AgentManager', 'calling adapter.sendMessage', { agentKey: managedAgent.agentKey });
+    const adapterGen = managedAgent.adapter.sendMessage(instanceId, message, options);
+    sessionLog.add(convId, 'info', 'AgentManager', 'adapterGen created', { type: typeof adapterGen, isAsyncGen: adapterGen && typeof (adapterGen as any).next === 'function' });
+    
+    let iter = await adapterGen.next();
+    sessionLog.add(convId, 'info', 'AgentManager', 'adapterGen first next done', { done: iter.done, hasValue: !!iter.value });
+    while (!iter.done) {
+      sessionLog.add(convId, 'info', 'AgentManager', 'yielding event', { type: iter.value?.type });
+      yield iter.value;
+      iter = await adapterGen.next();
     }
+    sessionLog.add(convId, 'info', 'AgentManager', 'sendMessage end');
   }
 
   async setMode(instanceId: string, mode: 'build' | 'plan'): Promise<void> {

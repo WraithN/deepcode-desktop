@@ -1,6 +1,7 @@
 use crate::error::InstanceError;
-use async_trait::async_trait;
 use serde::Serialize;
+use std::future::Future;
+use std::pin::Pin;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,10 +20,12 @@ pub struct InstanceConfig {
     pub session_id: Option<String>,
 }
 
-#[async_trait]
 pub trait AgentInstance: Send + Sync {
     fn id(&self) -> &str;
     fn status(&self) -> InstanceStatus;
-    async fn send_message(&self, message: &str) -> Result<(), InstanceError>;
-    async fn stop(&self) -> Result<(), InstanceError>;
+    fn send_message(
+        &self,
+        message: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
+    fn stop(&self) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
 }

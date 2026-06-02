@@ -96,6 +96,13 @@ pub struct AuthUser {
 }
 
 #[tauri::command]
+fn get_current_dir() -> Result<String, String> {
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn db_sign_in(
     state: State<DbState>,
     username: String,
@@ -417,6 +424,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let db_path = db_path(app);
             let conn = Connection::open(&db_path).expect("打开数据库失败");
@@ -461,6 +469,7 @@ fn main() {
             stop_sidecar,
             get_sidecar_status,
             check_opencode_installed,
+            get_current_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

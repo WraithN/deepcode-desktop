@@ -38,7 +38,7 @@ export interface AgentAdapter {
   sendMessage(
     instanceId: string,
     message: string,
-    options?: { workspace?: string; sessionId?: string; continueSession?: boolean },
+    options?: { workspace?: string; sessionId?: string; continueSession?: boolean; conversationId?: string },
   ): AsyncGenerator<AgentEvent, void, unknown>;
   setMode(instanceId: string, mode: 'build' | 'plan'): Promise<void>;
   getStatus(instanceId: string): Promise<AgentStatus>;
