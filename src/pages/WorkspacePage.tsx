@@ -4,7 +4,6 @@ import { useAuth } from '@/contexts/AuthContext';
 import { db } from '@/db';
 import { agentManager } from '@/agents/manager';
 import { sessionLogger } from '@/services/logger';
-import { appLog } from '@/utils/logEmitter';
 import type { Conversation, Message, MessageStep, Task, ModifiedFile } from '@/types/types';
 import { Settings, LogOut, Bot, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -379,9 +378,9 @@ export default function WorkspacePage() {
 
   // 发送消息
   const handleSendMessage = async (content: string) => {
-    appLog.log('WorkspacePage', 'handleSendMessage called', { content, hasUser: !!user, hasConversation: !!activeConversation });
+    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'handleSendMessage called', { content, hasUser: !!user, hasConversation: !!activeConversation });
     if (!user || !activeConversation) {
-      appLog.log('WorkspacePage', 'missing user or conversation', { hasUser: !!user, hasConversation: !!activeConversation });
+      sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'missing user or conversation', { hasUser: !!user, hasConversation: !!activeConversation });
       toast.error('请先创建或选择一个会话');
       return;
     }
@@ -424,7 +423,7 @@ export default function WorkspacePage() {
     let streamingMsgId: string | null = null;
 
     const activeAgentInstance = agentInstances.find((a) => a.id === activeAgentId);
-    appLog.log('WorkspacePage', 'activeAgentInstance', { agentId: activeAgentId, found: !!activeAgentInstance });
+    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'activeAgentInstance', { agentId: activeAgentId, found: !!activeAgentInstance });
     if (!activeAgentInstance) {
       toast.error('未找到活跃智能体');
       setIsTyping(false);
@@ -433,16 +432,16 @@ export default function WorkspacePage() {
 
     // Ensure agent is registered in agentManager
     let managed = agentManager.getAgent(activeAgentInstance.id);
-    appLog.log('WorkspacePage', 'checking agentManager', { managed: !!managed });
+    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'checking agentManager', { managed: !!managed });
     if (!managed) {
       try {
-        appLog.log('WorkspacePage', 'registering agent', { agentKey: activeAgentInstance.agentKey, id: activeAgentInstance.id });
+        sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'registering agent', { agentKey: activeAgentInstance.agentKey, id: activeAgentInstance.id });
         await agentManager.addAgent(activeAgentInstance.agentKey, activeAgentInstance.id, activeAgentInstance.displayName, activeAgentInstance.workspace);
         await agentManager.startAgent(activeAgentInstance.id);
         managed = agentManager.getAgent(activeAgentInstance.id)!;
-        appLog.log('WorkspacePage', 'agent registered successfully');
+        sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'agent registered successfully');
       } catch (e) {
-        appLog.error('WorkspacePage', 'failed to register agent', { error: String(e) });
+        sessionLog.add(activeConversation.id, 'error', 'WorkspacePage', 'failed to register agent', { error: String(e) });
         toast.error(`注册智能体失败: ${String(e)}`);
         setIsTyping(false);
         return;
@@ -461,12 +460,12 @@ export default function WorkspacePage() {
     };
     streamingMsgId = streamingMsg.id;
     setMessages((prev) => [...prev, streamingMsg]);
-    appLog.log('WorkspacePage', 'streaming message created', { streamingMsgId });
+    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'streaming message created', { streamingMsgId });
 
     try {
-      appLog.log('WorkspacePage', 'starting agentManager.sendMessage', { agentId: activeAgentInstance.id, content });
+      sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'starting agentManager.sendMessage', { agentId: activeAgentInstance.id, content });
       for await (const event of agentManager.sendMessage(activeAgentInstance.id, content)) {
-        appLog.log('WorkspacePage', 'received event', { eventType: event.type, event });
+        sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'received event', { eventType: event.type });
         await sessionLogger.logEvent(event, { conversationId: activeConversation.id });
 
         switch (event.type) {
@@ -581,14 +580,14 @@ export default function WorkspacePage() {
     } catch (error) {
       hasError = true;
       const errMsg = String(error);
-      appLog.error('WorkspacePage', 'sendMessage error', { error: errMsg, stack: error instanceof Error ? error.stack : undefined });
+      sessionLog.add(activeConversation.id, 'error', 'WorkspacePage', 'sendMessage error', { error: errMsg, stack: error instanceof Error ? error.stack : undefined });
       toast.error(`通信错误: ${errMsg}`);
       await sessionLogger.logError(errMsg, { conversationId: activeConversation.id });
     }
 
     const duration_ms = Date.now() - startTime;
 
-    appLog.log('WorkspacePage', 'sendMessage loop ended', { hasError, finalContentLength: finalContent.length, stepsCount: steps.length });
+    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'sendMessage loop ended', { hasError, finalContentLength: finalContent.length, stepsCount: steps.length });
     if (!hasError) {
       const aiMsg = await db.createMessage({
         conversation_id: activeConversation.id,
@@ -609,7 +608,7 @@ export default function WorkspacePage() {
         setMessages((prev) =>
           prev.map((msg) => (msg.id === streamingMsgId ? enriched : msg)),
         );
-        appLog.log('WorkspacePage', 'ai message saved', { aiMsgId: aiMsg.id, content: finalContent });
+        sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'ai message saved', { aiMsgId: aiMsg.id, content: finalContent });
       }
 
       await sessionLogger.logGeneration(
