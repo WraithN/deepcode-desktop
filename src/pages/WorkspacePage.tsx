@@ -19,6 +19,8 @@ import AgentIcon from '@/components/workspace/AgentIcon';
 import { sessionLog } from '@/store/session-log';
 import SessionLogDrawer from '@/components/workspace/SessionLogDrawer';
 import { invoke } from '@tauri-apps/api/core';
+import { listenAgentEvents, agentSendMessage } from '@/hooks/use-agent-service';
+import { useRustSessionLog } from '@/hooks/use-session-log-rust';
 
 const defaultAgents: AgentInstance[] = [
   { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' } },
@@ -86,6 +88,66 @@ export default function WorkspacePage() {
       setActiveAgentId(agentInstances[0].id);
     }
   }, []);
+
+  // 注册 Rust Session Log 监听
+  useRustSessionLog();
+
+  // 注册 Agent 事件监听
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listenAgentEvents((payload) => {
+      const { event } = payload;
+      // 根据事件类型更新消息状态
+      if (!activeConversation) return;
+      setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (!lastMsg || lastMsg.role !== 'assistant') return prev;
+        switch (event.type) {
+          case 'text_delta':
+            return prev.map((msg, idx) =>
+              idx === prev.length - 1
+                ? { ...msg, content: msg.content + event.content }
+                : msg,
+            );
+          case 'thinking': {
+            const newStep: MessageStep = { type: 'thinking', content: event.content };
+            return prev.map((msg, idx) =>
+              idx === prev.length - 1
+                ? { ...msg, steps: [...(msg.steps || []), newStep] }
+                : msg,
+            );
+          }
+          case 'tool_use': {
+            const newStep: MessageStep = {
+              type: 'tool_use',
+              content: `使用工具 ${event.toolName}...`,
+              toolName: event.toolName,
+              summary: { file: event.args?.file as string, lines: 0, durationMs: 0 },
+            };
+            return prev.map((msg, idx) =>
+              idx === prev.length - 1
+                ? { ...msg, steps: [...(msg.steps || []), newStep] }
+                : msg,
+            );
+          }
+          case 'error':
+            toast.error(`智能体错误: ${event.message}`);
+            return prev;
+          case 'done':
+            return prev.map((msg, idx) =>
+              idx === prev.length - 1 ? { ...msg, is_complete: true } : msg,
+            );
+          default:
+            return prev;
+        }
+      });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [activeConversation]);
 
   // 将相对路径的工作目录解析为绝对路径
   useEffect(() => {
@@ -406,9 +468,7 @@ export default function WorkspacePage() {
       toast.error('请先创建或选择一个会话');
       return;
     }
-    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'handleSendMessage called', { content, hasUser: !!user, hasConversation: !!activeConversation });
     if (!user) {
-      sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'missing user or conversation', { hasUser: !!user, hasConversation: !!activeConversation });
       toast.error('请先创建或选择一个会话');
       return;
     }
@@ -424,68 +484,10 @@ export default function WorkspacePage() {
       return;
     }
 
-    if (userMsg) {
-      setMessages((prev) => [...prev, userMsg]);
-    }
-
-    try {
-      await sessionLogger.startTrace(activeConversation.id, {
-        agent: activeAgent?.agentKey,
-        model: currentModel,
-        userId: user.id,
-      });
-      sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'sessionLogger.startTrace ok');
-    } catch (e) {
-      sessionLog.add(activeConversation.id, 'error', 'WorkspacePage', 'sessionLogger.startTrace failed', { error: String(e) });
-    }
-
-    try {
-      await sessionLogger.logGeneration(
-        `gen-${Date.now()}`,
-        content,
-        undefined,
-        { conversationId: activeConversation.id, role: 'user' },
-      );
-      sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'sessionLogger.logGeneration ok');
-    } catch (e) {
-      sessionLog.add(activeConversation.id, 'error', 'WorkspacePage', 'sessionLogger.logGeneration failed', { error: String(e) });
-    }
-
+    setMessages((prev) => [...prev, userMsg]);
     setIsTyping(true);
-    const startTime = Date.now();
 
-    const steps: MessageStep[] = [];
-    let finalContent = '';
-    let hasError = false;
-    let streamingMsgId: string | null = null;
-
-    const activeAgentInstance = agentInstances.find((a) => a.id === activeAgentId);
-    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'activeAgentInstance', { agentId: activeAgentId, found: !!activeAgentInstance });
-    if (!activeAgentInstance) {
-      toast.error('未找到活跃智能体');
-      setIsTyping(false);
-      return;
-    }
-
-    // Ensure agent is registered in agentManager
-    let managed = agentManager.getAgent(activeAgentInstance.id);
-    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'checking agentManager', { managed: !!managed });
-    if (!managed) {
-      try {
-        sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'registering agent', { agentKey: activeAgentInstance.agentKey, id: activeAgentInstance.id });
-        await agentManager.addAgent(activeAgentInstance.agentKey, activeAgentInstance.id, activeAgentInstance.displayName, activeAgentInstance.workspace);
-        await agentManager.startAgent(activeAgentInstance.id);
-        managed = agentManager.getAgent(activeAgentInstance.id)!;
-        sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'agent registered successfully');
-      } catch (e) {
-        sessionLog.add(activeConversation.id, 'error', 'WorkspacePage', 'failed to register agent', { error: String(e) });
-        toast.error(`注册智能体失败: ${String(e)}`);
-        setIsTyping(false);
-        return;
-      }
-    }
-
-    // 创建流式临时消息，用户可实时看到生成过程
+    // 创建流式临时消息
     const streamingMsg: Message = {
       id: `streaming-${Date.now()}`,
       conversation_id: activeConversation.id,
@@ -495,170 +497,14 @@ export default function WorkspacePage() {
       is_complete: false,
       created_at: new Date().toISOString(),
     };
-    streamingMsgId = streamingMsg.id;
     setMessages((prev) => [...prev, streamingMsg]);
-    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'streaming message created', { streamingMsgId });
 
     try {
-      sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'starting agentManager.sendMessage', { agentId: activeAgentInstance.id, content });
-      for await (const event of agentManager.sendMessage(activeAgentInstance.id, content, activeConversation.id)) {
-        sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'received event', { eventType: event.type });
-        await sessionLogger.logEvent(event, { conversationId: activeConversation.id });
-
-        switch (event.type) {
-          case 'thinking': {
-            const newStep: MessageStep = { type: 'thinking', content: event.content };
-            steps.push(newStep);
-            if (streamingMsgId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId
-                    ? { ...msg, steps: [...steps], content: finalContent }
-                    : msg,
-                ),
-              );
-            }
-            break;
-          }
-          case 'tool_use': {
-            const newStep: MessageStep = {
-              type: 'tool_use',
-              content: `使用工具 ${event.toolName}...`,
-              toolName: event.toolName,
-              summary: { file: event.args?.file as string, lines: 0, durationMs: 0 },
-            };
-            steps.push(newStep);
-            if (streamingMsgId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId
-                    ? { ...msg, steps: [...steps], content: finalContent }
-                    : msg,
-                ),
-              );
-            }
-            break;
-          }
-          case 'tool_result': {
-            const newStep: MessageStep = {
-              type: 'tool_result',
-              content: event.result,
-              toolName: event.toolName,
-              failed: event.failed,
-              summary: { file: event.toolName, lines: 0, durationMs: 0 },
-            };
-            steps.push(newStep);
-            if (streamingMsgId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId
-                    ? { ...msg, steps: [...steps], content: finalContent }
-                    : msg,
-                ),
-              );
-            }
-            break;
-          }
-          case 'ask_permission': {
-            const newStep: MessageStep = {
-              type: 'ask_permission',
-              content: event.message,
-              permissionType: event.toolName,
-            };
-            steps.push(newStep);
-            if (streamingMsgId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId
-                    ? { ...msg, steps: [...steps], content: finalContent }
-                    : msg,
-                ),
-              );
-            }
-            break;
-          }
-          case 'ask_user': {
-            const newStep: MessageStep = {
-              type: 'ask_user',
-              content: '请回答以下问题：',
-              questions: event.questions,
-            };
-            steps.push(newStep);
-            if (streamingMsgId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId
-                    ? { ...msg, steps: [...steps], content: finalContent }
-                    : msg,
-                ),
-              );
-            }
-            break;
-          }
-          case 'text_delta':
-            finalContent += event.content;
-            if (streamingMsgId) {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId ? { ...msg, content: finalContent } : msg,
-                ),
-              );
-            }
-            break;
-          case 'error':
-            hasError = true;
-            toast.error(`智能体错误: ${event.message}`);
-            await sessionLogger.logError(event.message, { conversationId: activeConversation.id });
-            break;
-          case 'done':
-            break;
-        }
-      }
+      await agentSendMessage(activeAgentId, content, activeConversation.id);
     } catch (error) {
-      hasError = true;
       const errMsg = String(error);
-      sessionLog.add(activeConversation.id, 'error', 'WorkspacePage', 'sendMessage error', { error: errMsg, stack: error instanceof Error ? error.stack : undefined });
       toast.error(`通信错误: ${errMsg}`);
-      await sessionLogger.logError(errMsg, { conversationId: activeConversation.id });
-    }
-
-    const duration_ms = Date.now() - startTime;
-
-    sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'sendMessage loop ended', { hasError, finalContentLength: finalContent.length, stepsCount: steps.length });
-    if (!hasError) {
-      const aiMsg = await db.createMessage({
-        conversation_id: activeConversation.id,
-        role: 'assistant',
-        content: finalContent || '（无内容）',
-      });
-
-      if (aiMsg) {
-        const enriched: Message = {
-          ...aiMsg,
-          steps,
-          is_complete: true,
-          token_in: Math.floor(content.length * 0.8),
-          token_out: Math.floor(finalContent.length * 0.9),
-          duration_ms,
-        };
-        // 替换临时消息为最终消息
-        setMessages((prev) =>
-          prev.map((msg) => (msg.id === streamingMsgId ? enriched : msg)),
-        );
-        sessionLog.add(activeConversation.id, 'info', 'WorkspacePage', 'ai message saved', { aiMsgId: aiMsg.id, content: finalContent });
-      }
-
-      await sessionLogger.logGeneration(
-        `gen-${Date.now()}`,
-        content,
-        finalContent,
-        { conversationId: activeConversation.id, role: 'assistant', durationMs: duration_ms },
-      );
-    } else {
-      // 有错误时移除临时消息
-      if (streamingMsgId) {
-        setMessages((prev) => prev.filter((msg) => msg.id !== streamingMsgId));
-      }
+      setMessages((prev) => prev.filter((msg) => msg.id !== streamingMsg.id));
     }
 
     setIsTyping(false);
