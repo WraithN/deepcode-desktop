@@ -13,7 +13,7 @@ use agent_db::{AgentDbManager, agent_db_create_conversation, agent_db_load_conve
 mod sidecar_manager;
 mod agent_db;
 
-pub struct DbState(pub Mutex<Connection>);
+use ai_coding_desktop::DbState;
 
 fn db_path(app_handle: &tauri::App) -> PathBuf {
     let mut path = app_handle.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));

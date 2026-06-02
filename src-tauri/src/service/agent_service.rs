@@ -4,11 +4,11 @@ use crate::models::agent::{CreateInstanceRequest, InstanceInfo, PluginInfo};
 use agent_core::error::{InstanceError, PluginError};
 use agent_core::instance::InstanceConfig;
 use agent_core::logger::SessionLogger;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct AgentService {
     plugins: super::plugin_registry::PluginRegistry,
-    instances: Arc<Mutex<super::instance_registry::InstanceRegistry>>,
+    instances: Arc<tokio::sync::Mutex<super::instance_registry::InstanceRegistry>>,
     logger: Arc<SessionLogger>,
 }
 
@@ -17,7 +17,7 @@ impl AgentService {
         let plugins = super::plugin_registry::PluginRegistry::new();
         Self {
             plugins,
-            instances: Arc::new(Mutex::new(super::instance_registry::InstanceRegistry::new())),
+            instances: Arc::new(tokio::sync::Mutex::new(super::instance_registry::InstanceRegistry::new())),
             logger,
         }
     }
@@ -38,7 +38,7 @@ impl AgentService {
             .collect()
     }
 
-    pub fn create_instance(
+    pub async fn create_instance(
         &self,
         req: CreateInstanceRequest,
     ) -> Result<InstanceInfo, PluginError> {
@@ -66,7 +66,7 @@ impl AgentService {
 
         self.instances
             .lock()
-            .unwrap()
+            .await
             .insert(id, Arc::new(tokio::sync::Mutex::new(instance)));
 
         Ok(info)
@@ -80,7 +80,7 @@ impl AgentService {
         let instance_arc = self
             .instances
             .lock()
-            .unwrap()
+            .await
             .get(instance_id)
             .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
 
@@ -92,7 +92,7 @@ impl AgentService {
         let instance_arc = self
             .instances
             .lock()
-            .unwrap()
+            .await
             .get(instance_id)
             .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
 
@@ -100,10 +100,10 @@ impl AgentService {
         instance.stop().await
     }
 
-    pub fn get_instance(&self, instance_id: &str) -> Option<InstanceInfo> {
-        let registry = self.instances.lock().unwrap();
+    pub async fn get_instance(&self, instance_id: &str) -> Option<InstanceInfo> {
+        let registry = self.instances.lock().await;
         let instance = registry.get(instance_id)?;
-        let guard = instance.blocking_lock();
+        let guard = instance.lock().await;
         Some(InstanceInfo {
             id: guard.id().to_string(),
             plugin_key: "unknown".to_string(),
@@ -113,21 +113,19 @@ impl AgentService {
         })
     }
 
-    pub fn list_instances(&self) -> Vec<InstanceInfo> {
-        let registry = self.instances.lock().unwrap();
-        registry
-            .list()
-            .into_iter()
-            .map(|(id, instance)| {
-                let guard = instance.blocking_lock();
-                InstanceInfo {
-                    id: id.clone(),
-                    plugin_key: "unknown".to_string(),
-                    name: guard.id().to_string(),
-                    workspace: "".to_string(),
-                    status: guard.status(),
-                }
-            })
-            .collect()
+    pub async fn list_instances(&self) -> Vec<InstanceInfo> {
+        let registry = self.instances.lock().await;
+        let mut result = Vec::new();
+        for (id, instance) in registry.list() {
+            let guard = instance.lock().await;
+            result.push(InstanceInfo {
+                id: id.clone(),
+                plugin_key: "unknown".to_string(),
+                name: guard.id().to_string(),
+                workspace: "".to_string(),
+                status: guard.status(),
+            });
+        }
+        result
     }
 }
