@@ -7,6 +7,12 @@
     "fs:default",
     "fs:allow-write-text-file",
     "fs:allow-read-text-file",
-    "fs:allow-mkdir"
+    "fs:allow-mkdir",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "opencode", "cmd": "opencode", "args": true }
+      ]
+    }
   ]
 }
