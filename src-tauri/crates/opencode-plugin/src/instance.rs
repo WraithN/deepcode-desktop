@@ -3,7 +3,8 @@ use agent_core::event::AgentEvent;
 use agent_core::instance::{AgentInstance, InstanceConfig, InstanceStatus};
 use agent_core::logger::{LogLevel, SessionLogger};
 use agent_runtime::process::{kill_process, spawn_command, ProcessHandle};
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 use tauri::Emitter;
@@ -48,7 +49,6 @@ impl OpencodeInstance {
     }
 }
 
-#[async_trait]
 impl AgentInstance for OpencodeInstance {
     fn id(&self) -> &str {
         &self.config.id
@@ -93,7 +93,7 @@ impl AgentInstance for OpencodeInstance {
                 LogLevel::Debug,
                 "opencode-plugin",
                 "CLI args built",
-                Some(serde_json::json!({ "args": args })),
+                Some(serde_json::json!({ "args": &args })),
             );
 
             let mut handle = spawn_command("opencode", &args, &self.config.workspace)
@@ -151,12 +151,12 @@ impl AgentInstance for OpencodeInstance {
 
     fn stop(&self) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>> {
         Box::pin(async move {
-            let handle = {
+            let mut handle = {
                 let mut guard = self.process_handle.lock().unwrap();
                 guard.take()
             };
-            if let Some(mut handle) = handle {
-                kill_process(&mut handle).await.map_err(|e| InstanceError::ProcessError(e))?;
+            if let Some(ref mut h) = &mut handle {
+                kill_process(h).await.map_err(|e| InstanceError::ProcessError(e))?;
             }
             {
                 let mut status = self.status.lock().unwrap();
@@ -164,5 +164,6 @@ impl AgentInstance for OpencodeInstance {
             }
             self.emit_status(InstanceStatus::Stopped);
             Ok(())
+        })
     }
 }
