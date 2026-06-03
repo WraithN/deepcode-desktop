@@ -75,6 +75,7 @@ impl AgentService {
     pub async fn send_message(
         &self,
         instance_id: &str,
+        conversation_id: &str,
         message: &str,
     ) -> Result<(), InstanceError> {
         let instance_arc = self
@@ -85,9 +86,10 @@ impl AgentService {
             .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
 
         let message = message.to_string();
+        let conversation_id = conversation_id.to_string();
         tokio::spawn(async move {
             let instance = instance_arc.lock().await;
-            let _ = instance.send_message(&message).await;
+            let _ = instance.send_message(&conversation_id, &message).await;
         });
 
         Ok(())
@@ -111,7 +113,7 @@ impl AgentService {
         let guard = instance.lock().await;
         Some(InstanceInfo {
             id: guard.id().to_string(),
-            plugin_key: "unknown".to_string(),
+            plugin_key: guard.plugin_key().to_string(),
             name: guard.id().to_string(),
             workspace: "".to_string(),
             status: guard.status(),
@@ -125,7 +127,7 @@ impl AgentService {
             let guard = instance.lock().await;
             result.push(InstanceInfo {
                 id: id.clone(),
-                plugin_key: "unknown".to_string(),
+                plugin_key: guard.plugin_key().to_string(),
                 name: guard.id().to_string(),
                 workspace: "".to_string(),
                 status: guard.status(),

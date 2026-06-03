@@ -23,10 +23,14 @@ pub struct InstanceConfig {
 pub trait AgentInstance: Send + Sync {
     fn id(&self) -> &str;
     fn status(&self) -> InstanceStatus;
+    fn plugin_key(&self) -> &'static str;
+
     fn send_message(
         &self,
+        conversation_id: &str,
         message: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
+
     fn stop(&self) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
 }
 

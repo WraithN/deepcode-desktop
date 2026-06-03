@@ -41,7 +41,7 @@ pub async fn agent_send_message(
         Some(serde_json::json!({ "instance_id": &instance_id, "message": &message })),
     );
 
-    match service.send_message(&instance_id, &message).await {
+    match service.send_message(&instance_id, &conversation_id, &message).await {
         Ok(_) => {
             logger.log(
                 &conversation_id,

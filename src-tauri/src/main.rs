@@ -16,7 +16,6 @@ mod commands;
 mod models;
 mod service;
 mod gateway;
-mod mcp;
 
 use ai_coding_desktop::DbState;
 
