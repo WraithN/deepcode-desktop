@@ -9,10 +9,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
-use sidecar_manager::{SidecarManager, check_opencode_installed, get_sidecar_status, start_sidecar, stop_sidecar};
 use agent_db::{AgentDbManager, agent_db_create_conversation, agent_db_load_conversations, agent_db_create_message, agent_db_load_messages, agent_db_delete_agent};
 
-mod sidecar_manager;
 mod agent_db;
 mod commands;
 mod models;
@@ -447,7 +445,6 @@ fn main() {
             init_db(&conn).expect("初始化数据库失败");
             app.manage(DbState(Mutex::new(conn)));
             app.manage(AgentDbManager::new());
-            app.manage(SidecarManager::new());
 
             // 初始化 SessionLogger
             let app_handle = app.handle().clone();
@@ -474,16 +471,6 @@ fn main() {
                 addr: Mutex::new(Some(addr)),
             });
 
-            // 启动 Sidecar 健康检查后台线程（每 5 秒）
-            let app_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(5));
-                    if let Some(manager) = app_handle.try_state::<SidecarManager>() {
-                        manager.health_check();
-                    }
-                }
-            });
 
             Ok(())
         })
@@ -506,19 +493,7 @@ fn main() {
             agent_db_create_message,
             agent_db_load_messages,
             agent_db_delete_agent,
-            start_sidecar,
-            stop_sidecar,
-            get_sidecar_status,
-            check_opencode_installed,
             get_current_dir,
-            commands::agent::agent_list_plugins,
-            commands::agent::agent_create_instance,
-            commands::agent::agent_send_message,
-            commands::agent::agent_stop_instance,
-            commands::agent::agent_get_instance,
-            commands::agent::agent_list_instances,
-            commands::agent::agent_test_emit,
-            commands::agent::agent_test_emit_agent_event,
             commands::session_log::session_log_load,
             commands::system::get_websocket_url,
         ])

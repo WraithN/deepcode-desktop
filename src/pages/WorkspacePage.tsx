@@ -2,14 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '@/db';
-import { agentManager } from '@/agents/manager';
 import type { Conversation, Task, ModifiedFile } from '@/types/types';
 import { Settings, LogOut, Bot, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { toast } from 'sonner';
 import LeftPanel from '@/components/workspace/LeftPanel';
-import type { AgentInstance } from '@/components/workspace/LeftPanel';
+import type { AgentInstance } from '@/stores';
 import ChatPanel from '@/components/workspace/ChatPanel';
 import RightPanel from '@/components/workspace/RightPanel';
 import SettingsDialog from '@/components/workspace/SettingsDialog';
@@ -21,11 +20,11 @@ import { useWebSocketStore, useChatStore, useAgentStore, useLogStore } from '@/s
 import type { AgentEvent } from '@/stores';
 
 const defaultAgents: AgentInstance[] = [
-  { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' } },
-  { id: 'default-2', agentKey: 'claude-code', displayName: '小文', workspace: '.', modelConfig: { type: 'builtin', modelId: 'claude-3-opus' } },
-  { id: 'default-3', agentKey: 'cursor-agent', displayName: '小游', workspace: '.', modelConfig: { type: 'builtin', modelId: 'deepseek-v3' } },
-  { id: 'default-4', agentKey: 'codex', displayName: '小柯', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' } },
-  { id: 'default-5', agentKey: 'custom', displayName: '小C', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' } },
+  { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' }, status: 'stopped' },
+  { id: 'default-2', agentKey: 'claude-code', displayName: '小文', workspace: '.', modelConfig: { type: 'builtin', modelId: 'claude-3-opus' }, status: 'stopped' },
+  { id: 'default-3', agentKey: 'cursor-agent', displayName: '小游', workspace: '.', modelConfig: { type: 'builtin', modelId: 'deepseek-v3' }, status: 'stopped' },
+  { id: 'default-4', agentKey: 'codex', displayName: '小柯', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' }, status: 'stopped' },
+  { id: 'default-5', agentKey: 'custom', displayName: '小C', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' }, status: 'stopped' },
 ];
 
 function getStoredAgents(): AgentInstance[] {
@@ -38,6 +37,7 @@ function getStoredAgents(): AgentInstance[] {
         ...a,
         workspace: a.workspace || '.',
         modelConfig: a.modelConfig || { type: 'builtin', modelId: 'gpt-4' },
+        status: a.status || 'stopped',
       }));
     }
   } catch { /* ignore */ }
@@ -276,6 +276,7 @@ export default function WorkspacePage() {
             displayName: name,
             workspace: localStorage.getItem('default_agent_workspace') || '.',
             modelConfig: { type: 'builtin', modelId: 'gpt-4' },
+            status: 'stopped',
           };
           addAgentInstance(newInstance);
         }
@@ -358,6 +359,7 @@ export default function WorkspacePage() {
       displayName,
       workspace: workspace || '.',
       modelConfig: { type: 'builtin', modelId: 'gpt-4' },
+      status: 'stopped',
     };
     addAgentInstance(newInstance);
     toast.success(`已添加智能体 ${displayName}`);
@@ -384,22 +386,6 @@ export default function WorkspacePage() {
     setChatActiveInstanceId(id);
     const instance = agentInstances.find((a) => a.id === id);
     if (!instance) return;
-
-    // Ensure agent is managed and started
-    let managed = agentManager.getAgent(id);
-    if (!managed) {
-      try {
-        await agentManager.addAgent(instance.agentKey, id, instance.displayName, instance.workspace);
-        managed = agentManager.getAgent(id)!;
-      } catch (e) {
-        toast.error(String(e));
-        return;
-      }
-    }
-
-    if (managed.status.state === 'stopped') {
-      await agentManager.startAgent(id);
-    }
 
     // 查找该智能体类型的最新会话
     const agentConvs = conversations.filter((c) => c.agent === instance.agentKey);

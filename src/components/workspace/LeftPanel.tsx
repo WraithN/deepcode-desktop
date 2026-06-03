@@ -11,6 +11,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { useAgentStore } from '@/stores';
+import type { AgentInstance } from '@/stores';
 
 export interface AgentModelConfig {
   type: 'builtin' | 'custom';
@@ -18,14 +19,6 @@ export interface AgentModelConfig {
   name?: string; // custom model name
   url?: string; // custom api url
   apiKey?: string; // custom api key
-}
-
-export interface AgentInstance {
-  id: string;
-  agentKey: string;
-  displayName: string;
-  workspace: string;
-  modelConfig?: AgentModelConfig;
 }
 
 interface LeftPanelProps {

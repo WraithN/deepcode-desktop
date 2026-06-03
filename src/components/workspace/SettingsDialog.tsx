@@ -12,7 +12,7 @@ import {
   Bot, Eye, EyeOff, Globe, Palette, Save, RefreshCw, Edit2, Tag, Layers,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import type { AgentInstance } from './LeftPanel';
+import type { AgentInstance } from '@/stores';
 
 interface SettingsDialogProps {
   open: boolean;

@@ -3,7 +3,7 @@ import { writeTextFile, mkdir, BaseDirectory } from '@tauri-apps/plugin-fs';
 function isTauri(): boolean {
   return !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
 }
-import type { AgentEvent } from '@/agents/types';
+import type { AgentEvent } from '@/stores';
 
 interface LogEntry {
   timestamp: string;
