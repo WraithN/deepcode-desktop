@@ -1,4 +1,4 @@
-# AI Coding Desktop
+# DeepHarness Desktop
 
 AI 编码助手桌面应用
 

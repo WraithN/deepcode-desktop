@@ -6,12 +6,15 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use sidecar_manager::{SidecarManager, check_opencode_installed, get_sidecar_status, start_sidecar, stop_sidecar};
 use agent_db::{AgentDbManager, agent_db_create_conversation, agent_db_load_conversations, agent_db_create_message, agent_db_load_messages, agent_db_delete_agent};
 
 mod sidecar_manager;
 mod agent_db;
+mod commands;
+mod models;
+mod service;
 
 use ai_coding_desktop::DbState;
 
@@ -433,6 +436,22 @@ fn main() {
             app.manage(AgentDbManager::new());
             app.manage(SidecarManager::new());
 
+            // 初始化 SessionLogger
+            let app_handle = app.handle().clone();
+            let logger_db_path = db_path.clone();
+            let logger_conn = Connection::open(&logger_db_path).expect("打开日志数据库失败");
+            let logger = std::sync::Arc::new(agent_core::logger::SessionLogger::new(app_handle, logger_conn));
+            app.manage(logger.clone());
+
+            // 初始化 AgentService 并注册 opencode plugin
+            let app_handle = app.handle().clone();
+            let mut agent_service = service::agent_service::AgentService::new(logger.clone());
+            agent_service.register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(
+                app_handle,
+                logger.clone(),
+            )));
+            app.manage(agent_service);
+
             // 启动 Sidecar 健康检查后台线程（每 5 秒）
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -470,6 +489,15 @@ fn main() {
             get_sidecar_status,
             check_opencode_installed,
             get_current_dir,
+            commands::agent::agent_list_plugins,
+            commands::agent::agent_create_instance,
+            commands::agent::agent_send_message,
+            commands::agent::agent_stop_instance,
+            commands::agent::agent_get_instance,
+            commands::agent::agent_list_instances,
+            commands::agent::agent_test_emit,
+            commands::agent::agent_test_emit_agent_event,
+            commands::session_log::session_log_load,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

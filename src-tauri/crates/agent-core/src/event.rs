@@ -13,3 +13,33 @@ pub enum AgentEvent {
     Error { message: String },
     Done,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_event_serde_thinking() {
+        let ev = AgentEvent::Thinking { content: "hello".into() };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(s, r#"{"type":"thinking","content":"hello"}"#);
+    }
+
+    #[test]
+    fn test_event_serde_tool_use() {
+        let ev = AgentEvent::ToolUse {
+            tool_name: "read_file".into(),
+            args: json!({"path": "/tmp/a.txt"}),
+        };
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(s, r#"{"type":"tool_use","tool_name":"read_file","args":{"path":"/tmp/a.txt"}}"#);
+    }
+
+    #[test]
+    fn test_event_serde_done() {
+        let ev = AgentEvent::Done;
+        let s = serde_json::to_string(&ev).unwrap();
+        assert_eq!(s, r#"{"type":"done"}"#);
+    }
+}

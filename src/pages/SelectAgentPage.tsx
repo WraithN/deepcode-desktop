@@ -145,7 +145,7 @@ export default function SelectAgentPage() {
             />
             <DirectoryPickerButton onSelect={setWorkspace} />
           </div>
-          <span className="text-[10px] text-muted-foreground mt-1 block">智能体将以此目录作为工作根目录</span>
+          <span className="text-[11px] text-muted-foreground mt-1 block">智能体将以此目录作为工作根目录</span>
         </div>
 
         {/* 智能体列表 */}

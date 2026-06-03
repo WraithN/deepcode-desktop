@@ -29,3 +29,30 @@ pub trait AgentInstance: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
     fn stop(&self) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_instance_status_serde() {
+        let s = serde_json::to_string(&InstanceStatus::Stopped).unwrap();
+        assert_eq!(s, r#""stopped""#);
+        let s = serde_json::to_string(&InstanceStatus::Running { pid: 1234 }).unwrap();
+        assert_eq!(s, r#"{"running":{"pid":1234}}"#);
+        let s = serde_json::to_string(&InstanceStatus::Crashed("oops".into())).unwrap();
+        assert_eq!(s, r#"{"crashed":"oops"}"#);
+    }
+
+    #[test]
+    fn test_instance_config() {
+        let cfg = InstanceConfig {
+            id: "i-1".into(),
+            name: "test".into(),
+            workspace: "/tmp".into(),
+            session_id: Some("s-1".into()),
+        };
+        assert_eq!(cfg.id, "i-1");
+        assert_eq!(cfg.session_id.as_deref(), Some("s-1"));
+    }
+}

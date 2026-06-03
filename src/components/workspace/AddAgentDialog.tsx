@@ -129,7 +129,7 @@ export default function AddAgentDialog({ open, onOpenChange, onAddAgent, existin
               <button
                 type="button"
                 onClick={() => setDisplayName(generateName([...existingNames, displayName]))}
-                className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors"
+                className="flex items-center gap-1 px-2.5 py-1.5 text-[12px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors"
               >
                 <Sparkles className="w-3 h-3" />
                 随机
@@ -150,7 +150,7 @@ export default function AddAgentDialog({ open, onOpenChange, onAddAgent, existin
               />
               <DirectoryPickerButton onSelect={setWorkspace} />
             </div>
-            <span className="text-[10px] text-muted-foreground mt-1 block">智能体将以此目录作为工作根目录</span>
+            <span className="text-[11px] text-muted-foreground mt-1 block">智能体将以此目录作为工作根目录</span>
           </div>
 
           {/* 选择智能体类型 */}

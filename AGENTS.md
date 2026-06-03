@@ -1,12 +1,12 @@
-# AGENTS.md — AI Coding Desktop 项目指南
+# AGENTS.md — DeepHarness Desktop 项目指南
 
-> 本文件面向 AI 编程助手。阅读前请确认你已了解：本项目是一个**AI Coding 桌面应用**（Web + Tauri 桌面端），使用中文作为界面和文档的主要语言。
+> 本文件面向 AI 编程助手。阅读前请确认你已了解：本项目是一个**DeepHarness 桌面应用**（Web + Tauri 桌面端），使用中文作为界面和文档的主要语言。
 
 ---
 
 ## 1. 项目概述
 
-- **名称**：`ai-coding-desktop`（AI Coding Desktop）
+- **名称**：`ai-coding-desktop`（DeepHarness Desktop）
 - **类型**：React 单页应用（SPA），同时支持 Tauri 打包为桌面端程序
 - **核心功能**：
   - 用户登录/注册（基于本地 SQLite）

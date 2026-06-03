@@ -74,7 +74,7 @@ function PermissionStep({ step, onAnswer }: {
     <div className={`rounded-md border ${config.border} ${config.bg} overflow-hidden`}>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <Icon className={`w-3 h-3 shrink-0 ${config.labelColor}`} />
-        <span className={`text-[11px] font-medium ${config.labelColor}`}>{config.label}{step.permissionType && ` · ${step.permissionType}`}</span>
+        <span className={`text-[12px] font-medium ${config.labelColor}`}>{config.label}{step.permissionType && ` · ${step.permissionType}`}</span>
       </div>
       <div className="px-3 pb-2 text-xs text-foreground leading-relaxed whitespace-pre-wrap">{step.content}</div>
       <div className="flex flex-col gap-1.5 px-3 pb-3">
@@ -97,7 +97,7 @@ function UserQuestionsStep({ onSubmit }: {
     <div className={`rounded-md border ${config.border} ${config.bg} overflow-hidden`}>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <Icon className={`w-3 h-3 shrink-0 ${config.labelColor}`} />
-        <span className={`text-[11px] font-medium ${config.labelColor}`}>{config.label}</span>
+        <span className={`text-[12px] font-medium ${config.labelColor}`}>{config.label}</span>
       </div>
       <div className="px-3 pb-2 text-xs text-foreground leading-relaxed">请选择一个选项或输入自定义答案</div>
       <div className="flex flex-col gap-1.5 px-3 pb-3">
@@ -163,20 +163,20 @@ function StepItem({ step, index, onAnswerPermission, onAnswerUser, onRetry }: {
       <div className={`rounded-md border ${config.border} ${config.bg} overflow-hidden animate-in fade-in slide-in-from-bottom-1 duration-300`} style={{ animationDelay: `${index * 150}ms`, animationFillMode: 'both' }}>
         <div className="flex items-center gap-2 px-3 py-1.5">
           <Icon className={`w-3 h-3 shrink-0 ${config.labelColor} ${!isDone ? 'animate-pulse' : ''}`} />
-          <span className={`text-[11px] font-medium ${config.labelColor}`}>{isDone ? '压缩完成' : '压缩中'}</span>
+          <span className={`text-[12px] font-medium ${config.labelColor}`}>{isDone ? '压缩完成' : '压缩中'}</span>
           {isDone && (
-            <span className="ml-auto text-[10px] text-green-400">
+            <span className="ml-auto text-[11px] text-green-400">
               {((1 - ratio) * 100).toFixed(1)}% 压缩比
             </span>
           )}
         </div>
         <div className="px-3 pb-2 text-xs text-foreground leading-relaxed">
           <div className="flex items-center gap-3 mt-1">
-            <span className="text-[10px] text-muted-foreground">原始 {originalSize.toLocaleString()} bytes</span>
+            <span className="text-[11px] text-muted-foreground">原始 {originalSize.toLocaleString()} bytes</span>
             {isDone && (
               <>
-                <span className="text-[10px] text-muted-foreground">→</span>
-                <span className="text-[10px] text-muted-foreground">压缩后 {compressedSize.toLocaleString()} bytes</span>
+                <span className="text-[11px] text-muted-foreground">→</span>
+                <span className="text-[11px] text-muted-foreground">压缩后 {compressedSize.toLocaleString()} bytes</span>
               </>
             )}
           </div>
@@ -189,18 +189,18 @@ function StepItem({ step, index, onAnswerPermission, onAnswerUser, onRetry }: {
     <div className={`rounded-md border ${isFailed ? 'border-destructive/30' : config.border} ${isFailed ? 'bg-destructive/5' : config.bg} overflow-hidden animate-in fade-in slide-in-from-bottom-1 duration-300`} style={{ animationDelay: `${index * 150}ms`, animationFillMode: 'both' }}>
       <div className="flex items-center gap-2 px-3 py-1.5">
         {isFailed ? <AlertCircle className="w-3 h-3 shrink-0 text-destructive" /> : <Icon className={`w-3 h-3 shrink-0 ${config.labelColor}`} />}
-        <span className={`text-[11px] font-medium ${isFailed ? 'text-destructive' : config.labelColor}`}>
+        <span className={`text-[12px] font-medium ${isFailed ? 'text-destructive' : config.labelColor}`}>
           {isFailed ? '执行失败' : config.label}{step.toolName && ` · ${step.toolName}`}
         </span>
         {/* 工具调用摘要 */}
         {step.summary && (
-          <span className="ml-2 flex items-center gap-1 text-[10px] text-muted-foreground">
+          <span className="ml-2 flex items-center gap-1 text-[11px] text-muted-foreground">
             {step.summary.file && <><FileCode className="w-2.5 h-2.5" />{step.summary.file}</>}
             {step.summary.lines !== undefined && <><AlignLeft className="w-2.5 h-2.5" />{step.summary.lines}行</>}
             {step.summary.durationMs !== undefined && <><Timer className="w-2.5 h-2.5" />{(step.summary.durationMs / 1000).toFixed(1)}s</>}
           </span>
         )}
-        {isCollapsible && <button type="button" onClick={() => setExpanded(!expanded)} className="ml-auto text-[10px] text-muted-foreground hover:text-foreground transition-colors">{expanded ? '收起' : '展开'}</button>}
+        {isCollapsible && <button type="button" onClick={() => setExpanded(!expanded)} className="ml-auto text-[11px] text-muted-foreground hover:text-foreground transition-colors">{expanded ? '收起' : '展开'}</button>}
       </div>
       {expanded && (
         <div className="px-3 pb-2">
@@ -209,7 +209,7 @@ function StepItem({ step, index, onAnswerPermission, onAnswerUser, onRetry }: {
             <button
               type="button"
               onClick={onRetry}
-              className="flex items-center gap-1 mb-2 px-2 py-1 text-[11px] rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors border border-primary/20"
+              className="flex items-center gap-1 mb-2 px-2 py-1 text-[12px] rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors border border-primary/20"
             >
               <RefreshCw className="w-3 h-3" />
               点击重试
@@ -221,13 +221,13 @@ function StepItem({ step, index, onAnswerPermission, onAnswerUser, onRetry }: {
               <button
                 type="button"
                 onClick={() => setShowDiff(!showDiff)}
-                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors mb-1"
+                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors mb-1"
               >
                 <FileCode className="w-3 h-3" />
                 {showDiff ? '隐藏Diff' : '查看Diff'}
               </button>
               {showDiff && (
-                <div className="rounded border border-border overflow-hidden text-[10px] font-mono leading-relaxed max-h-48 overflow-y-auto">
+                <div className="rounded border border-border overflow-hidden text-[11px] font-mono leading-relaxed max-h-48 overflow-y-auto">
                   {step.diff.split('\n').map((line, i) => {
                     if (line.startsWith('+')) return <div key={i} className="px-2 bg-green-400/10 text-green-400">{line}</div>;
                     if (line.startsWith('-')) return <div key={i} className="px-2 bg-red-400/10 text-red-400">{line}</div>;
@@ -263,15 +263,15 @@ function ReadFileContent({ content }: { content: string }) {
           return (
             <div key={i} className="my-2 rounded overflow-hidden border border-border">
               <div className="flex items-center justify-between px-3 py-1 bg-secondary/50 border-b border-border">
-                <span className="text-[10px] text-muted-foreground font-mono">{lang || 'text'}</span>
+                <span className="text-[11px] text-muted-foreground font-mono">{lang || 'text'}</span>
               </div>
-              <pre className="p-3 text-[11px] font-mono leading-relaxed overflow-x-auto bg-background/50"><code>{code}</code></pre>
+              <pre className="p-3 text-[12px] font-mono leading-relaxed overflow-x-auto bg-background/50"><code>{code}</code></pre>
             </div>
           );
         }
         // Markdown 内联格式
         const formatted = part
-          .replace(/`([^`]+)`/g, (_, code) => `<code class="px-1 py-0.5 rounded bg-secondary text-[10px] font-mono text-primary">${code}</code>`)
+          .replace(/`([^`]+)`/g, (_, code) => `<code class="px-1 py-0.5 rounded bg-secondary text-[11px] font-mono text-primary">${code}</code>`)
           .replace(/\*\*([^*]+)\*\*/g, (_, text) => `<strong class="font-semibold">${text}</strong>`)
           .replace(/\*([^*]+)\*/g, (_, text) => `<em class="italic">${text}</em>`);
         return (
@@ -315,7 +315,7 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
         return (
           <div key={i} className="my-2 rounded overflow-hidden border border-border">
             <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/50 border-b border-border">
-              <span className="text-[10px] text-muted-foreground font-mono">{lang}</span>
+              <span className="text-[11px] text-muted-foreground font-mono">{lang}</span>
               <button type="button" onClick={handleCopy} className="text-muted-foreground hover:text-foreground transition-colors">{copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}</button>
             </div>
             <pre className="p-3 text-xs font-mono leading-relaxed overflow-x-auto bg-background/50"><code>{code}</code></pre>
@@ -333,7 +333,7 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
       <div className="flex gap-3 px-4 py-3 justify-end group">
         <div className="flex-1 min-w-0 max-w-[85%]">
           <div className="flex items-center justify-end gap-2 mb-1">
-            <span className="text-[10px] text-muted-foreground">你</span>
+            <span className="text-[11px] text-muted-foreground">你</span>
           </div>
           <div className="bg-primary/15 rounded-lg px-4 py-2.5 text-sm text-foreground leading-relaxed">{renderContent(message.content)}</div>
           {/* 用户消息底部操作按钮 */}
@@ -341,7 +341,7 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
             <button
               type="button"
               onClick={handleCopy}
-              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-secondary/50"
+              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-secondary/50"
             >
               {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
               复制
@@ -349,7 +349,7 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
             <button
               type="button"
               onClick={() => onEditUserMessage?.(message.content)}
-              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-secondary/50"
+              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors px-1.5 py-0.5 rounded hover:bg-secondary/50"
             >
               <Pencil className="w-3 h-3" />
               编辑
@@ -372,15 +372,15 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
       </div>
       <div className="flex-1 min-w-0 max-w-[85%]">
         <div className="flex items-center gap-1.5 mb-1">
-          <span className="text-[10px] text-muted-foreground">AI助手</span>
+          <span className="text-[11px] text-muted-foreground">AI助手</span>
           {!isComplete && (
-            <span className="flex items-center gap-1 text-[10px] text-primary">
+            <span className="flex items-center gap-1 text-[11px] text-primary">
               <Loader2 className="w-2.5 h-2.5 animate-spin" />
               进行中
             </span>
           )}
           {isComplete && (
-            <span className="flex items-center gap-1 text-[10px] text-green-400">
+            <span className="flex items-center gap-1 text-[11px] text-green-400">
               <Check className="w-2.5 h-2.5" />
               已完成
             </span>
@@ -423,17 +423,17 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
         {isComplete && (message.token_in || message.token_out || message.duration_ms) && (
           <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border/50">
             {message.token_in !== undefined && (
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-[11px] text-muted-foreground">
                 输入 {message.token_in} tokens
               </span>
             )}
             {message.token_out !== undefined && (
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-[11px] text-muted-foreground">
                 输出 {message.token_out} tokens
               </span>
             )}
             {message.duration_ms !== undefined && (
-              <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground">
+              <span className="flex items-center gap-0.5 text-[11px] text-muted-foreground">
                 <Clock className="w-2.5 h-2.5" />
                 {(message.duration_ms / 1000).toFixed(1)}s
               </span>
@@ -452,7 +452,7 @@ function ModeSelector({ value, onChange }: { value: 'plan' | 'build'; onChange: 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button type="button" className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors">
+        <button type="button" className="flex items-center gap-1 px-2 py-0.5 text-[12px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors">
           <Settings2 className="w-2.5 h-2.5 text-muted-foreground" />
           {value === 'plan' ? 'Plan' : 'Build'}
           <ChevronUp className={`w-2.5 h-2.5 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -480,7 +480,7 @@ function ModelSelector({ value, onChange }: { value: string; onChange: (v: strin
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button type="button" className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors">
+        <button type="button" className="flex items-center gap-1 px-2 py-0.5 text-[12px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors">
           {current?.label || value}
           <ChevronUp className={`w-2.5 h-2.5 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
@@ -576,7 +576,7 @@ function SkillSelector({ value, onChange, onInsertSkill }: { value: string; onCh
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button type="button" className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors">
+        <button type="button" className="flex items-center gap-1 px-2 py-0.5 text-[12px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors">
           <Zap className="w-2.5 h-2.5 text-muted-foreground" />
           技能
           <ChevronUp className={`w-2.5 h-2.5 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -589,7 +589,7 @@ function SkillSelector({ value, onChange, onInsertSkill }: { value: string; onCh
               key={cat.key}
               type="button"
               onClick={() => setActiveCategory(cat.key)}
-              className={`px-3 py-2 text-[11px] whitespace-nowrap transition-colors flex-shrink-0 ${
+              className={`px-3 py-2 text-[12px] whitespace-nowrap transition-colors flex-shrink-0 ${
                 activeCategory === cat.key
                   ? 'text-primary border-b-2 border-primary'
                   : 'text-muted-foreground hover:text-foreground'
@@ -615,7 +615,7 @@ function SkillSelector({ value, onChange, onInsertSkill }: { value: string; onCh
                 }`}
               >
                 <span className="font-medium">{skill.name}</span>
-                <span className="text-muted-foreground ml-2 text-[11px]">{skill.desc}</span>
+                <span className="text-muted-foreground ml-2 text-[12px]">{skill.desc}</span>
               </button>
             ))}
           </div>
@@ -773,7 +773,7 @@ export default function ChatPanel({
         {messages.length === 0 && !activeConversation ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
             <Bot className="w-12 h-12 mb-4 opacity-30" />
-            <p className="text-sm">欢迎使用 AI Coding</p>
+            <p className="text-sm">欢迎使用 DeepHarness</p>
             <p className="text-xs mt-1">点击左侧会话图标开始编码</p>
           </div>
         ) : messages.length === 0 ? (
@@ -802,7 +802,7 @@ export default function ChatPanel({
               <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-primary border-2 border-background animate-pulse" />
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-[10px] text-muted-foreground mb-1">AI助手</div>
+              <div className="text-[11px] text-muted-foreground mb-1">AI助手</div>
               <div className="flex items-center gap-1">
                 <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
                 <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:0.2s]" />
@@ -825,15 +825,15 @@ export default function ChatPanel({
         {/* 状态栏：模型 + 上下文 + Token统计 */}
         <div className="flex items-center justify-between mb-2 px-0.5">
           <div className="flex items-center gap-3">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[11px] text-muted-foreground">
               模型: <span className="text-foreground font-medium">{modelLabel}</span>
             </span>
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-muted-foreground">上下文</span>
+              <span className="text-[11px] text-muted-foreground">上下文</span>
               <div className="w-16 h-1.5 bg-secondary rounded-full overflow-hidden">
                 <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${contextPercent}%` }} />
               </div>
-              <span className="text-[10px] text-muted-foreground w-6 text-right">{contextPercent}%</span>
+              <span className="text-[11px] text-muted-foreground w-6 text-right">{contextPercent}%</span>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -842,10 +842,10 @@ export default function ChatPanel({
               const totalOut = messages.filter((m) => m.role === 'assistant').reduce((sum, m) => sum + (m.token_out || 0), 0);
               return (
                 <>
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-[11px] text-muted-foreground">
                     输入 <span className="text-foreground font-medium">{totalIn.toLocaleString()}</span> tokens
                   </span>
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-[11px] text-muted-foreground">
                     输出 <span className="text-foreground font-medium">{totalOut.toLocaleString()}</span> tokens
                   </span>
                 </>
@@ -870,7 +870,7 @@ export default function ChatPanel({
           <div className="flex items-center justify-between mt-1">
             {/* 左侧工具按钮 */}
             <div className="flex items-center gap-1">
-              <button type="button" className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors">
+              <button type="button" className="flex items-center gap-1 px-2 py-0.5 text-[12px] rounded bg-secondary border border-border text-foreground hover:bg-secondary/80 transition-colors">
                 <FileCode className="w-2.5 h-2.5 text-muted-foreground" />
                 代码
               </button>
@@ -884,7 +884,7 @@ export default function ChatPanel({
               type="button"
               onClick={handleSend}
               disabled={!input.trim() || isTyping}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
             >
               <Send className="w-3.5 h-3.5" />
               执行

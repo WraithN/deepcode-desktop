@@ -21,3 +21,32 @@ pub enum InstanceError {
     #[error("Process error: {0}")]
     ProcessError(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plugin_error_display() {
+        assert_eq!(
+            format!("{}", PluginError::NotFound("opencode".into())),
+            "Plugin not found: opencode"
+        );
+        assert_eq!(
+            format!("{}", PluginError::NotInstalled("opencode".into())),
+            "Plugin not installed: opencode"
+        );
+    }
+
+    #[test]
+    fn test_instance_error_display() {
+        assert_eq!(
+            format!("{}", InstanceError::NotFound("abc".into())),
+            "Instance not found: abc"
+        );
+        assert_eq!(
+            format!("{}", InstanceError::ProcessError("killed".into())),
+            "Process error: killed"
+        );
+    }
+}

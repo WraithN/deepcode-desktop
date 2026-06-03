@@ -1,10 +1,10 @@
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 use rusqlite::params;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Debug,
@@ -43,6 +43,15 @@ impl SessionLogger {
     pub fn new(app_handle: AppHandle, db_conn: rusqlite::Connection) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<SessionLogEntry>();
 
+        // 同时写入本地日志文件
+        let log_dir = app_handle.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let log_file_path = log_dir.join("session.log");
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file_path);
+        let mut log_writer = log_file.ok().map(|f| std::io::LineWriter::new(f));
+
         std::thread::spawn(move || {
             while let Some(entry) = rx.blocking_recv() {
                 let _ = app_handle.emit("session:log", &entry);
@@ -58,6 +67,32 @@ impl SessionLogger {
                         entry.payload.as_ref().map(|v| v.to_string())
                     ],
                 );
+                // 追加到本地日志文件
+                if let Some(ref mut writer) = log_writer {
+                    let payload_str = entry.payload.as_ref().map(|v| v.to_string()).unwrap_or_default();
+                    let line = if payload_str.is_empty() || payload_str == "null" {
+                        format!(
+                            "[{}] [{}] [{}] {} - {}\n",
+                            entry.timestamp,
+                            entry.level.as_str().to_uppercase(),
+                            entry.source,
+                            entry.conversation_id,
+                            entry.message
+                        )
+                    } else {
+                        format!(
+                            "[{}] [{}] [{}] {} - {} | {}\n",
+                            entry.timestamp,
+                            entry.level.as_str().to_uppercase(),
+                            entry.source,
+                            entry.conversation_id,
+                            entry.message,
+                            payload_str
+                        )
+                    };
+                    let _ = std::io::Write::write_all(writer, line.as_bytes());
+                    let _ = std::io::Write::flush(writer);
+                }
             }
         });
 
@@ -81,5 +116,24 @@ impl SessionLogger {
             payload,
         };
         let _ = self.sender.send(entry);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_log_level_as_str() {
+        assert_eq!(LogLevel::Debug.as_str(), "debug");
+        assert_eq!(LogLevel::Info.as_str(), "info");
+        assert_eq!(LogLevel::Warn.as_str(), "warn");
+        assert_eq!(LogLevel::Error.as_str(), "error");
+    }
+
+    #[test]
+    fn test_log_level_equality() {
+        assert_eq!(LogLevel::Info, LogLevel::Info);
+        assert_ne!(LogLevel::Info, LogLevel::Error);
     }
 }

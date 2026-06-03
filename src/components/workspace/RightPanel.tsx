@@ -104,7 +104,7 @@ index 1234567..abcdefg 100644
    return (
      <div>
 -      <h1>Hello World</h1>
-+      <h1>Hello AI Coding</h1>
++      <h1>Hello DeepHarness</h1>
 +      <Button onClick={() => setCount(c => c + 1)}>
 +        Count: {count}
 +      </Button>
@@ -291,7 +291,7 @@ export default function RightPanel({ tasks, modifiedFiles, collapsed, onToggleCo
                       <StatusIcon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${config.color} ${task.status === 'in_progress' ? 'animate-spin' : ''}`} />
                       <div className="flex-1 min-w-0">
                         <div className="text-xs text-foreground truncate">{task.title}</div>
-                        <div className="text-[10px] text-muted-foreground mt-0.5">{config.label}</div>
+                        <div className="text-[11px] text-muted-foreground mt-0.5">{config.label}</div>
                       </div>
                     </div>
                   );
@@ -333,14 +333,14 @@ export default function RightPanel({ tasks, modifiedFiles, collapsed, onToggleCo
                         onClick={() => setExpandedDiff(file)}
                         className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-secondary/30 transition-colors text-left"
                       >
-                        <span className="text-[11px] text-foreground truncate flex-1 min-w-0">{file.file_path}</span>
-                        <span className="text-[10px] text-green-400 shrink-0">+{stats.additions}</span>
-                        <span className="text-[10px] text-red-400 shrink-0">-{stats.deletions}</span>
+                        <span className="text-[12px] text-foreground truncate flex-1 min-w-0">{file.file_path}</span>
+                        <span className="text-[11px] text-green-400 shrink-0">+{stats.additions}</span>
+                        <span className="text-[11px] text-red-400 shrink-0">-{stats.deletions}</span>
                       </button>
                     );
                   })}
                   {/* 总计行 */}
-                  <div className="border-t border-border mt-1 pt-1 px-3 py-1.5 flex items-center gap-2 text-[11px]">
+                  <div className="border-t border-border mt-1 pt-1 px-3 py-1.5 flex items-center gap-2 text-[12px]">
                     <span className="text-muted-foreground flex-1">总计</span>
                     <span className="text-green-400 shrink-0">+{totalAdditions}</span>
                     <span className="text-red-400 shrink-0">-{totalDeletions}</span>
@@ -366,7 +366,7 @@ export default function RightPanel({ tasks, modifiedFiles, collapsed, onToggleCo
 
           {/* 导航工具栏（与关闭按钮错开） */}
           <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0 bg-secondary/20">
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-[11px] text-muted-foreground">
               {expandedDiff ? `${displayFiles.findIndex((f) => f.id === expandedDiff.id) + 1} / ${displayFiles.length}` : ''}
             </span>
             <div className="flex items-center gap-1">
@@ -378,7 +378,7 @@ export default function RightPanel({ tasks, modifiedFiles, collapsed, onToggleCo
                   const idx = displayFiles.findIndex((f) => f.id === expandedDiff.id);
                   if (idx > 0) setExpandedDiff(displayFiles[idx - 1]);
                 }}
-                className="flex items-center gap-0.5 px-2 py-1 text-[11px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-0.5 px-2 py-1 text-[12px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 <ChevronLeft className="w-3 h-3" />
                 上一个
@@ -391,7 +391,7 @@ export default function RightPanel({ tasks, modifiedFiles, collapsed, onToggleCo
                   const idx = displayFiles.findIndex((f) => f.id === expandedDiff.id);
                   if (idx < displayFiles.length - 1) setExpandedDiff(displayFiles[idx + 1]);
                 }}
-                className="flex items-center gap-0.5 px-2 py-1 text-[11px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-0.5 px-2 py-1 text-[12px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 下一个
                 <ChevronRight className="w-3 h-3" />
@@ -407,11 +407,11 @@ export default function RightPanel({ tasks, modifiedFiles, collapsed, onToggleCo
                 <>
                   {/* 左侧：修改前 */}
                   <div className="flex-1 min-w-0 border-r border-border">
-                    <div className="sticky top-0 z-10 px-3 py-1.5 text-[10px] text-muted-foreground bg-card border-b border-border flex items-center gap-1">
+                    <div className="sticky top-0 z-10 px-3 py-1.5 text-[11px] text-muted-foreground bg-card border-b border-border flex items-center gap-1">
                       <FileMinus className="w-3 h-3" />
                       修改前
                     </div>
-                    <div className="font-mono text-[11px] leading-relaxed">
+                    <div className="font-mono text-[12px] leading-relaxed">
                       {diffLines.map((line, i) => {
                         if (line.type === 'header') {
                           return (
@@ -438,11 +438,11 @@ export default function RightPanel({ tasks, modifiedFiles, collapsed, onToggleCo
                   </div>
                   {/* 右侧：修改后 */}
                   <div className="flex-1 min-w-0">
-                    <div className="sticky top-0 z-10 px-3 py-1.5 text-[10px] text-muted-foreground bg-card border-b border-border flex items-center gap-1">
+                    <div className="sticky top-0 z-10 px-3 py-1.5 text-[11px] text-muted-foreground bg-card border-b border-border flex items-center gap-1">
                       <FilePlus className="w-3 h-3" />
                       修改后
                     </div>
-                    <div className="font-mono text-[11px] leading-relaxed">
+                    <div className="font-mono text-[12px] leading-relaxed">
                       {diffLines.map((line, i) => {
                         if (line.type === 'header') {
                           return (

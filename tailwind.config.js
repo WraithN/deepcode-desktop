@@ -86,6 +86,10 @@ export default {
                     '5': 'hsl(var(--chart-5))'
                 }
             },
+            fontFamily: {
+                sans: ["'JetBrains Mono'", "'Noto Sans SC'", "'Noto Sans JP'", "'Noto Sans KR'", '-apple-system', 'BlinkMacSystemFont', "'Segoe UI'", 'Roboto', "'Helvetica Neue'", 'Arial', 'sans-serif'],
+                mono: ["'JetBrains Mono'", "'Noto Sans SC'", "'Noto Sans JP'", "'Noto Sans KR'", "'Fira Code'", "'Cascadia Code'", 'Consolas', 'Monaco', 'monospace'],
+            },
             borderRadius: {
                 lg: 'var(--radius)',
                 md: 'calc(var(--radius) - 2px)',

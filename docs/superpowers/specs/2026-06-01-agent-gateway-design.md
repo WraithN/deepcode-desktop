@@ -10,7 +10,7 @@
 
 ### 1.1 背景
 
-当前 AI Coding Desktop 应用拥有完整的 UI 骨架（会话列表、聊天面板、步骤渲染、权限询问、代码变更展示），但 `handleSendMessage` 和 `generateAIReply` 是纯本地 mock，没有任何真实的 AI 后端调用。本设计引入 **Agent Gateway** 层，将用户会话通过 Gateway 路由到对应的智能体服务。
+当前 DeepHarness Desktop 应用拥有完整的 UI 骨架（会话列表、聊天面板、步骤渲染、权限询问、代码变更展示），但 `handleSendMessage` 和 `generateAIReply` 是纯本地 mock，没有任何真实的 AI 后端调用。本设计引入 **Agent Gateway** 层，将用户会话通过 Gateway 路由到对应的智能体服务。
 
 ### 1.2 目标
 

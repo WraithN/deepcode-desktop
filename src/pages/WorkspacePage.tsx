@@ -561,7 +561,7 @@ export default function WorkspacePage() {
           title="快速点击5次打开日志抽屉"
         >
           <Bot className="w-5 h-5 text-primary" />
-          <span className="font-semibold text-sm text-foreground">AI Coding</span>
+          <span className="font-semibold text-sm text-foreground">DeepHarness</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground mr-2">
@@ -653,7 +653,7 @@ export default function WorkspacePage() {
             <PopoverTrigger asChild>
               <button
                 type="button"
-                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
               >
                 <Bot className="w-2.5 h-2.5" />
                 <span>{activeAgent.displayName}</span>
@@ -680,22 +680,22 @@ export default function WorkspacePage() {
                       isActive ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-secondary'
                     }`}
                   >
-                    <span className={`w-5 h-5 rounded text-[10px] font-bold flex items-center justify-center ${config.bg} ${config.color} overflow-hidden`}>
+                    <span className={`w-5 h-5 rounded text-[11px] font-bold flex items-center justify-center ${config.bg} ${config.color} overflow-hidden`}>
                       <AgentIcon agentKey={instance.agentKey} size={14} />
                     </span>
                     <span className="flex-1 text-left truncate">{instance.displayName}</span>
-                    {isActive && <span className="text-[10px] text-primary">当前</span>}
+                    {isActive && <span className="text-[11px] text-primary">当前</span>}
                   </button>
                 );
               })}
             </PopoverContent>
           </Popover>
-          <span className="text-[10px] text-muted-foreground truncate max-w-[200px]" title={activeAgent.workspace}>
+          <span className="text-[11px] text-muted-foreground truncate max-w-[200px]" title={activeAgent.workspace}>
             工作目录：{activeAgent.workspace}
           </span>
         </div>
-        <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-          <span>AI Coding v1.0</span>
+        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+          <span>DeepHarness v1.0</span>
         </div>
       </div>
 

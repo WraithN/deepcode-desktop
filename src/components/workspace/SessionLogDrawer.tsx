@@ -102,7 +102,7 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ logs, onClose, onCl
         {logs.map((log) => (
           <div
             key={log.id}
-            className={`flex gap-2 px-3 py-0.5 text-[11px] font-mono border-b border-gray-900/50 hover:bg-gray-800/30 ${levelBg[log.level] || ''}`}
+            className={`flex gap-2 px-3 py-0.5 text-[12px] font-mono border-b border-gray-900/50 hover:bg-gray-800/30 ${levelBg[log.level] || ''}`}
           >
             <span className="text-gray-600 shrink-0 w-[60px]">{log.timestamp}</span>
             <span className={`shrink-0 w-[40px] font-bold ${levelColors[log.level] || 'text-gray-400'}`}>

@@ -91,7 +91,7 @@
 [package]
 name = "ai-coding-desktop"
 version = "0.0.1"
-description = "AI Coding Desktop App"
+description = "DeepHarness Desktop App"
 authors = ["you"]
 edition = "2021"
 

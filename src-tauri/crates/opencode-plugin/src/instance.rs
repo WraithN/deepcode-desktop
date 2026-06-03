@@ -29,13 +29,38 @@ impl OpencodeInstance {
     }
 
     fn emit_event(&self, event: AgentEvent) {
-        let _ = self.app_handle.emit(
-            "agent:event",
-            serde_json::json!({
-                "instance_id": self.config.id,
-                "event": event,
-            }),
+        let event_type = format!("{:?}", std::mem::discriminant(&event));
+        let payload = serde_json::json!({
+            "instance_id": self.config.id,
+            "event": event,
+        });
+        self.logger.log(
+            "",
+            LogLevel::Debug,
+            "opencode-plugin",
+            &format!("emit_event start: {}", event_type),
+            Some(serde_json::json!({"payload": &payload})),
         );
+        match self.app_handle.emit("agent:event", &payload) {
+            Ok(()) => {
+                self.logger.log(
+                    "",
+                    LogLevel::Debug,
+                    "opencode-plugin",
+                    &format!("emit_event success: {}", event_type),
+                    None,
+                );
+            }
+            Err(e) => {
+                self.logger.log(
+                    "",
+                    LogLevel::Error,
+                    "opencode-plugin",
+                    &format!("emit_event failed: {}", e),
+                    Some(serde_json::json!({"payload": payload})),
+                );
+            }
+        }
     }
 
     fn emit_status(&self, status: InstanceStatus) {
@@ -116,10 +141,49 @@ impl AgentInstance for OpencodeInstance {
 
             let mut events_parsed = 0;
             while let Ok(Some(line)) = handle.stdout_lines.next_line().await {
+                self.logger.log(
+                    &conversation_id,
+                    LogLevel::Debug,
+                    "opencode-plugin",
+                    "stdout line read",
+                    Some(serde_json::json!({"line": &line})),
+                );
                 if let Some(raw) = crate::parser::parse_opencode_json_line(&line) {
-                    let event = crate::mapper::map_to_agent_event(raw);
-                    events_parsed += 1;
-                    self.emit_event(event);
+                    self.logger.log(
+                        &conversation_id,
+                        LogLevel::Debug,
+                        "opencode-plugin",
+                        "line parsed",
+                        Some(serde_json::json!({"raw": format!("{:?}", raw)})),
+                    );
+                    if let Some(event) = crate::mapper::map_to_agent_event(raw) {
+                        events_parsed += 1;
+                        self.logger.log(
+                            &conversation_id,
+                            LogLevel::Debug,
+                            "opencode-plugin",
+                            "event mapped",
+                            Some(serde_json::json!({"event": format!("{:?}", event)})),
+                        );
+                        self.emit_event(event);
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    } else {
+                        self.logger.log(
+                            &conversation_id,
+                            LogLevel::Debug,
+                            "opencode-plugin",
+                            "event mapped to None",
+                            None,
+                        );
+                    }
+                } else {
+                    self.logger.log(
+                        &conversation_id,
+                        LogLevel::Debug,
+                        "opencode-plugin",
+                        "line parse failed",
+                        None,
+                    );
                 }
             }
 

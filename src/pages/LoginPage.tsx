@@ -41,7 +41,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 rounded-lg bg-primary/10 flex items-center justify-center mb-4">
             <Terminal className="w-8 h-8 text-primary" />
           </div>
-          <h1 className="text-2xl font-bold text-foreground">AI Coding</h1>
+          <h1 className="text-2xl font-bold text-foreground">DeepHarness</h1>
           <p className="text-sm text-muted-foreground mt-1">智能编码助手</p>
         </div>
 
@@ -148,7 +148,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
-          © 2026 AI Coding. All rights reserved.
+          © 2026 DeepHarness. All rights reserved.
         </p>
       </div>
     </div>

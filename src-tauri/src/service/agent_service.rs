@@ -84,8 +84,13 @@ impl AgentService {
             .get(instance_id)
             .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
 
-        let instance = instance_arc.lock().await;
-        instance.send_message(message).await
+        let message = message.to_string();
+        tokio::spawn(async move {
+            let instance = instance_arc.lock().await;
+            let _ = instance.send_message(&message).await;
+        });
+
+        Ok(())
     }
 
     pub async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError> {

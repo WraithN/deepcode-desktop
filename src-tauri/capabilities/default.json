@@ -34,6 +34,7 @@
         { "name": "opencode", "cmd": "opencode", "args": true }
       ]
     },
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "core:event:default"
   ]
 }
