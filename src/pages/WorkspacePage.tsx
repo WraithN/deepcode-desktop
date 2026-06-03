@@ -97,7 +97,7 @@ export default function WorkspacePage() {
     }
   }, [setAgentInstances, setActiveAgentId]);
 
-  const activeAgent = agentInstances.find((a) => a.id === activeAgentId) || agentInstances[0];
+  const activeAgent = agentInstances.find((a) => a.id === activeAgentId) || agentInstances[0] || defaultAgents[0];
 
   // 初始化 WebSocket 连接
   useEffect(() => {
