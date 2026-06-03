@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { X, Trash2 } from 'lucide-react';
+import { formatIdShort } from '@/lib/id';
 import { useLogStore } from '@/stores';
 import type { LogEntry } from '@/store/session-log';
 
@@ -115,7 +116,9 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ onClose, onClear })
             <span className={`shrink-0 w-[40px] font-bold ${levelColors[log.level] || 'text-gray-400'}`}>
               {log.level.toUpperCase()}
             </span>
-            <span className="text-gray-500 shrink-0 w-[100px] truncate">{log.source}</span>
+            <span className="text-gray-500 shrink-0 w-[100px] truncate">
+              {log.instanceId ? `${formatIdShort(log.instanceId)} · ${log.source}` : log.source}
+            </span>
             <span className="text-gray-300 break-all whitespace-pre-wrap">
               {log.message}
               {log.detail && (

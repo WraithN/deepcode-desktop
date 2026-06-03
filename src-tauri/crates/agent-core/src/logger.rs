@@ -27,6 +27,7 @@ impl LogLevel {
 #[derive(Clone, Debug, Serialize)]
 pub struct SessionLogEntry {
     pub conversation_id: String,
+    pub instance_id: Option<String>,
     pub timestamp: String,
     pub level: LogLevel,
     pub source: String,
@@ -106,9 +107,11 @@ impl SessionLogger {
         source: &str,
         message: &str,
         payload: Option<Value>,
+        instance_id: Option<String>,
     ) {
         let entry = SessionLogEntry {
             conversation_id: conversation_id.to_string(),
+            instance_id,
             timestamp: chrono::Utc::now().to_rfc3339(),
             level,
             source: source.to_string(),
@@ -116,6 +119,18 @@ impl SessionLogger {
             payload,
         };
         let _ = self.sender.send(entry);
+    }
+    
+    /// 简化版 log，不带 instance_id
+    pub fn log_simple(
+        &self,
+        conversation_id: &str,
+        level: LogLevel,
+        source: &str,
+        message: &str,
+        payload: Option<Value>,
+    ) {
+        self.log(conversation_id, level, source, message, payload, None);
     }
 }
 

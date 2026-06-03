@@ -18,6 +18,7 @@ import SessionLogDrawer from '@/components/workspace/SessionLogDrawer';
 import { invoke } from '@tauri-apps/api/core';
 import { useWebSocketStore, useChatStore, useAgentStore, useLogStore } from '@/stores';
 import type { AgentEvent } from '@/stores';
+import { generateShortId, formatIdShort } from '@/lib/id';
 
 const defaultAgents: AgentInstance[] = [
   { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' }, status: 'stopped' },
@@ -81,6 +82,7 @@ export default function WorkspacePage() {
   const setAgentInstances = useAgentStore((s) => s.setInstances);
   const addAgentInstance = useAgentStore((s) => s.addInstance);
   const updateAgentInstance = useAgentStore((s) => s.updateInstance);
+  const removeAgentInstance = useAgentStore((s) => s.removeInstance);
   const activeAgentId = useAgentStore((s) => s.activeInstanceId);
   const setActiveAgentId = useAgentStore((s) => s.setActiveInstance);
 
@@ -248,53 +250,25 @@ export default function WorkspacePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  // 从 select-agent 返回后自动创建新会话
+  // 从 select-agent 返回后加载会话
   useEffect(() => {
     if (!user) return;
-    const shouldCreate = localStorage.getItem('should_create_new_session');
-    if (shouldCreate !== 'true') return;
-
-    localStorage.removeItem('should_create_new_session');
-    const defaultName = localStorage.getItem('default_agent_name');
-    if (defaultName) {
-      localStorage.removeItem('default_agent_name');
-    }
-
+    // SelectAgentPage 已经创建了 instance，这里只需创建会话
     const timer = setTimeout(async () => {
-      const currentAgent = localStorage.getItem('selected_agent') || 'opencode';
+      if (conversations.length === 0 && agentInstances.length > 0) {
+        const activeAgent = agentInstances[0];
+        const data = await db.createConversation({
+          user_id: user.id,
+          title: '新会话',
+          agent: activeAgent.agentKey,
+          model: 'gpt-4',
+        });
 
-      // 如果用户设置了默认名称，更新对应智能体实例
-      if (defaultName) {
-        const name = defaultName.slice(0, 3);
-        const existingInstance = agentInstances.find((a) => a.agentKey === currentAgent);
-        if (existingInstance) {
-          updateAgentInstance(existingInstance.id, { displayName: name });
-        } else {
-          const newInstance: AgentInstance = {
-            id: Date.now().toString(),
-            agentKey: currentAgent,
-            displayName: name,
-            workspace: localStorage.getItem('default_agent_workspace') || '.',
-            modelConfig: { type: 'builtin', modelId: 'gpt-4' },
-            status: 'stopped',
-          };
-          addAgentInstance(newInstance);
+        if (data) {
+          setConversations((prev) => [data, ...prev]);
+          setActiveConversation(data);
+          setMessages([]);
         }
-      }
-
-      const data = await db.createConversation({
-        user_id: user.id,
-        title: '新会话',
-        agent: currentAgent,
-        model: 'gpt-4',
-      });
-
-      if (data) {
-        setConversations((prev) => [data, ...prev]);
-        setActiveConversation(data);
-        setMessages([]);
-      } else {
-        toast.error('创建会话失败');
       }
     }, 200);
 
@@ -353,8 +327,9 @@ export default function WorkspacePage() {
 
   // 确认添加智能体
   const handleConfirmAddAgent = async (agentKey: string, displayName: string, workspace: string) => {
+    const instanceId = generateShortId();
     const newInstance: AgentInstance = {
-      id: Date.now().toString(),
+      id: instanceId,
       agentKey,
       displayName,
       workspace: workspace || '.',
@@ -362,7 +337,7 @@ export default function WorkspacePage() {
       status: 'stopped',
     };
     addAgentInstance(newInstance);
-    toast.success(`已添加智能体 ${displayName}`);
+    toast.success(`已添加智能体 ${displayName} [${formatIdShort(instanceId)}]`);
 
     // 自动为该智能体创建一个新会话
     if (user) {
@@ -378,6 +353,50 @@ export default function WorkspacePage() {
         setMessages([]);
       }
     }
+  };
+
+  // 删除智能体
+  const handleDeleteAgent = (instanceId: string) => {
+    const instance = agentInstances.find((a) => a.id === instanceId);
+    if (!instance) return;
+    
+    // 删除相关会话
+    setConversations((prev) => prev.filter((c) => c.agent !== instance.agentKey));
+    
+    // 如果删除的是当前活跃的，清空状态
+    if (activeAgentId === instanceId) {
+      setActiveAgentId(null);
+      setChatActiveInstanceId(null);
+      setActiveConversation(null);
+      setMessages([]);
+    }
+    
+    // 从 store 中删除
+    removeAgentInstance(instanceId);
+    toast.success(`已删除智能体 ${instance.displayName}`);
+  };
+
+  // 清空所有 mock 数据
+  const handleClearAllData = () => {
+    // 清空智能体
+    setAgentInstances([]);
+    setActiveAgentId(null);
+    setChatActiveInstanceId(null);
+    
+    // 清空会话和消息
+    setConversations([]);
+    setActiveConversation(null);
+    setMessages([]);
+    
+    // 清空本地存储
+    localStorage.removeItem('agent_instances');
+    localStorage.removeItem('active_agent_id');
+    localStorage.removeItem('selected_agent');
+    localStorage.removeItem('should_create_new_session');
+    localStorage.removeItem('default_agent_name');
+    localStorage.removeItem('default_agent_workspace');
+    
+    toast.success('已清空所有数据');
   };
 
   // 激活智能体
@@ -570,6 +589,7 @@ export default function WorkspacePage() {
             onNewConversation={handleNewConversation}
             onAddAgent={handleAddAgent}
             onActivateAgent={handleActivateAgent}
+            onDeleteAgent={handleDeleteAgent}
           />
 
           {/* 中间会话区 */}

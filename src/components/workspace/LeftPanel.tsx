@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, Info,
   FolderOpen, FileText, FileJson, FileType, FileImage,
   Settings, Braces, Hash, Globe, Coffee,
-  RefreshCw, Search,
+  RefreshCw, Search, Trash2,
 } from 'lucide-react';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dialog';
 import { useAgentStore } from '@/stores';
 import type { AgentInstance } from '@/stores';
+import { formatIdShort } from '@/lib/id';
 
 export interface AgentModelConfig {
   type: 'builtin' | 'custom';
@@ -34,6 +35,7 @@ interface LeftPanelProps {
   onNewConversation: () => void;
   onAddAgent: () => void;
   onActivateAgent: (id: string) => void;
+  onDeleteAgent?: (id: string) => void;
 }
 
 import AgentIcon from './AgentIcon';
@@ -195,6 +197,7 @@ export default function LeftPanel({
   onNewConversation,
   onAddAgent,
   onActivateAgent,
+  onDeleteAgent,
 }: LeftPanelProps) {
   const storeInstances = useAgentStore((s) => s.instances);
   const storeActiveId = useAgentStore((s) => s.activeInstanceId);
@@ -514,27 +517,45 @@ export default function LeftPanel({
                 const config = agentConfig[instance.agentKey] || agentConfig.opencode;
                 const isActive = activeAgentId === instance.id;
                 return (
-                  <button
+                  <div
                     key={instance.id}
-                    type="button"
-                    onDoubleClick={() => handleActivateAgentAndSwitch(instance.id)}
-                    className={`w-full flex items-center gap-2 p-2 rounded-lg border transition-all text-left ${
+                    className={`w-full flex items-center gap-2 p-2 rounded-lg border transition-all ${
                       isActive
                         ? `${config.border} ${config.bg} ring-1 ring-primary/40`
                         : 'border-border bg-secondary/20 hover:bg-secondary/40'
                     }`}
                   >
-                    <span className={`w-7 h-7 rounded-md text-sm font-bold flex items-center justify-center shrink-0 ${config.bg} ${config.color} overflow-hidden`}>
-                      <AgentIcon agentKey={instance.agentKey} size={18} />
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-foreground">{instance.displayName}</div>
-                      <div className="text-[11px] text-muted-foreground">{config.name}</div>
-                    </div>
-                    {isActive && (
-                      <Check className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <button
+                      type="button"
+                      onClick={() => onActivateAgent(instance.id)}
+                      onDoubleClick={() => handleActivateAgentAndSwitch(instance.id)}
+                      className="flex-1 flex items-center gap-2 text-left min-w-0"
+                    >
+                      <span className={`w-7 h-7 rounded-md text-sm font-bold flex items-center justify-center shrink-0 ${config.bg} ${config.color} overflow-hidden`}>
+                        <AgentIcon agentKey={instance.agentKey} size={18} />
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-foreground">{instance.displayName}</div>
+                        <div className="text-[11px] text-muted-foreground">{config.name} · {formatIdShort(instance.id)}</div>
+                      </div>
+                      {isActive && (
+                        <Check className="w-3.5 h-3.5 text-primary shrink-0" />
+                      )}
+                    </button>
+                    {onDeleteAgent && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteAgent(instance.id);
+                        }}
+                        className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                        title="删除"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </div>

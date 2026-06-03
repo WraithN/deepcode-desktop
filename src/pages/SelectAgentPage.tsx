@@ -7,6 +7,8 @@ import { ArrowRight, Sparkles, Bot } from 'lucide-react';
 import DirectoryPickerButton from '@/components/DirectoryPickerButton';
 import AgentIcon from '@/components/workspace/AgentIcon';
 import { invoke } from '@tauri-apps/api/core';
+import { useAgentStore } from '@/stores';
+import { generateShortId } from '@/lib/id';
 
 const agents = [
   {
@@ -73,13 +75,23 @@ export default function SelectAgentPage() {
     }
     setLoading(true);
     try {
-      localStorage.setItem('selected_agent', targetAgent);
-      localStorage.setItem('should_create_new_session', 'true');
-
-      // 保存默认智能体名称和工作目录
+      // 立即创建 agent instance
       const trimmed = displayName.trim().slice(0, 3);
-      localStorage.setItem('default_agent_name', trimmed);
-      localStorage.setItem('default_agent_workspace', workspace);
+      const instanceId = generateShortId();
+      
+      useAgentStore.getState().addInstance({
+        id: instanceId,
+        agentKey: targetAgent,
+        displayName: trimmed,
+        workspace: workspace || '.',
+        modelConfig: { type: 'builtin', modelId: 'gpt-4' },
+        status: 'stopped',
+      });
+
+      // 保存到 localStorage 用于持久化
+      const currentInstances = useAgentStore.getState().instances;
+      localStorage.setItem('agent_instances', JSON.stringify(currentInstances));
+      localStorage.setItem('active_agent_id', instanceId);
 
       toast.success(`已选择 ${agents.find((a) => a.id === targetAgent)?.name}`);
       navigate('/workspace');

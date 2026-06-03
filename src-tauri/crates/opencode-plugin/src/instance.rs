@@ -44,6 +44,7 @@ impl OpencodeInstance {
             "opencode-plugin",
             "Initializing MCP client",
             None,
+            Some(self.config.id.clone()),
         );
 
         let mcp_client = McpClient::spawn(
@@ -80,6 +81,7 @@ impl OpencodeInstance {
                     "opencode-plugin",
                     &format!("MCP event received: {}", event_type),
                     Some(serde_json::json!({"event": format!("{:?}", event)})),
+                    Some(instance_id.clone()),
                 );
 
                 let payload = serde_json::json!({
@@ -108,6 +110,7 @@ impl OpencodeInstance {
             "opencode-plugin",
             "MCP client initialized",
             None,
+            Some(self.config.id.clone()),
         );
 
         Ok(())

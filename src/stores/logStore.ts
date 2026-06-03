@@ -4,6 +4,7 @@ import { useWebSocketStore } from './websocketStore';
 export interface SessionLogEntry {
   id: string;
   conversationId: string;
+  instanceId?: string;
   timestamp: string;
   level: 'debug' | 'info' | 'warn' | 'error';
   source: string;
