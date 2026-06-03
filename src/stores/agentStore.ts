@@ -1,12 +1,21 @@
 import { create } from 'zustand';
 import { useWebSocketStore } from './websocketStore';
 
+export interface AgentModelConfig {
+  type: 'builtin' | 'custom';
+  modelId?: string;
+  name?: string;
+  url?: string;
+  apiKey?: string;
+}
+
 export interface AgentInstance {
-  instanceId: string;
-  status: 'stopped' | 'starting' | 'running' | 'crashed';
-  pluginKey: string;
-  name: string;
+  id: string;
+  agentKey: string;
+  displayName: string;
   workspace: string;
+  modelConfig?: AgentModelConfig;
+  status: 'stopped' | 'starting' | 'running' | 'crashed';
   pid?: number;
 }
 
@@ -14,11 +23,26 @@ interface AgentState {
   instances: AgentInstance[];
   activeInstanceId: string | null;
 
-  createInstance: (config: { pluginKey: string; name: string; workspace: string }) => Promise<AgentInstance>;
+  createInstance: (config: { agentKey: string; displayName: string; workspace: string; modelConfig?: AgentModelConfig }) => Promise<AgentInstance>;
   stopInstance: (instanceId: string) => Promise<void>;
   setActiveInstance: (instanceId: string | null) => void;
   updateInstanceStatus: (instanceId: string, status: AgentInstance['status'], pid?: number) => void;
   removeInstance: (instanceId: string) => void;
+  setInstances: (instances: AgentInstance[]) => void;
+  addInstance: (instance: AgentInstance) => void;
+  updateInstance: (instanceId: string, updates: Partial<AgentInstance>) => void;
+}
+
+function mapBackendInstance(data: Record<string, unknown>): AgentInstance {
+  return {
+    id: (data.instanceId as string) || (data.id as string) || '',
+    agentKey: (data.pluginKey as string) || (data.agentKey as string) || '',
+    displayName: (data.name as string) || (data.displayName as string) || '',
+    workspace: (data.workspace as string) || '.',
+    modelConfig: (data.modelConfig as AgentModelConfig | undefined),
+    status: (data.status as AgentInstance['status']) || 'stopped',
+    pid: data.pid as number | undefined,
+  };
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -27,14 +51,21 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   createInstance: async (config) => {
     const ws = useWebSocketStore.getState();
-    const result = await ws.sendRequest<AgentInstance>('agent.createInstance', config);
+    const result = await ws.sendRequest<Record<string, unknown>>('agent.createInstance', {
+      pluginKey: config.agentKey,
+      name: config.displayName,
+      workspace: config.workspace,
+      modelConfig: config.modelConfig,
+    });
+
+    const mapped = mapBackendInstance(result);
 
     set((state) => ({
-      instances: [...state.instances, result],
-      activeInstanceId: result.instanceId,
+      instances: [...state.instances, mapped],
+      activeInstanceId: mapped.id,
     }));
 
-    return result;
+    return mapped;
   },
 
   stopInstance: async (instanceId) => {
@@ -42,7 +73,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     await ws.sendRequest('agent.stopInstance', { instanceId });
 
     set((state) => ({
-      instances: state.instances.filter((i) => i.instanceId !== instanceId),
+      instances: state.instances.filter((i) => i.id !== instanceId),
       activeInstanceId: state.activeInstanceId === instanceId ? null : state.activeInstanceId,
     }));
   },
@@ -54,15 +85,34 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   updateInstanceStatus: (instanceId, status, pid) => {
     set((state) => ({
       instances: state.instances.map((i) =>
-        i.instanceId === instanceId ? { ...i, status, ...(pid && { pid }) } : i
+        i.id === instanceId ? { ...i, status, ...(pid !== undefined && { pid }) } : i
       ),
     }));
   },
 
   removeInstance: (instanceId) => {
     set((state) => ({
-      instances: state.instances.filter((i) => i.instanceId !== instanceId),
+      instances: state.instances.filter((i) => i.id !== instanceId),
       activeInstanceId: state.activeInstanceId === instanceId ? null : state.activeInstanceId,
+    }));
+  },
+
+  setInstances: (instances) => {
+    set({ instances });
+  },
+
+  addInstance: (instance) => {
+    set((state) => ({
+      instances: [...state.instances, instance],
+      activeInstanceId: instance.id,
+    }));
+  },
+
+  updateInstance: (instanceId, updates) => {
+    set((state) => ({
+      instances: state.instances.map((i) =>
+        i.id === instanceId ? { ...i, ...updates } : i
+      ),
     }));
   },
 }));

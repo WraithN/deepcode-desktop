@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '@/db';
 import { agentManager } from '@/agents/manager';
-import { sessionLogger } from '@/services/logger';
-import type { Conversation, Message, MessageStep, Task, ModifiedFile } from '@/types/types';
+import type { Conversation, Task, ModifiedFile } from '@/types/types';
 import { Settings, LogOut, Bot, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -16,11 +15,10 @@ import RightPanel from '@/components/workspace/RightPanel';
 import SettingsDialog from '@/components/workspace/SettingsDialog';
 import AddAgentDialog from '@/components/workspace/AddAgentDialog';
 import AgentIcon from '@/components/workspace/AgentIcon';
-import { sessionLog } from '@/store/session-log';
 import SessionLogDrawer from '@/components/workspace/SessionLogDrawer';
 import { invoke } from '@tauri-apps/api/core';
-import { listenAgentEvents, agentSendMessage } from '@/hooks/use-agent-service';
-import { useRustSessionLog } from '@/hooks/use-session-log-rust';
+import { useWebSocketStore, useChatStore, useAgentStore, useLogStore } from '@/stores';
+import type { AgentEvent } from '@/stores';
 
 const defaultAgents: AgentInstance[] = [
   { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' } },
@@ -55,11 +53,9 @@ export default function WorkspacePage() {
   const navigate = useNavigate();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [modifiedFiles, setModifiedFiles] = useState<ModifiedFile[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [isTyping, setIsTyping] = useState(false);
   const [currentModel, setCurrentModel] = useState('gpt-4');
   const [contextPercent, setContextPercent] = useState(15);
   const [agentMode, setAgentMode] = useState<'plan' | 'build'>('build');
@@ -69,85 +65,76 @@ export default function WorkspacePage() {
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [editContent, setEditContent] = useState<string | undefined>(undefined);
   const [logDrawerOpen, setLogDrawerOpen] = useState(false);
-  const [sessionLogs, setSessionLogs] = useState<import('@/store/session-log').LogEntry[]>([]);
   const clickCountRef = useRef(0);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Store hooks
+  const messages = useChatStore((s) => s.messages);
+  const setMessages = useChatStore((s) => s.setMessages);
+  const isStreaming = useChatStore((s) => s.isStreaming);
+  const setIsStreaming = useChatStore((s) => s.setIsStreaming);
+  const chatSendMessage = useChatStore((s) => s.sendMessage);
+  const appendEvent = useChatStore((s) => s.appendEvent);
+  const setChatActiveInstanceId = useChatStore((s) => s.setActiveInstanceId);
+
+  const agentInstances = useAgentStore((s) => s.instances);
+  const setAgentInstances = useAgentStore((s) => s.setInstances);
+  const addAgentInstance = useAgentStore((s) => s.addInstance);
+  const updateAgentInstance = useAgentStore((s) => s.updateInstance);
+  const activeAgentId = useAgentStore((s) => s.activeInstanceId);
+  const setActiveAgentId = useAgentStore((s) => s.setActiveInstance);
+
+  const logStoreAppend = useLogStore((s) => s.appendLog);
+  const sessionLogs = useLogStore((s) => s.logs);
+  const isTyping = isStreaming;
+
   // 智能体实例管理
-  const [agentInstances, setAgentInstances] = useState<AgentInstance[]>(getStoredAgents);
-  const [activeAgentId, setActiveAgentId] = useState<string>(getStoredActiveAgentId);
+  useEffect(() => {
+    const stored = getStoredAgents();
+    if (stored.length > 0) {
+      setAgentInstances(stored);
+      setActiveAgentId(getStoredActiveAgentId());
+    }
+  }, [setAgentInstances, setActiveAgentId]);
 
   const activeAgent = agentInstances.find((a) => a.id === activeAgentId) || agentInstances[0];
 
-  // 确保智能体实例始终存在（如果 localStorage 数据损坏或为空）
+  // 初始化 WebSocket 连接
   useEffect(() => {
-    if (agentInstances.length === 0) {
-      setAgentInstances(defaultAgents);
-      setActiveAgentId(defaultAgents[0].id);
-    } else if (!agentInstances.find((a) => a.id === activeAgentId)) {
-      setActiveAgentId(agentInstances[0].id);
-    }
+    const init = async () => {
+      try {
+        const url = await invoke<string>('get_websocket_url');
+        await useWebSocketStore.getState().connect(url);
+      } catch (e) {
+        console.error('Failed to connect WebSocket:', e);
+      }
+    };
+    init();
   }, []);
 
-  // 注册 Rust Session Log 监听
-  useRustSessionLog();
-
-  // 注册 Agent 事件监听
+  // 订阅 WebSocket 事件
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listenAgentEvents((payload) => {
-      const { event } = payload;
-      // 根据事件类型更新消息状态
-      if (!activeConversation) return;
-      setMessages((prev) => {
-        const lastMsg = prev[prev.length - 1];
-        if (!lastMsg || lastMsg.role !== 'assistant') return prev;
-        switch (event.type) {
-          case 'text_delta':
-            return prev.map((msg, idx) =>
-              idx === prev.length - 1
-                ? { ...msg, content: msg.content + event.content }
-                : msg,
-            );
-          case 'thinking': {
-            const newStep: MessageStep = { type: 'thinking', content: event.content };
-            return prev.map((msg, idx) =>
-              idx === prev.length - 1
-                ? { ...msg, steps: [...(msg.steps || []), newStep] }
-                : msg,
-            );
-          }
-          case 'tool_use': {
-            const newStep: MessageStep = {
-              type: 'tool_use',
-              content: `使用工具 ${event.toolName}...`,
-              toolName: event.toolName,
-              summary: { file: event.args?.file as string, lines: 0, durationMs: 0 },
-            };
-            return prev.map((msg, idx) =>
-              idx === prev.length - 1
-                ? { ...msg, steps: [...(msg.steps || []), newStep] }
-                : msg,
-            );
-          }
-          case 'error':
-            toast.error(`智能体错误: ${event.message}`);
-            return prev;
-          case 'done':
-            return prev.map((msg, idx) =>
-              idx === prev.length - 1 ? { ...msg, is_complete: true } : msg,
-            );
-          default:
-            return prev;
-        }
-      });
-    }).then((fn) => {
-      unlisten = fn;
+    const ws = useWebSocketStore.getState();
+
+    const unsubEvents = ws.subscribe('agent.event', (params) => {
+      appendEvent(params as AgentEvent);
     });
+
+    const unsubStatus = ws.subscribe('agent.status', (params) => {
+      const { instanceId, status, pid } = params as { instanceId: string; status: string; pid?: number };
+      useAgentStore.getState().updateInstanceStatus(instanceId, status as AgentInstance['status'], pid);
+    });
+
+    const unsubLogs = ws.subscribe('session.log', (params) => {
+      logStoreAppend(params as Parameters<typeof logStoreAppend>[0]);
+    });
+
     return () => {
-      if (unlisten) unlisten();
+      unsubEvents();
+      unsubStatus();
+      unsubLogs();
     };
-  }, [activeConversation]);
+  }, [appendEvent, logStoreAppend]);
 
   // 将相对路径的工作目录解析为绝对路径
   useEffect(() => {
@@ -156,16 +143,13 @@ export default function WorkspacePage() {
       if (!needsResolve) return;
       try {
         const cwd = await invoke<string>('get_current_dir');
-        const updated = agentInstances.map((a) => {
+        for (const a of agentInstances) {
           if (a.workspace === '.' || a.workspace === '') {
-            return { ...a, workspace: cwd };
+            updateAgentInstance(a.id, { workspace: cwd });
+          } else if (!a.workspace.startsWith('/')) {
+            updateAgentInstance(a.id, { workspace: `${cwd}/${a.workspace}` });
           }
-          if (!a.workspace.startsWith('/')) {
-            return { ...a, workspace: `${cwd}/${a.workspace}` };
-          }
-          return a;
-        });
-        setAgentInstances(updated);
+        }
       } catch {
         // ignore
       }
@@ -179,8 +163,12 @@ export default function WorkspacePage() {
     localStorage.setItem('agent_instances', JSON.stringify(agentInstances));
   }, [agentInstances]);
   useEffect(() => {
-    localStorage.setItem('active_agent_id', activeAgentId);
-    localStorage.setItem('selected_agent', activeAgent.agentKey);
+    if (activeAgentId) {
+      localStorage.setItem('active_agent_id', activeAgentId);
+    }
+    if (activeAgent) {
+      localStorage.setItem('selected_agent', activeAgent.agentKey);
+    }
   }, [activeAgentId, activeAgent]);
 
   // 加载会话列表
@@ -208,7 +196,7 @@ export default function WorkspacePage() {
   const loadMessages = useCallback(async (conversationId: string) => {
     const data = await db.loadMessages(conversationId, 100);
     setMessages(Array.isArray(data) ? data : []);
-  }, []);
+  }, [setMessages]);
 
   // 初始加载数据
   useEffect(() => {
@@ -217,16 +205,13 @@ export default function WorkspacePage() {
     loadModifiedFiles();
   }, [loadConversations, loadTasks, loadModifiedFiles]);
 
-  // Subscribe to session log store
+  // Load logs when active conversation changes
   useEffect(() => {
     if (!activeConversation) {
-      setSessionLogs([]);
+      useLogStore.setState({ logs: [], filteredLogs: [] });
       return;
     }
-    const update = () => setSessionLogs(sessionLog.getLogs(activeConversation.id));
-    update();
-    const unsubscribe = sessionLog.subscribe(update);
-    return unsubscribe;
+    useLogStore.getState().loadHistory(activeConversation.id);
   }, [activeConversation]);
 
   // 自动测试发送消息（开发调试用）
@@ -283,9 +268,7 @@ export default function WorkspacePage() {
         const name = defaultName.slice(0, 3);
         const existingInstance = agentInstances.find((a) => a.agentKey === currentAgent);
         if (existingInstance) {
-          setAgentInstances((prev) =>
-            prev.map((a) => (a.id === existingInstance.id ? { ...a, displayName: name } : a))
-          );
+          updateAgentInstance(existingInstance.id, { displayName: name });
         } else {
           const newInstance: AgentInstance = {
             id: Date.now().toString(),
@@ -294,8 +277,7 @@ export default function WorkspacePage() {
             workspace: localStorage.getItem('default_agent_workspace') || '.',
             modelConfig: { type: 'builtin', modelId: 'gpt-4' },
           };
-          setAgentInstances((prev) => [...prev, newInstance]);
-          setActiveAgentId(newInstance.id);
+          addAgentInstance(newInstance);
         }
       }
 
@@ -334,6 +316,7 @@ export default function WorkspacePage() {
     const agentInstance = agentInstances.find((a) => a.agentKey === conv.agent);
     if (agentInstance) {
       setActiveAgentId(agentInstance.id);
+      setChatActiveInstanceId(agentInstance.id);
     }
   };
 
@@ -351,11 +334,9 @@ export default function WorkspacePage() {
       toast.error('创建会话失败');
       return;
     }
-    if (data) {
-      setConversations((prev) => [data, ...prev]);
-      setActiveConversation(data);
-      setMessages([]);
-    }
+    setConversations((prev) => [data, ...prev]);
+    setActiveConversation(data);
+    setMessages([]);
   };
 
   // 新建智能体会话（点击+号）
@@ -378,8 +359,7 @@ export default function WorkspacePage() {
       workspace: workspace || '.',
       modelConfig: { type: 'builtin', modelId: 'gpt-4' },
     };
-    setAgentInstances((prev) => [...prev, newInstance]);
-    setActiveAgentId(newInstance.id);
+    addAgentInstance(newInstance);
     toast.success(`已添加智能体 ${displayName}`);
 
     // 自动为该智能体创建一个新会话
@@ -401,6 +381,7 @@ export default function WorkspacePage() {
   // 激活智能体
   const handleActivateAgent = async (id: string) => {
     setActiveAgentId(id);
+    setChatActiveInstanceId(id);
     const instance = agentInstances.find((a) => a.id === id);
     if (!instance) return;
 
@@ -485,13 +466,13 @@ export default function WorkspacePage() {
     }
 
     setMessages((prev) => [...prev, userMsg]);
-    setIsTyping(true);
+    setIsStreaming(true);
 
     // 创建流式临时消息
-    const streamingMsg: Message = {
+    const streamingMsg = {
       id: `streaming-${Date.now()}`,
       conversation_id: activeConversation.id,
-      role: 'assistant',
+      role: 'assistant' as const,
       content: '',
       steps: [],
       is_complete: false,
@@ -500,14 +481,14 @@ export default function WorkspacePage() {
     setMessages((prev) => [...prev, streamingMsg]);
 
     try {
-      await agentSendMessage(activeAgentId, content, activeConversation.id);
+      await chatSendMessage(content);
     } catch (error) {
       const errMsg = String(error);
       toast.error(`通信错误: ${errMsg}`);
       setMessages((prev) => prev.filter((msg) => msg.id !== streamingMsg.id));
     }
 
-    setIsTyping(false);
+    setIsStreaming(false);
   };
 
   // 处理权限询问回答
@@ -641,7 +622,7 @@ export default function WorkspacePage() {
           <SessionLogDrawer
             logs={sessionLogs}
             onClose={() => setLogDrawerOpen(false)}
-            onClear={() => sessionLog.clear(activeConversation.id)}
+            onClear={() => useLogStore.setState({ logs: [], filteredLogs: [] })}
           />
         )}
       </div>

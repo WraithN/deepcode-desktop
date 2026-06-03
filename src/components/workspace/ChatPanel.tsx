@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { Message, MessageStep, Conversation } from '@/types/types';
+import { useChatStore } from '@/stores';
 import {
   Send, Bot, User, Code2, Copy, Check,
   Brain, Wrench, FileCheck, Lightbulb,
@@ -14,8 +15,8 @@ import {
 } from '@/components/ui/popover';
 
 interface ChatPanelProps {
-  messages: Message[];
-  isTyping: boolean;
+  messages?: Message[];
+  isTyping?: boolean;
   activeConversation: Conversation | null;
   conversations: Conversation[];
   activeAgentName: string;
@@ -24,7 +25,7 @@ interface ChatPanelProps {
   agentMode: 'plan' | 'build';
   currentSkill: string;
   editContent?: string;
-  onSendMessage: (content: string) => void;
+  onSendMessage?: (content: string) => void;
   onAgentModeChange: (mode: 'plan' | 'build') => void;
   onModelChange: (model: string) => void;
   onSkillChange: (skill: string) => void;
@@ -628,8 +629,8 @@ function SkillSelector({ value, onChange, onInsertSkill }: { value: string; onCh
 // ========================== 主组件 ==========================
 
 export default function ChatPanel({
-  messages,
-  isTyping,
+  messages: messagesProp,
+  isTyping: isTypingProp,
   activeConversation,
   conversations,
   activeAgentName,
@@ -648,6 +649,13 @@ export default function ChatPanel({
   onEditUserMessage,
   onRetryStep,
 }: ChatPanelProps) {
+  const storeMessages = useChatStore((s) => s.messages);
+  const storeIsStreaming = useChatStore((s) => s.isStreaming);
+  const storeSendMessage = useChatStore((s) => s.sendMessage);
+
+  const messages = messagesProp ?? storeMessages;
+  const isTyping = isTypingProp ?? storeIsStreaming;
+
   const [input, setInput] = useState('');
   const [convSearch, setConvSearch] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -672,9 +680,13 @@ export default function ChatPanel({
   const handleSend = async () => {
     if (!input.trim()) return;
     try {
-      await onSendMessage(input.trim());
+      if (onSendMessage) {
+        await onSendMessage(input.trim());
+      } else {
+        await storeSendMessage(input.trim());
+      }
     } catch (e) {
-      console.error('[ChatPanel] onSendMessage failed:', e);
+      console.error('[ChatPanel] sendMessage failed:', e);
     }
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';

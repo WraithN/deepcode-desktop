@@ -10,6 +10,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
+import { useAgentStore } from '@/stores';
 
 export interface AgentModelConfig {
   type: 'builtin' | 'custom';
@@ -27,21 +28,11 @@ export interface AgentInstance {
   modelConfig?: AgentModelConfig;
 }
 
-import AgentIcon from './AgentIcon';
-
-const agentConfig: Record<string, { name: string; color: string; bg: string; letter: string; desc: string; border: string }> = {
-  opencode: { name: 'OpenCode', color: 'text-green-400', bg: 'bg-green-400/15', letter: 'O', desc: '全能型编程助手', border: 'border-green-400/20' },
-  'claude-code': { name: 'Claude Code', color: 'text-orange-400', bg: 'bg-orange-400/15', letter: 'C', desc: '代码理解与重构专家', border: 'border-orange-400/20' },
-  'cursor-agent': { name: 'Cursor Agent', color: 'text-blue-400', bg: 'bg-blue-400/15', letter: 'C', desc: '智能补全与生成', border: 'border-blue-400/20' },
-  codex: { name: 'Codex', color: 'text-purple-400', bg: 'bg-purple-400/15', letter: 'X', desc: 'OpenAI软件工程模型', border: 'border-purple-400/20' },
-  custom: { name: '自定义', color: 'text-primary', bg: 'bg-primary/15', letter: 'C', desc: '自由配置的智能体', border: 'border-primary/20' },
-};
-
 interface LeftPanelProps {
   conversations: Conversation[];
   activeConversation: Conversation | null;
-  agentInstances: AgentInstance[];
-  activeAgentId: string | null;
+  agentInstances?: AgentInstance[];
+  activeAgentId?: string | null;
   messages: Message[];
   collapsed: boolean;
   onToggleCollapse: () => void;
@@ -51,6 +42,16 @@ interface LeftPanelProps {
   onAddAgent: () => void;
   onActivateAgent: (id: string) => void;
 }
+
+import AgentIcon from './AgentIcon';
+
+const agentConfig: Record<string, { name: string; color: string; bg: string; letter: string; desc: string; border: string }> = {
+  opencode: { name: 'OpenCode', color: 'text-green-400', bg: 'bg-green-400/15', letter: 'O', desc: '全能型编程助手', border: 'border-green-400/20' },
+  'claude-code': { name: 'Claude Code', color: 'text-orange-400', bg: 'bg-orange-400/15', letter: 'C', desc: '代码理解与重构专家', border: 'border-orange-400/20' },
+  'cursor-agent': { name: 'Cursor Agent', color: 'text-blue-400', bg: 'bg-blue-400/15', letter: 'C', desc: '智能补全与生成', border: 'border-blue-400/20' },
+  codex: { name: 'Codex', color: 'text-purple-400', bg: 'bg-purple-400/15', letter: 'X', desc: 'OpenAI软件工程模型', border: 'border-purple-400/20' },
+  custom: { name: '自定义', color: 'text-primary', bg: 'bg-primary/15', letter: 'C', desc: '自由配置的智能体', border: 'border-primary/20' },
+};
 
 const rawMockFiles = [
   'src/App.tsx',
@@ -191,8 +192,8 @@ type TabType = 'files' | 'chat' | 'agent';
 export default function LeftPanel({
   conversations,
   activeConversation,
-  agentInstances,
-  activeAgentId,
+  agentInstances: agentInstancesProp,
+  activeAgentId: activeAgentIdProp,
   messages,
   collapsed,
   onToggleCollapse,
@@ -202,6 +203,11 @@ export default function LeftPanel({
   onAddAgent,
   onActivateAgent,
 }: LeftPanelProps) {
+  const storeInstances = useAgentStore((s) => s.instances);
+  const storeActiveId = useAgentStore((s) => s.activeInstanceId);
+  const agentInstances = agentInstancesProp ?? storeInstances;
+  const activeAgentId = activeAgentIdProp ?? storeActiveId;
+
   const [activeTab, setActiveTab] = useState<TabType>('chat');
   const [hoveredFile, setHoveredFile] = useState<string | null>(null);
   const [hoveredConv, setHoveredConv] = useState<string | null>(null);

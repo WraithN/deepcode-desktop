@@ -8,7 +8,7 @@ export interface SessionLogEntry {
   level: 'debug' | 'info' | 'warn' | 'error';
   source: string;
   message: string;
-  payload?: unknown;
+  detail?: Record<string, unknown>;
 }
 
 interface LogState {

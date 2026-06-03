@@ -1,13 +1,6 @@
 import { create } from 'zustand';
 import { useWebSocketStore } from './websocketStore';
-
-export interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  steps?: AgentEvent[];
-  createdAt: string;
-}
+import type { Message, MessageStep, AskQuestion } from '@/types/types';
 
 export type AgentEvent =
   | { type: 'thinking'; content: string }
@@ -31,6 +24,43 @@ interface ChatState {
   loadConversation: (conversationId: string) => Promise<void>;
   setCurrentConversation: (conversationId: string | null) => void;
   setActiveInstanceId: (instanceId: string | null) => void;
+  setMessages: (messages: Message[] | ((prev: Message[]) => Message[])) => void;
+  setConversations: (conversations: Array<{ id: string; title: string }>) => void;
+  setIsStreaming: (isStreaming: boolean) => void;
+}
+
+function agentEventToMessageStep(event: AgentEvent): MessageStep | null {
+  switch (event.type) {
+    case 'thinking':
+      return { type: 'thinking', content: event.content };
+    case 'tool_use': {
+      const args = event.args as Record<string, unknown> | undefined;
+      return {
+        type: 'tool_use',
+        content: `使用工具 ${event.toolName}...`,
+        toolName: event.toolName,
+        summary: { file: args?.file as string | undefined, lines: 0, durationMs: 0 },
+      };
+    }
+    case 'tool_result':
+      return { type: 'tool_result', content: event.result, toolName: event.toolName, failed: event.failed };
+    case 'ask_permission':
+      return { type: 'ask_permission', content: event.message, permissionType: event.toolName };
+    case 'ask_user': {
+      const questions: AskQuestion[] = event.questions.map((q, i) => ({
+        id: `q-${i}`,
+        label: q,
+        type: 'custom',
+      }));
+      return { type: 'ask_user', content: '请选择一个选项或输入自定义答案', questions };
+    }
+    case 'text_delta':
+    case 'error':
+    case 'done':
+      return null;
+    default:
+      return null;
+  }
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -53,9 +83,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Add user message immediately
     const userMessage: Message = {
       id: `msg-${Date.now()}`,
+      conversation_id: conversationId,
       role: 'user',
       content,
-      createdAt: new Date().toISOString(),
+      created_at: new Date().toISOString(),
     };
 
     set((state) => ({
@@ -78,7 +109,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const lastMessage = messages[messages.length - 1];
 
       if (event.type === 'done') {
-        return { isStreaming: false };
+        if (lastMessage && lastMessage.role === 'assistant') {
+          messages[messages.length - 1] = { ...lastMessage, is_complete: true };
+        }
+        return { isStreaming: false, messages };
       }
 
       if (event.type === 'error') {
@@ -88,40 +122,59 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...messages,
             {
               id: `msg-${Date.now()}`,
+              conversation_id: state.currentConversationId || '',
               role: 'assistant',
               content: `Error: ${event.message}`,
-              createdAt: new Date().toISOString(),
+              is_complete: true,
+              created_at: new Date().toISOString(),
             },
           ],
         };
       }
 
-      if (lastMessage && lastMessage.role === 'assistant') {
-        // Update existing assistant message
-        const updatedLastMessage = { ...lastMessage };
-
-        if (event.type === 'text_delta') {
-          updatedLastMessage.content = (updatedLastMessage.content || '') + event.content;
+      if (event.type === 'text_delta') {
+        if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.is_complete) {
+          messages[messages.length - 1] = {
+            ...lastMessage,
+            content: (lastMessage.content || '') + event.content,
+          };
+          return { messages };
         }
-
-        if (!updatedLastMessage.steps) {
-          updatedLastMessage.steps = [];
-        }
-        updatedLastMessage.steps.push(event);
-
-        messages[messages.length - 1] = updatedLastMessage;
-        return { messages };
-      } else {
-        // Create new assistant message
+        // Create new streaming assistant message
         const assistantMessage: Message = {
           id: `msg-${Date.now()}`,
+          conversation_id: state.currentConversationId || '',
           role: 'assistant',
-          content: event.type === 'text_delta' ? event.content : '',
-          steps: [event],
-          createdAt: new Date().toISOString(),
+          content: event.content,
+          is_complete: false,
+          created_at: new Date().toISOString(),
         };
         return { messages: [...messages, assistantMessage] };
       }
+
+      const step = agentEventToMessageStep(event);
+      if (!step) return { messages };
+
+      if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.is_complete) {
+        const updatedLastMessage = {
+          ...lastMessage,
+          steps: [...(lastMessage.steps || []), step],
+        };
+        messages[messages.length - 1] = updatedLastMessage;
+        return { messages };
+      }
+
+      // Create new assistant message with step
+      const assistantMessage: Message = {
+        id: `msg-${Date.now()}`,
+        conversation_id: state.currentConversationId || '',
+        role: 'assistant',
+        content: '',
+        steps: [step],
+        is_complete: false,
+        created_at: new Date().toISOString(),
+      };
+      return { messages: [...messages, assistantMessage] };
     });
   },
 
@@ -135,5 +188,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setActiveInstanceId: (instanceId) => {
     set({ activeInstanceId: instanceId });
+  },
+
+  setMessages: (messages) => {
+    if (typeof messages === 'function') {
+      set((state) => ({ messages: messages(state.messages) }));
+    } else {
+      set({ messages });
+    }
+  },
+
+  setConversations: (conversations) => {
+    set({ conversations });
+  },
+
+  setIsStreaming: (isStreaming) => {
+    set({ isStreaming });
   },
 }));

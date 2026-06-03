@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { X, Trash2 } from 'lucide-react';
+import { useLogStore } from '@/stores';
 import type { LogEntry } from '@/store/session-log';
 
 interface SessionLogDrawerProps {
-  logs: LogEntry[];
+  logs?: LogEntry[];
   onClose: () => void;
-  onClear: () => void;
+  onClear?: () => void;
 }
 
 const levelColors: Record<string, string> = {
@@ -22,7 +23,8 @@ const levelBg: Record<string, string> = {
   debug: '',
 };
 
-const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ logs, onClose, onClear }) => {
+const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ onClose, onClear }) => {
+  const logs = useLogStore((s) => s.logs);
   const [height, setHeight] = useState(200);
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -59,6 +61,11 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ logs, onClose, onCl
     }
   }, [logs]);
 
+  const handleClear = () => {
+    useLogStore.setState({ logs: [], filteredLogs: [] });
+    onClear?.();
+  };
+
   return (
     <div
       ref={containerRef}
@@ -76,7 +83,7 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ logs, onClose, onCl
         <span className="text-xs font-semibold text-gray-400">Session Logs ({logs.length})</span>
         <div className="flex items-center gap-1">
           <button
-            onClick={onClear}
+            onClick={handleClear}
             className="p-1 text-gray-500 hover:text-red-400 transition-colors"
             title="Clear logs"
           >
