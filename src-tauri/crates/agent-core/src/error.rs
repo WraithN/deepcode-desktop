@@ -20,6 +20,8 @@ pub enum InstanceError {
     SendFailed(String),
     #[error("Process error: {0}")]
     ProcessError(String),
+    #[error("MCP error: {0}")]
+    McpError(String),
 }
 
 #[cfg(test)]
