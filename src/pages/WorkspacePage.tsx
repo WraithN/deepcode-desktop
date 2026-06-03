@@ -95,9 +95,11 @@ export default function WorkspacePage() {
     const stored = getStoredAgents();
     if (stored.length > 0) {
       setAgentInstances(stored);
-      setActiveAgentId(getStoredActiveAgentId());
+      const activeId = getStoredActiveAgentId();
+      setActiveAgentId(activeId);
+      setChatActiveInstanceId(activeId);
     }
-  }, [setAgentInstances, setActiveAgentId]);
+  }, [setAgentInstances, setActiveAgentId, setChatActiveInstanceId]);
 
   const activeAgent = agentInstances.find((a) => a.id === activeAgentId) || agentInstances[0] || defaultAgents[0];
 
