@@ -6,13 +6,13 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
-pub fn agent_list_plugins(service: State<'_, AgentService>) -> Result<Vec<PluginInfo>, String> {
+pub fn agent_list_plugins(service: State<'_, Arc<AgentService>>) -> Result<Vec<PluginInfo>, String> {
     Ok(service.list_plugins())
 }
 
 #[tauri::command]
 pub async fn agent_create_instance(
-    service: State<'_, AgentService>,
+    service: State<'_, Arc<AgentService>>,
     plugin_key: String,
     name: String,
     workspace: String,
@@ -27,7 +27,7 @@ pub async fn agent_create_instance(
 
 #[tauri::command]
 pub async fn agent_send_message(
-    service: State<'_, AgentService>,
+    service: State<'_, Arc<AgentService>>,
     logger: State<'_, Arc<SessionLogger>>,
     instance_id: String,
     message: String,
@@ -67,7 +67,7 @@ pub async fn agent_send_message(
 
 #[tauri::command]
 pub async fn agent_stop_instance(
-    service: State<'_, AgentService>,
+    service: State<'_, Arc<AgentService>>,
     instance_id: String,
 ) -> Result<(), String> {
     service.stop_instance(&instance_id).await.map_err(|e| e.to_string())
@@ -75,7 +75,7 @@ pub async fn agent_stop_instance(
 
 #[tauri::command]
 pub async fn agent_get_instance(
-    service: State<'_, AgentService>,
+    service: State<'_, Arc<AgentService>>,
     instance_id: String,
 ) -> Result<InstanceInfo, String> {
     service
@@ -85,7 +85,7 @@ pub async fn agent_get_instance(
 }
 
 #[tauri::command]
-pub async fn agent_list_instances(service: State<'_, AgentService>) -> Result<Vec<InstanceInfo>, String> {
+pub async fn agent_list_instances(service: State<'_, Arc<AgentService>>) -> Result<Vec<InstanceInfo>, String> {
     Ok(service.list_instances().await)
 }
 

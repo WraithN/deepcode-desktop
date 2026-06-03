@@ -5,6 +5,8 @@ use rusqlite::{params, Connection, OptionalExtension, Result as SqliteResult};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 use sidecar_manager::{SidecarManager, check_opencode_installed, get_sidecar_status, start_sidecar, stop_sidecar};
@@ -424,6 +426,16 @@ fn db_create_modified_file(state: State<DbState>, data: Value) -> Result<Value, 
     }))
 }
 
+fn start_ws_server(
+    ws_server: &mut gateway::server::WebSocketServer,
+    shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) -> Result<SocketAddr, String> {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        ws_server.start(shutdown_rx).await
+    }).map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -446,12 +458,21 @@ fn main() {
 
             // 初始化 AgentService 并注册 opencode plugin
             let app_handle = app.handle().clone();
-            let mut agent_service = service::agent_service::AgentService::new(logger.clone());
-            agent_service.register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(
+            let mut agent_service = Arc::new(service::agent_service::AgentService::new(logger.clone()));
+            Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(
                 app_handle,
                 logger.clone(),
             )));
-            app.manage(agent_service);
+            app.manage(agent_service.clone());
+
+            // 初始化 WebSocket server
+            let router = Arc::new(gateway::router::GatewayRouter::new(agent_service));
+            let mut ws_server = gateway::server::WebSocketServer::new(router);
+            let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+            let addr = start_ws_server(&mut ws_server, shutdown_rx).unwrap();
+            app.manage(commands::system::WebSocketState {
+                addr: Mutex::new(Some(addr)),
+            });
 
             // 启动 Sidecar 健康检查后台线程（每 5 秒）
             let app_handle = app.handle().clone();
@@ -499,6 +520,7 @@ fn main() {
             commands::agent::agent_test_emit,
             commands::agent::agent_test_emit_agent_event,
             commands::session_log::session_log_load,
+            commands::system::get_websocket_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
