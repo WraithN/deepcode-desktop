@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { useWebSocketStore } from './websocketStore';
 
 export interface SessionLogEntry {
-  id: number;
+  id: string;
   conversationId: string;
   timestamp: string;
   level: 'debug' | 'info' | 'warn' | 'error';

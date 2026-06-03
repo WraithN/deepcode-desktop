@@ -1,4 +1,9 @@
 import { cn } from '@/lib/utils'
+
+interface FileWithPreview extends File {
+  preview?: string
+}
+
 interface FileUploadState {
   files: FileWithPreview[]
   setFiles: React.Dispatch<React.SetStateAction<FileWithPreview[]>>
@@ -136,7 +141,7 @@ const DropzoneContent = ({ className }: { className?: string }) => {
               {file.errors.length > 0 ? (
                 <p className="text-xs text-destructive">
                   {file.errors
-                    .map((e) =>
+                    .map((e: { message: string }) =>
                       e.message.startsWith('File is larger than')
                         ? `File is larger than ${formatBytes(maxFileSize, 2)} (Size: ${formatBytes(file.size, 2)})`
                         : e.message
