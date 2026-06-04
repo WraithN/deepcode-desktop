@@ -1,4 +1,4 @@
-use crate::gateway::codec::{JsonRpcRequest, JsonRpcResponse, INVALID_PARAMS, PLUGIN_NOT_FOUND, INSTANCE_NOT_FOUND, INSTANCE_LIMIT_EXCEEDED, PROCESS_SPAWN_FAILED, MCP_INIT_FAILED};
+use crate::gateway::codec::{JsonRpcRequest, JsonRpcResponse, INVALID_PARAMS, INSTANCE_NOT_FOUND};
 use crate::service::agent_service::AgentService;
 use serde_json::json;
 use std::sync::Arc;
@@ -10,6 +10,7 @@ pub async fn handle_agent_request(
     match req.method.as_str() {
         "agent.createInstance" => handle_create_instance(service, req).await,
         "agent.sendMessage" => handle_send_message(service, req).await,
+        "agent.run" => handle_run(service, req).await,
         "agent.stopInstance" => handle_stop_instance(service, req).await,
         "agent.listInstances" => handle_list_instances(service, req).await,
         "agent.getInstance" => handle_get_instance(service, req).await,
@@ -23,7 +24,7 @@ pub async fn handle_agent_request(
     }
 }
 
-async fn handle_create_instance(service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_create_instance(_service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
     let plugin_key = req.params.get("pluginKey").and_then(|v| v.as_str());
     let name = req.params.get("name").and_then(|v| v.as_str());
     let workspace = req.params.get("workspace").and_then(|v| v.as_str());
@@ -42,9 +43,9 @@ async fn handle_create_instance(service: Arc<AgentService>, req: JsonRpcRequest)
     }))
 }
 
-async fn handle_send_message(service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_send_message(_service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
     let instance_id = req.params.get("instanceId").and_then(|v| v.as_str());
-    let conversation_id = req.params.get("conversationId").and_then(|v| v.as_str());
+    let _conversation_id = req.params.get("conversationId").and_then(|v| v.as_str());
     let message = req.params.get("message").and_then(|v| v.as_str());
     
     if instance_id.is_none() || message.is_none() {
@@ -54,7 +55,13 @@ async fn handle_send_message(service: Arc<AgentService>, req: JsonRpcRequest) ->
     JsonRpcResponse::success(req.id, json!({"status": "dispatched"}))
 }
 
-async fn handle_stop_instance(service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_run(_service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
+    // agent.run is handled by the streaming system
+    // This is a placeholder - actual streaming is triggered via WebSocket notifications
+    JsonRpcResponse::success(req.id, json!({"status": "started"}))
+}
+
+async fn handle_stop_instance(_service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
     let instance_id = req.params.get("instanceId").and_then(|v| v.as_str());
     
     if instance_id.is_none() {
@@ -64,11 +71,11 @@ async fn handle_stop_instance(service: Arc<AgentService>, req: JsonRpcRequest) -
     JsonRpcResponse::success(req.id, json!({"status": "stopped"}))
 }
 
-async fn handle_list_instances(service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_list_instances(_service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(req.id, json!([]))
 }
 
-async fn handle_get_instance(service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_get_instance(_service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
     let instance_id = req.params.get("instanceId").and_then(|v| v.as_str());
     
     if instance_id.is_none() {
@@ -78,7 +85,7 @@ async fn handle_get_instance(service: Arc<AgentService>, req: JsonRpcRequest) ->
     JsonRpcResponse::error(req.id, INSTANCE_NOT_FOUND, "Instance not found", None)
 }
 
-async fn handle_set_mode(service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
+async fn handle_set_mode(_service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
     let instance_id = req.params.get("instanceId").and_then(|v| v.as_str());
     let mode = req.params.get("mode").and_then(|v| v.as_str());
     

@@ -1,5 +1,6 @@
 use super::codec::{JsonRpcRequest, JsonRpcResponse};
 use super::router::GatewayRouter;
+
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -39,7 +40,7 @@ pub async fn handle_connection(
 
     let handle = ConnectionHandle {
         id: conn_id.clone(),
-        sender: tx,
+        sender: tx.clone(),
     };
 
     // Register connection with router

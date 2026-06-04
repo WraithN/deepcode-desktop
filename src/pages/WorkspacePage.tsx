@@ -16,8 +16,8 @@ import AddAgentDialog from '@/components/workspace/AddAgentDialog';
 import AgentIcon from '@/components/workspace/AgentIcon';
 import SessionLogDrawer from '@/components/workspace/SessionLogDrawer';
 import { invoke } from '@tauri-apps/api/core';
-import { useWebSocketStore, useChatStore, useAgentStore, useLogStore } from '@/stores';
-import type { AgentEvent } from '@/stores';
+import { useWebSocketStore, useChatStore, useAgentStore, useLogStore, useSessionWsStore, setSessionWsBaseUrl } from '@/stores';
+import type { AgentEvent, StreamEvent } from '@/stores';
 import { generateShortId, formatIdShort } from '@/lib/id';
 
 const defaultAgents: AgentInstance[] = [
@@ -72,7 +72,6 @@ export default function WorkspacePage() {
   // Store hooks
   const messages = useChatStore((s) => s.messages);
   const setMessages = useChatStore((s) => s.setMessages);
-  const isStreaming = useChatStore((s) => s.isStreaming);
   const setIsStreaming = useChatStore((s) => s.setIsStreaming);
   const chatSendMessage = useChatStore((s) => s.sendMessage);
   const appendEvent = useChatStore((s) => s.appendEvent);
@@ -88,7 +87,9 @@ export default function WorkspacePage() {
 
   const logStoreAppend = useLogStore((s) => s.appendLog);
   const sessionLogs = useLogStore((s) => s.logs);
-  const isTyping = isStreaming;
+  const isTyping = useChatStore((s) => s.isTyping);
+  const handleStreamEvent = useChatStore((s) => s.handleStreamEvent);
+  const sessionWs = useSessionWsStore();
 
   // 智能体实例管理
   useEffect(() => {
@@ -108,6 +109,9 @@ export default function WorkspacePage() {
     const init = async () => {
       try {
         const url = await invoke<string>('get_websocket_url');
+        // 设置会话 WebSocket 基础 URL（去掉 ws:// 前缀后的部分）
+        const wsUrl = url.replace(/^ws:\/\//, '');
+        setSessionWsBaseUrl(`ws://${wsUrl}`);
         await useWebSocketStore.getState().connect(url);
       } catch (e) {
         console.error('Failed to connect WebSocket:', e);
@@ -118,18 +122,18 @@ export default function WorkspacePage() {
 
   // 订阅 WebSocket 事件
   useEffect(() => {
-    const ws = useWebSocketStore.getState();
+    const wsStore = useWebSocketStore.getState();
 
-    const unsubEvents = ws.subscribe('agent.event', (params) => {
+    const unsubEvents = wsStore.subscribe('agent.event', (params) => {
       appendEvent(params as AgentEvent);
     });
 
-    const unsubStatus = ws.subscribe('agent.status', (params) => {
+    const unsubStatus = wsStore.subscribe('agent.status', (params: unknown) => {
       const { instanceId, status, pid } = params as { instanceId: string; status: string; pid?: number };
       useAgentStore.getState().updateInstanceStatus(instanceId, status as AgentInstance['status'], pid);
     });
 
-    const unsubLogs = ws.subscribe('session.log', (params) => {
+    const unsubLogs = wsStore.subscribe('session.log', (params: unknown) => {
       logStoreAppend(params as Parameters<typeof logStoreAppend>[0]);
     });
 
@@ -139,6 +143,22 @@ export default function WorkspacePage() {
       unsubLogs();
     };
   }, [appendEvent, logStoreAppend]);
+
+  // 激活会话时建立每会话 WebSocket 连接
+  useEffect(() => {
+    if (!activeConversation) return;
+
+    sessionWs.connect(activeConversation.id, (data) => {
+      // 处理流式事件
+      if (data && typeof data === 'object' && 'method' in data && !('id' in data)) {
+        handleStreamEvent(data as StreamEvent);
+      }
+    });
+
+    return () => {
+      sessionWs.disconnect(activeConversation.id);
+    };
+  }, [activeConversation?.id]);
 
   // 将相对路径的工作目录解析为绝对路径
   useEffect(() => {
@@ -316,12 +336,6 @@ export default function WorkspacePage() {
     setMessages([]);
   };
 
-  // 新建智能体会话（点击+号）
-  const handleNewAgentSession = () => {
-    localStorage.setItem('should_create_new_session', 'true');
-    navigate('/select-agent');
-  };
-
   // 添加智能体
   const handleAddAgent = () => {
     setAddAgentOpen(true);
@@ -378,28 +392,7 @@ export default function WorkspacePage() {
     toast.success(`已删除智能体 ${instance.displayName}`);
   };
 
-  // 清空所有 mock 数据
-  const handleClearAllData = () => {
-    // 清空智能体
-    setAgentInstances([]);
-    setActiveAgentId(null);
-    setChatActiveInstanceId(null);
-    
-    // 清空会话和消息
-    setConversations([]);
-    setActiveConversation(null);
-    setMessages([]);
-    
-    // 清空本地存储
-    localStorage.removeItem('agent_instances');
-    localStorage.removeItem('active_agent_id');
-    localStorage.removeItem('selected_agent');
-    localStorage.removeItem('should_create_new_session');
-    localStorage.removeItem('default_agent_name');
-    localStorage.removeItem('default_agent_workspace');
-    
-    toast.success('已清空所有数据');
-  };
+
 
   // 激活智能体
   const handleActivateAgent = async (id: string) => {
@@ -499,14 +492,14 @@ export default function WorkspacePage() {
   };
 
   // 处理权限询问回答
-  const handleAnswerPermission = (stepIndex: number, answer: 'once' | 'session' | 'deny') => {
+  const handleAnswerPermission = (_stepIndex: number, answer: 'once' | 'session' | 'deny') => {
     const label = answer === 'once' ? '本次同意' : answer === 'session' ? '本Session同意' : '不同意';
     toast.success(`已${label}`);
     setContextPercent((prev) => Math.min(prev + 5, 100));
   };
 
   // 处理用户问题回答
-  const handleAnswerUserQuestions = (stepIndex: number, answers: Record<string, string>) => {
+  const handleAnswerUserQuestions = (_stepIndex: number, _answers: Record<string, string>) => {
     toast.success('已提交回答');
     setContextPercent((prev) => Math.min(prev + 3, 100));
   };

@@ -462,8 +462,22 @@ fn main() {
             )));
             app.manage(agent_service.clone());
 
+            // 初始化服务和 SessionManager
+            let db_conn = Connection::open(&db_path).expect("打开数据库失败");
+            let db_service = Arc::new(service::db_service::DbService::new(Arc::new(Mutex::new(db_conn))));
+            let opencode_service = Arc::new(service::opencode_service::OpencodeService::new().unwrap_or_else(|e| {
+                log::warn!("Failed to initialize OpencodeService: {}, using fallback", e);
+                service::opencode_service::OpencodeService::new_fallback()
+            }));
+            let session_manager = Arc::new(gateway::session_manager::SessionManager::new());
+
             // 初始化 WebSocket server
-            let router = Arc::new(gateway::router::GatewayRouter::new(agent_service));
+            let router = Arc::new(gateway::router::GatewayRouter::new(
+                agent_service,
+                db_service,
+                opencode_service,
+                session_manager,
+            ));
             let mut ws_server = gateway::server::WebSocketServer::new(router);
             let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
             let addr = start_ws_server(&mut ws_server, shutdown_rx).unwrap();

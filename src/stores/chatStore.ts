@@ -12,21 +12,33 @@ export type AgentEvent =
   | { type: 'error'; message: string }
   | { type: 'done' };
 
+export type StreamEvent =
+  | { method: 'agent.thinking'; params: { content?: string } }
+  | { method: 'agent.token'; params: { text?: string } }
+  | { method: 'agent.done'; params: { sessionID?: string } }
+  | { method: 'agent.error'; params: { message?: string } };
+
 interface ChatState {
   conversations: Array<{ id: string; title: string }>;
   currentConversationId: string | null;
+  opencodeSessionId: string | null;
   messages: Message[];
   isStreaming: boolean;
+  isTyping: boolean;
   activeInstanceId: string | null;
 
   sendMessage: (content: string) => Promise<void>;
   appendEvent: (event: AgentEvent) => void;
+  handleStreamEvent: (event: StreamEvent) => void;
   loadConversation: (conversationId: string) => Promise<void>;
   setCurrentConversation: (conversationId: string | null) => void;
   setActiveInstanceId: (instanceId: string | null) => void;
   setMessages: (messages: Message[] | ((prev: Message[]) => Message[])) => void;
   setConversations: (conversations: Array<{ id: string; title: string }>) => void;
   setIsStreaming: (isStreaming: boolean) => void;
+  setIsTyping: (isTyping: boolean) => void;
+  setOpencodeSessionId: (sessionId: string | null) => void;
+  appendToken: (token: string) => void;
 }
 
 function agentEventToMessageStep(event: AgentEvent): MessageStep | null {
@@ -66,8 +78,10 @@ function agentEventToMessageStep(event: AgentEvent): MessageStep | null {
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversationId: null,
+  opencodeSessionId: null,
   messages: [],
   isStreaming: false,
+  isTyping: false,
   activeInstanceId: null,
 
   sendMessage: async (content: string) => {
@@ -92,6 +106,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       messages: [...state.messages, userMessage],
       isStreaming: true,
+      isTyping: true,
       currentConversationId: conversationId,
     }));
 
@@ -112,12 +127,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (lastMessage && lastMessage.role === 'assistant') {
           messages[messages.length - 1] = { ...lastMessage, is_complete: true };
         }
-        return { isStreaming: false, messages };
+        return { isStreaming: false, isTyping: false, messages };
       }
 
       if (event.type === 'error') {
         return {
           isStreaming: false,
+          isTyping: false,
           messages: [
             ...messages,
             {
@@ -178,6 +194,67 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
+  handleStreamEvent: (event: StreamEvent) => {
+    const { appendToken, setIsTyping, setIsStreaming, setOpencodeSessionId } = get();
+
+    switch (event.method) {
+      case 'agent.thinking':
+        // 可以记录思考内容，保持 isTyping = true
+        break;
+
+      case 'agent.token': {
+        const params = event.params as { text?: string };
+        if (params.text) {
+          // 第一个 token 到达，关闭 isTyping
+          setIsTyping(false);
+          appendToken(params.text);
+        }
+        break;
+      }
+
+      case 'agent.done': {
+        const params = event.params as { sessionID?: string };
+        if (params.sessionID) {
+          setOpencodeSessionId(params.sessionID);
+        }
+        setIsStreaming(false);
+        setIsTyping(false);
+
+        // 标记最后一条消息完成
+        set((state) => {
+          const msgs = [...state.messages];
+          const lastMsg = msgs[msgs.length - 1];
+          if (lastMsg && lastMsg.role === 'assistant') {
+            lastMsg.is_complete = true;
+          }
+          return { messages: msgs };
+        });
+        break;
+      }
+
+      case 'agent.error': {
+        const params = event.params as { message?: string };
+        console.error('Agent error:', params.message);
+        setIsStreaming(false);
+        setIsTyping(false);
+        break;
+      }
+    }
+  },
+
+  appendToken: (token: string) => {
+    set((state) => {
+      const msgs = [...state.messages];
+      const lastMsg = msgs[msgs.length - 1];
+
+      if (lastMsg && lastMsg.role === 'assistant' && !lastMsg.is_complete) {
+        lastMsg.content = (lastMsg.content || '') + token;
+      }
+
+      return { messages: msgs };
+    });
+  },
+
   loadConversation: async (conversationId: string) => {
     set({ currentConversationId: conversationId });
   },
@@ -204,5 +281,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setIsStreaming: (isStreaming) => {
     set({ isStreaming });
+  },
+
+  setIsTyping: (isTyping) => {
+    set({ isTyping });
+  },
+
+  setOpencodeSessionId: (sessionId) => {
+    set({ opencodeSessionId: sessionId });
   },
 }));
