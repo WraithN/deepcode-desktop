@@ -140,10 +140,33 @@ pnpm tauri build    # 打包桌面应用
 pnpm tauri build
 
 # 启动已构建的应用（Linux）
+# 方法1：使用启动脚本（推荐，兼容无 GPU 环境）
+bash run-desktop.sh
+
+# 方法2：直接启动（需要 GPU 支持）
 ./src-tauri/target/release/ai-coding-desktop
 ```
 
 启动后等待应用窗口出现，再告知用户进行测试。
+
+#### 启动脚本说明
+项目根目录包含 `run-desktop.sh` 启动脚本，用于在 WSL2、虚拟机或无 GPU 环境下启动桌面应用：
+
+```bash
+#!/bin/bash
+# 启动 DeepHarness Desktop（兼容无 GPU 环境）
+export LIBGL_ALWAYS_SOFTWARE=1          # 强制使用软件渲染
+export WEBKIT_DISABLE_COMPOSITING_MODE=1 # 禁用 WebKit 合成模式
+export WEBKIT_DISABLE_DMABUF_RENDERER=1  # 禁用 DMA-BUF 渲染器
+
+./src-tauri/target/release/ai-coding-desktop "$@"
+```
+
+**使用场景**：
+- WSL2 环境（WebKit GPU 加速不兼容）
+- 远程服务器/无头环境
+- 虚拟机环境
+- 任何出现 GPU 渲染错误的场景
 
 ### 环境要求
 - Node.js ≥ 20
