@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum InteractionRequest {
     Question { questions: Vec<QuestionItem> },
     Permission { tool_name: String, action: String },
+    #[serde(rename = "todowrite")]
     TodoWrite { todos: Vec<TodoItem> },
 }
 
