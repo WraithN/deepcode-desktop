@@ -1,12 +1,23 @@
 use std::process::{Child, Stdio};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use futures_util::StreamExt;
+use std::sync::Mutex as StdMutex;
+use crate::models::interaction::{InteractionRequest, QuestionItem, TodoItem};
+
+#[derive(Debug, Clone)]
+pub struct SseEvent {
+    pub event_type: String,
+    pub session_id: Option<String>,
+    pub payload: serde_json::Value,
+}
 
 pub struct OpencodeService {
     serve_process: Arc<Mutex<Option<Child>>>,
     port: u16,
     base_url: String,
     client: reqwest::Client,
+    event_sender: Arc<StdMutex<Option<tokio::sync::mpsc::Sender<SseEvent>>>>,
 }
 
 impl OpencodeService {
@@ -34,6 +45,7 @@ impl OpencodeService {
             port,
             base_url,
             client: reqwest::Client::new(),
+            event_sender: Arc::new(StdMutex::new(None)),
         })
     }
 
@@ -45,6 +57,7 @@ impl OpencodeService {
             port,
             base_url,
             client: reqwest::Client::new(),
+            event_sender: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -54,6 +67,75 @@ impl OpencodeService {
 
     pub fn get_attach_url(&self) -> String {
         self.base_url.clone()
+    }
+
+    pub fn set_event_sender(&self, sender: tokio::sync::mpsc::Sender<SseEvent>) {
+        if let Ok(mut guard) = self.event_sender.lock() {
+            *guard = Some(sender);
+        }
+    }
+
+    pub async fn start_event_listener(&self) {
+        let base_url = self.base_url.clone();
+        let sender = match self.event_sender.lock() {
+            Ok(guard) => match guard.clone() {
+                Some(s) => s,
+                None => {
+                    log::warn!("[opencode] event_sender not set, skipping SSE listener");
+                    return;
+                }
+            },
+            Err(_) => {
+                log::warn!("[opencode] event_sender lock poisoned, skipping SSE listener");
+                return;
+            }
+        };
+
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            loop {
+                match client
+                    .get(format!("{}/event", base_url))
+                    .header("Accept", "text/event-stream")
+                    .send()
+                    .await
+                {
+                    Ok(resp) => {
+                        let mut stream = resp.bytes_stream();
+                        while let Some(chunk) = stream.next().await {
+                            match chunk {
+                                Ok(bytes) => {
+                                    let text = String::from_utf8_lossy(&bytes);
+                                    for line in text.lines() {
+                                        if line.starts_with("data: ") {
+                                            let data = &line[6..];
+                                            if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                                                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                                                let session_id = event.get("properties").and_then(|p| p.get("sessionID")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                                                let _ = sender.send(SseEvent {
+                                                    event_type,
+                                                    session_id,
+                                                    payload: event,
+                                                }).await;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("[opencode] SSE stream error: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[opencode] SSE connect error: {}", e);
+                    }
+                }
+                log::info!("[opencode] SSE disconnected, retrying in 3s...");
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            }
+        });
     }
 
     /// 通过 opencode serve HTTP API 创建新会话
@@ -130,9 +212,11 @@ impl OpencodeService {
             .to_string();
 
         let mut text_parts: Vec<String> = Vec::new();
+        let mut all_parts: Vec<serde_json::Value> = Vec::new();
 
         if let Some(parts) = result.get("parts").and_then(|v| v.as_array()) {
             for part in parts {
+                all_parts.push(part.clone());
                 if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                     text_parts.push(text.to_string());
                 }
@@ -143,6 +227,8 @@ impl OpencodeService {
             text_parts.push("opencode 未返回内容".to_string());
         }
 
+        let interaction = detect_interaction_from_parts(&all_parts);
+
         Ok(serde_json::json!({
             "sessionID": session_id_result,
             "parts": text_parts.iter().map(|t| {
@@ -151,6 +237,7 @@ impl OpencodeService {
                     "text": t
                 })
             }).collect::<Vec<_>>(),
+            "interaction": interaction,
         }))
     }
 
@@ -176,4 +263,42 @@ impl Drop for OpencodeService {
             }
         }
     }
+}
+
+pub fn detect_interaction_from_parts(parts: &[serde_json::Value]) -> Option<InteractionRequest> {
+    for part in parts {
+        let part_type = part.get("type").and_then(|v| v.as_str());
+        match part_type {
+            Some("tool_use") => {
+                let tool_name = part.get("toolName").or_else(|| part.get("tool_name")).and_then(|v| v.as_str());
+                match tool_name {
+                    Some("question") => {
+                        if let Some(input) = part.get("input") {
+                            if let Ok(questions) = serde_json::from_value::<Vec<QuestionItem>>(input.get("questions").cloned().unwrap_or(serde_json::Value::Null)) {
+                                return Some(InteractionRequest::Question { questions });
+                            }
+                        }
+                    }
+                    Some("todowrite") => {
+                        if let Some(input) = part.get("input") {
+                            if let Ok(todos) = serde_json::from_value::<Vec<TodoItem>>(input.get("todos").cloned().unwrap_or(serde_json::Value::Null)) {
+                                return Some(InteractionRequest::TodoWrite { todos });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("permission") | Some("ask_permission") => {
+                let tool_name = part.get("toolName").or_else(|| part.get("tool_name")).and_then(|v| v.as_str()).unwrap_or("unknown");
+                let action = part.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                return Some(InteractionRequest::Permission {
+                    tool_name: tool_name.to_string(),
+                    action: action.to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    None
 }

@@ -817,6 +817,21 @@ fn main() {
                 service::opencode_service::OpencodeService::new_fallback()
             }));
             app.manage(opencode_service.clone());
+
+            let (event_tx, mut _event_rx) = tokio::sync::mpsc::channel::<crate::service::opencode_service::SseEvent>(100);
+            {
+                let svc = opencode_service.as_ref();
+                svc.set_event_sender(event_tx);
+            }
+
+            // Start SSE listener in background
+            let svc_for_sse = opencode_service.clone();
+            tokio::spawn(async move {
+                svc_for_sse.start_event_listener().await;
+            });
+
+            // TODO: In Task 3, we'll route SSE events to WebSocket sessions via event_rx
+
             let session_manager = Arc::new(gateway::session_manager::SessionManager::new());
             log::info!("[main.rs] Services initialized");
 
