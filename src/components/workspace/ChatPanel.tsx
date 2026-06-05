@@ -32,7 +32,7 @@ interface ChatPanelProps {
   onSkillChange: (skill: string) => void;
   onSelectConversation: (conv: Conversation) => void;
   onAnswerPermission: (stepIndex: number, answer: 'once' | 'session' | 'deny') => void;
-  onAnswerUserQuestions: (stepIndex: number, answers: Record<string, string>) => void;
+  onAnswerUserQuestions: (stepIndex: number, answers: Record<string, string | string[]>) => void;
   onEditUserMessage: (content: string) => void;
   onRetryStep?: (messageId: string, stepIndex: number) => void;
 }
@@ -80,28 +80,83 @@ function PermissionStep({ step, onAnswer }: {
 }) {
   const config = stepConfig.ask_permission;
   const Icon = config.icon;
+  const interaction = step.interaction;
+  const toolName = interaction?.toolName || step.permissionType || 'unknown';
+  const action = interaction?.action || step.content;
+
   return (
     <div className={`rounded-md border ${config.border} ${config.bg} overflow-hidden`}>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <Icon className={`w-3 h-3 shrink-0 ${config.labelColor}`} />
-        <span className={`text-[12px] font-medium ${config.labelColor}`}>{config.label}{step.permissionType && ` · ${step.permissionType}`}</span>
+        <span className={`text-[12px] font-medium ${config.labelColor}`}>
+          {config.label} · {toolName}
+        </span>
       </div>
-      <div className="px-3 pb-2 text-xs text-foreground leading-relaxed whitespace-pre-wrap">{step.content}</div>
+      <div className="px-3 pb-2 text-xs text-foreground leading-relaxed whitespace-pre-wrap">
+        {action}
+      </div>
       <div className="flex flex-col gap-1.5 px-3 pb-3">
-        <button type="button" onClick={() => onAnswer('once')} className="w-full py-2 px-3 text-xs rounded-md bg-primary/15 text-primary hover:bg-primary/25 transition-colors border border-primary/25 font-medium">本次同意</button>
-        <button type="button" onClick={() => onAnswer('session')} className="w-full py-2 px-3 text-xs rounded-md bg-secondary text-foreground hover:bg-secondary/80 transition-colors border border-border">本Session同意</button>
-        <button type="button" onClick={() => onAnswer('deny')} className="w-full py-2 px-3 text-xs rounded-md bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors border border-destructive/20">不同意</button>
+        <button
+          type="button"
+          onClick={() => onAnswer('once')}
+          className="w-full py-2 px-3 text-xs rounded-md bg-primary/15 text-primary hover:bg-primary/25 transition-colors border border-primary/25 font-medium"
+        >
+          本次同意 (once)
+        </button>
+        <button
+          type="button"
+          onClick={() => onAnswer('session')}
+          className="w-full py-2 px-3 text-xs rounded-md bg-secondary text-foreground hover:bg-secondary/80 transition-colors border border-border"
+        >
+          本 Session 同意 (always)
+        </button>
+        <button
+          type="button"
+          onClick={() => onAnswer('deny')}
+          className="w-full py-2 px-3 text-xs rounded-md bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors border border-destructive/20"
+        >
+          不同意 (reject)
+        </button>
       </div>
     </div>
   );
 }
 
-function UserQuestionsStep({ onSubmit }: {
-  onSubmit: (answers: Record<string, string>) => void;
+function UserQuestionsStep({ step, onSubmit }: {
+  step: MessageStep;
+  onSubmit: (answers: Record<string, string | string[]>) => void;
 }) {
   const config = stepConfig.ask_user;
   const Icon = config.icon;
-  const [customInput, setCustomInput] = useState('');
+  const questions = step.interaction?.questions || [];
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
+  const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
+
+  const toggleOption = (qIdx: number, label: string, multiple: boolean) => {
+    const key = String(qIdx);
+    setAnswers(prev => {
+      const current = prev[key];
+      if (multiple) {
+        const arr = Array.isArray(current) ? [...current] : [];
+        if (arr.includes(label)) {
+          return { ...prev, [key]: arr.filter(l => l !== label) };
+        }
+        return { ...prev, [key]: [...arr, label] };
+      }
+      return { ...prev, [key]: label };
+    });
+  };
+
+  const handleCustomSubmit = (qIdx: number) => {
+    const text = customInputs[qIdx]?.trim();
+    if (!text) return;
+    setAnswers(prev => ({ ...prev, [String(qIdx)]: text }));
+  };
+
+  const canSubmit = questions.every((_, idx) => {
+    const ans = answers[idx];
+    return ans !== undefined && (typeof ans === 'string' ? ans.length > 0 : ans.length > 0);
+  });
 
   return (
     <div className={`rounded-md border ${config.border} ${config.bg} overflow-hidden`}>
@@ -109,40 +164,112 @@ function UserQuestionsStep({ onSubmit }: {
         <Icon className={`w-3 h-3 shrink-0 ${config.labelColor}`} />
         <span className={`text-[12px] font-medium ${config.labelColor}`}>{config.label}</span>
       </div>
-      <div className="px-3 pb-2 text-xs text-foreground leading-relaxed">请选择一个选项或输入自定义答案</div>
-      <div className="flex flex-col gap-1.5 px-3 pb-3">
+      <div className="flex flex-col gap-3 px-3 pb-3">
+        {questions.map((q, qIdx) => (
+          <div key={qIdx} className="flex flex-col gap-1.5">
+            <div className="text-xs font-medium text-foreground">{q.header}</div>
+            <div className="text-xs text-muted-foreground">{q.question}</div>
+            {q.multiple && (
+              <div className="text-[10px] text-muted-foreground">可多选</div>
+            )}
+            <div className="flex flex-col gap-1">
+              {q.options.map((opt, oIdx) => {
+                const ans = answers[qIdx];
+                const isSelected = q.multiple
+                  ? Array.isArray(ans) && ans.includes(opt.label)
+                  : ans === opt.label;
+                return (
+                  <button
+                    key={oIdx}
+                    type="button"
+                    onClick={() => toggleOption(qIdx, opt.label, q.multiple)}
+                    className={`text-left px-2.5 py-1.5 text-xs rounded-md border transition-colors ${
+                      isSelected
+                        ? 'bg-primary/15 text-primary border-primary/25'
+                        : 'bg-secondary text-foreground border-border hover:bg-secondary/80'
+                    }`}
+                  >
+                    <span className="font-medium">{opt.label}</span>
+                    {opt.description && (
+                      <span className="text-muted-foreground ml-1">· {opt.description}</span>
+                    )}
+                  </button>
+                );
+              })}
+              {/* 自定义输入（opencode 默认启用 custom） */}
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  type="text"
+                  value={customInputs[qIdx] || ''}
+                  onChange={(e) => setCustomInputs(prev => ({ ...prev, [qIdx]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleCustomSubmit(qIdx);
+                    }
+                  }}
+                  placeholder="输入自定义答案..."
+                  className="flex-1 min-w-0 px-2.5 py-1.5 text-xs bg-secondary border border-border rounded-md text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleCustomSubmit(qIdx)}
+                  disabled={!customInputs[qIdx]?.trim()}
+                  className="shrink-0 px-2.5 py-1.5 text-xs rounded-md bg-secondary text-foreground hover:bg-secondary/80 transition-colors border border-border disabled:opacity-40"
+                >
+                  使用
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
         <button
           type="button"
-          onClick={() => onSubmit({ answer: 'recommended' })}
-          className="w-full py-2 px-3 text-xs rounded-md bg-primary/15 text-primary hover:bg-primary/25 transition-colors border border-primary/25 font-medium text-left"
+          onClick={() => onSubmit(answers)}
+          disabled={!canSubmit}
+          className="w-full py-2 px-3 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium disabled:opacity-40"
         >
-          推荐方案（默认）
+          提交回答
         </button>
-        <div className="w-full flex items-center gap-2">
-          <input
-            type="text"
-            value={customInput}
-            onChange={(e) => setCustomInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && customInput.trim()) {
-                e.preventDefault();
-                onSubmit({ answer: customInput.trim() });
-              }
-            }}
-            placeholder="输入自定义方案..."
-            className="flex-1 min-w-0 px-2.5 py-2 text-xs bg-secondary border border-border rounded-md text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary"
-          />
-          <button
-            type="button"
-            onClick={() => {
-              if (customInput.trim()) onSubmit({ answer: customInput.trim() });
-            }}
-            disabled={!customInput.trim()}
-            className="shrink-0 px-3 py-2 text-xs rounded-md bg-secondary text-foreground hover:bg-secondary/80 transition-colors border border-border disabled:opacity-40"
-          >
-            确认
-          </button>
-        </div>
+      </div>
+    </div>
+  );
+}
+
+function TodoWriteStep({ step }: { step: MessageStep }) {
+  const config = stepConfig.tool_result;
+  const Icon = config.icon;
+  const todos = step.interaction?.todos || [];
+
+  const priorityColor: Record<string, string> = {
+    high: 'text-red-400',
+    medium: 'text-yellow-400',
+    low: 'text-muted-foreground',
+  };
+
+  const statusIcon: Record<string, string> = {
+    pending: '○',
+    in_progress: '◐',
+    completed: '●',
+    cancelled: '✕',
+  };
+
+  return (
+    <div className={`rounded-md border ${config.border} ${config.bg} overflow-hidden`}>
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <Icon className={`w-3 h-3 shrink-0 ${config.labelColor}`} />
+        <span className={`text-[12px] font-medium ${config.labelColor}`}>任务列表更新</span>
+      </div>
+      <div className="flex flex-col gap-1 px-3 pb-3">
+        {todos.map((todo) => (
+          <div key={todo.id} className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">{statusIcon[todo.status] || '○'}</span>
+            <span className={`text-[10px] font-medium ${priorityColor[todo.priority] || ''}`}>
+              {todo.priority === 'high' ? '高' : todo.priority === 'medium' ? '中' : '低'}
+            </span>
+            <span className="text-foreground">{todo.content}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -151,7 +278,7 @@ function UserQuestionsStep({ onSubmit }: {
 function StepItem({ step, index, onAnswerPermission, onAnswerUser, onRetry }: {
   step: MessageStep; index: number;
   onAnswerPermission?: (answer: 'once' | 'session' | 'deny') => void;
-  onAnswerUser?: (answers: Record<string, string>) => void;
+  onAnswerUser?: (answers: Record<string, string | string[]>) => void;
   onRetry?: () => void;
 }) {
   const config = stepConfig[step.type] || stepConfig.thinking;
@@ -160,7 +287,8 @@ function StepItem({ step, index, onAnswerPermission, onAnswerUser, onRetry }: {
   const [showDiff, setShowDiff] = useState(false);
 
   if (step.type === 'ask_permission' && onAnswerPermission) return <PermissionStep step={step} onAnswer={onAnswerPermission} />;
-  if (step.type === 'ask_user' && onAnswerUser) return <UserQuestionsStep onSubmit={onAnswerUser} />;
+  if (step.type === 'ask_user' && onAnswerUser) return <UserQuestionsStep step={step} onSubmit={onAnswerUser} />;
+  if (step.type === 'tool_result' && step.toolName === 'todowrite') return <TodoWriteStep step={step} />;
 
   const isCollapsible = step.type !== 'final' && step.type !== 'compress';
   const isFailed = step.failed === true;
@@ -301,7 +429,7 @@ function ReadFileContent({ content }: { content: string }) {
 function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMessage, onRetryStep }: {
   message: Message;
   onAnswerPermission?: (stepIndex: number, answer: 'once' | 'session' | 'deny') => void;
-  onAnswerUser?: (stepIndex: number, answers: Record<string, string>) => void;
+  onAnswerUser?: (stepIndex: number, answers: Record<string, string | string[]>) => void;
   onEditUserMessage?: (content: string) => void;
   onRetryStep?: (stepIndex: number) => void;
 }) {

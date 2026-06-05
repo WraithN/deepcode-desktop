@@ -1,4 +1,4 @@
-import type { Task, ModifiedFile, GitChangedFile } from '@/types/types';
+import type { Task, ModifiedFile, GitChangedFile, TodoItem } from '@/types/types';
 import { useEffect, useState } from 'react';
 import {
   ListTodo, FileEdit, CheckCircle2, Clock, Loader2,
@@ -75,6 +75,7 @@ function parseDiffToSplit(diff?: string): DiffLine[] {
 
 interface RightPanelProps {
   tasks: Task[];
+  todos?: TodoItem[];
   modifiedFiles: ModifiedFile[];
   workspace: string;
   collapsed: boolean;
@@ -95,10 +96,11 @@ const gitStatusConfig: Record<GitChangedFile['status'], { label: string; classNa
   R: { label: 'R', className: 'text-blue-400' },
 };
 
-export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed, onToggleCollapse }: RightPanelProps) {
+export default function RightPanel({ tasks, todos, modifiedFiles, workspace, collapsed, onToggleCollapse }: RightPanelProps) {
   const [expandedDiff, setExpandedDiff] = useState<GitChangedFile | null>(null);
   const [expandedFiles, setExpandedFiles] = useState(true);
   const [expandedTasks, setExpandedTasks] = useState(true);
+  const [expandedTodos, setExpandedTodos] = useState(true);
   const [gitFiles, setGitFiles] = useState<GitChangedFile[]>([]);
   const [gitError, setGitError] = useState<string | null>(null);
 
@@ -147,6 +149,48 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
           <ChevronRight className="w-3.5 h-3.5" />
         </button>
 
+        {/* Todo 列表 */}
+        <div className="flex-1 min-h-0 flex flex-col border-b border-border">
+          <button
+            type="button"
+            onClick={() => setExpandedTodos(!expandedTodos)}
+            className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0 hover:bg-secondary/30 transition-colors"
+          >
+            <span className="text-xs font-medium text-foreground">
+              <ListTodo className="w-3.5 h-3.5 inline mr-1.5 text-primary" />
+              Todo
+            </span>
+            {expandedTodos ? (
+              <ChevronDown className="w-3 h-3 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="w-3 h-3 text-muted-foreground" />
+            )}
+          </button>
+          {expandedTodos && (
+            <div className="flex-1 overflow-y-auto py-1">
+              {(!todos || todos.length === 0) ? (
+                <div className="px-3 py-6 text-center text-xs text-muted-foreground">暂无 Todo</div>
+              ) : (
+                todos.map((todo) => {
+                  const priorityColor = todo.priority === 'high' ? 'text-red-400' : todo.priority === 'medium' ? 'text-yellow-400' : 'text-muted-foreground';
+                  const statusIcon = todo.status === 'completed' ? '●' : todo.status === 'in_progress' ? '◐' : '○';
+                  return (
+                    <div key={todo.id} className="flex items-start gap-2 px-3 py-2 hover:bg-secondary/30 transition-colors">
+                      <span className="text-xs text-muted-foreground mt-0.5">{statusIcon}</span>
+                      <span className={`text-[10px] font-medium mt-0.5 ${priorityColor}`}>
+                        {todo.priority === 'high' ? '高' : todo.priority === 'medium' ? '中' : '低'}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-xs truncate ${todo.status === 'completed' ? 'text-muted-foreground line-through' : 'text-foreground'}`}>{todo.content}</div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
+
         {/* 上方：任务列表 */}
         <div className="flex-1 min-h-0 flex flex-col border-b border-border">
           <button
@@ -155,7 +199,7 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
             className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0 hover:bg-secondary/30 transition-colors"
           >
             <span className="text-xs font-medium text-foreground">
-              <ListTodo className="w-3.5 h-3.5 inline mr-1.5 text-primary" />
+              <CheckCircle2 className="w-3.5 h-3.5 inline mr-1.5 text-primary" />
               任务
             </span>
             {expandedTasks ? (
