@@ -826,7 +826,7 @@ fn main() {
 
             // Start SSE listener in background
             let svc_for_sse = opencode_service.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 svc_for_sse.start_event_listener().await;
             });
 
