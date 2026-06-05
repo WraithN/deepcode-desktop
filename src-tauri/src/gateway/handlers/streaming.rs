@@ -98,6 +98,31 @@ pub async fn stream_opencode_output(
                 }
             }
 
+            // Before sending agent.done: detect interactions from parts
+            if let Some(parts) = result.get("parts").and_then(|v| v.as_array()) {
+                let all_parts: Vec<serde_json::Value> = parts.clone();
+                if let Some(interaction) = crate::service::opencode_service::detect_interaction_from_parts(&all_parts) {
+                    let method = match &interaction {
+                        crate::models::interaction::InteractionRequest::Question { .. } => "agent.question",
+                        crate::models::interaction::InteractionRequest::Permission { .. } => "agent.permission",
+                        crate::models::interaction::InteractionRequest::TodoWrite { .. } => "agent.todowrite",
+                    };
+                    let interaction_json = match serde_json::to_value(&interaction) {
+                        Ok(v) => v,
+                        Err(_) => serde_json::Value::Null,
+                    };
+                    let _ = send_event(
+                        &session_manager,
+                        &conversation_id,
+                        method,
+                        json!({
+                            "sessionID": session_id_result,
+                            "interaction": interaction_json,
+                        }),
+                    ).await;
+                }
+            }
+
             // 发送 done 事件
             let _ = send_event(
                 &session_manager,

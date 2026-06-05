@@ -4,6 +4,7 @@ use crate::service::agent_service::AgentService;
 use crate::service::opencode_service::OpencodeService;
 use serde_json::json;
 use std::sync::Arc;
+use tokio_tungstenite::tungstenite::Message;
 
 pub async fn handle_agent_request(
     service: Arc<AgentService>,
@@ -19,6 +20,7 @@ pub async fn handle_agent_request(
         "agent.listInstances" => handle_list_instances(service, req).await,
         "agent.getInstance" => handle_get_instance(service, req).await,
         "agent.setMode" => handle_set_mode(service, req).await,
+        "agent.respond" => handle_respond(opencode_service, req).await,
         _ => JsonRpcResponse::error(
             req.id,
             crate::gateway::codec::METHOD_NOT_FOUND,
@@ -49,7 +51,7 @@ async fn handle_create_instance(_service: Arc<AgentService>, req: JsonRpcRequest
 
 async fn handle_send_message(
     opencode_service: Arc<OpencodeService>,
-    _session_manager: Arc<SessionManager>,
+    session_manager: Arc<SessionManager>,
     req: JsonRpcRequest,
 ) -> JsonRpcResponse {
     let instance_id = req.params.get("instanceId").and_then(|v| v.as_str());
@@ -62,6 +64,71 @@ async fn handle_send_message(
     }
 
     match opencode_service.run_message(message.unwrap(), opencode_session_id).await {
+        Ok(result) => {
+            // If interaction detected, push notification via WebSocket
+            if let Some(interaction) = result.get("interaction").and_then(|v| v.as_object()) {
+                let method = match interaction.get("type").and_then(|v| v.as_str()) {
+                    Some("question") => "agent.question",
+                    Some("permission") => "agent.permission",
+                    Some("todowrite") => "agent.todowrite",
+                    _ => "agent.interaction",
+                };
+                let notification = json!({
+                    "jsonrpc": "2.0",
+                    "method": method,
+                    "params": {
+                        "instanceId": instance_id.unwrap(),
+                        "conversationId": conversation_id.unwrap(),
+                        "sessionID": result.get("sessionID"),
+                        "interaction": interaction,
+                    }
+                });
+                let _ = session_manager.send_to_session(
+                    conversation_id.unwrap(),
+                    Message::Text(notification.to_string()),
+                ).await;
+            }
+            JsonRpcResponse::success(req.id, result)
+        }
+        Err(error) => JsonRpcResponse::error(req.id, INTERNAL_ERROR, &error, None),
+    }
+}
+
+async fn handle_respond(
+    opencode_service: Arc<OpencodeService>,
+    req: JsonRpcRequest,
+) -> JsonRpcResponse {
+    let session_id = req.params.get("sessionId").and_then(|v| v.as_str());
+    let interaction_type = req.params.get("interactionType").and_then(|v| v.as_str());
+    let response = req.params.get("response").cloned();
+
+    if session_id.is_none() || interaction_type.is_none() || response.is_none() {
+        return JsonRpcResponse::error(req.id, INVALID_PARAMS, "Missing required params", None);
+    }
+
+    let sid = session_id.unwrap();
+    let resp = response.unwrap();
+
+    // Format response as message to send back to opencode
+    let message = match interaction_type.unwrap() {
+        "question" => {
+            if let Some(answers) = resp.get("answers").and_then(|v| v.as_array()) {
+                let texts: Vec<String> = answers.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                texts.join("\n")
+            } else {
+                return JsonRpcResponse::error(req.id, INVALID_PARAMS, "Invalid response format for question", None);
+            }
+        }
+        "permission" => {
+            resp.get("answer").and_then(|v| v.as_str()).unwrap_or("deny").to_string()
+        }
+        "todowrite" => {
+            resp.get("todos").map(|v| v.to_string()).unwrap_or_default()
+        }
+        _ => return JsonRpcResponse::error(req.id, INVALID_PARAMS, "Unknown interaction type", None),
+    };
+
+    match opencode_service.send_message(sid, &message).await {
         Ok(result) => JsonRpcResponse::success(req.id, result),
         Err(error) => JsonRpcResponse::error(req.id, INTERNAL_ERROR, &error, None),
     }
