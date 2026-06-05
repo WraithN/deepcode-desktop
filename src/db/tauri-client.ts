@@ -3,7 +3,7 @@ import type { Conversation, Message, Task, ModifiedFile, Profile } from '@/types
 
 const SESSION_KEY = 'aicoding_session';
 
-class SqliteDataStore implements IDataStore {
+class TauriDataStore implements IDataStore {
   private callbacks: AuthStateChangeCallback[] = [];
 
   private notify(event: 'SIGNED_IN' | 'SIGNED_OUT', session: AuthSession | null) {
@@ -15,7 +15,6 @@ class SqliteDataStore implements IDataStore {
     return invoke<T>(cmd, args);
   }
 
-  // ========== Auth ==========
   async signIn(username: string, password: string): Promise<{ user: AuthUser | null; error: Error | null }> {
     try {
       const user = await this.invoke<AuthUser>('db_sign_in', { username, password });
@@ -72,7 +71,6 @@ class SqliteDataStore implements IDataStore {
     return this.invoke<Profile | null>('db_get_profile', { userId });
   }
 
-  // ========== Conversations ==========
   async loadConversations(userId: string, limit = 50): Promise<Conversation[]> {
     return this.invoke<Conversation[]>('db_load_conversations', { userId, limit });
   }
@@ -89,7 +87,6 @@ class SqliteDataStore implements IDataStore {
     await this.invoke<void>('db_delete_conversation', { id });
   }
 
-  // ========== Messages ==========
   async loadMessages(conversationId: string, limit = 100): Promise<Message[]> {
     return this.invoke<Message[]>('db_load_messages', { conversationId, limit });
   }
@@ -98,7 +95,6 @@ class SqliteDataStore implements IDataStore {
     return this.invoke<Message | null>('db_create_message', { data });
   }
 
-  // ========== Tasks ==========
   async loadTasks(userId: string, limit = 20): Promise<Task[]> {
     return this.invoke<Task[]>('db_load_tasks', { userId, limit });
   }
@@ -107,7 +103,6 @@ class SqliteDataStore implements IDataStore {
     return this.invoke<Task | null>('db_create_task', { data });
   }
 
-  // ========== Modified Files ==========
   async loadModifiedFiles(userId: string, limit = 20): Promise<ModifiedFile[]> {
     return this.invoke<ModifiedFile[]>('db_load_modified_files', { userId, limit });
   }
@@ -117,4 +112,4 @@ class SqliteDataStore implements IDataStore {
   }
 }
 
-export const sqliteDataStore = new SqliteDataStore();
+export const tauriDataStore = new TauriDataStore();

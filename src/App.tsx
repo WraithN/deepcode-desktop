@@ -15,7 +15,10 @@ const themeColorMap: Record<string, string> = {
 };
 
 const App: React.FC = () => {
+  console.log("[App.tsx] Component rendering...");
+  
   useEffect(() => {
+    console.log("[App.tsx] useEffect running - setting theme...");
     const savedColor = localStorage.getItem('theme_color') || 'blue';
     const hsl = themeColorMap[savedColor] || themeColorMap.blue;
     const root = document.documentElement;
@@ -25,7 +28,11 @@ const App: React.FC = () => {
     root.style.setProperty('--sidebar-primary', hsl);
     root.style.setProperty('--sidebar-ring', hsl);
     root.style.setProperty('--info', hsl);
+    console.log("[App.tsx] Theme set to:", savedColor, hsl);
   }, []);
+
+  console.log("[App.tsx] Routes count:", routes.length);
+  console.log("[App.tsx] Route paths:", routes.map(r => r.path));
 
   return (
     <Router>

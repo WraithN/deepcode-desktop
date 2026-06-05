@@ -12,16 +12,19 @@
     "windows": [
       {
         "title": "DeepHarness Desktop",
-        "width": 1280,
-        "height": 800,
+        "decorations": false,
+        "transparent": false,
+        "width": 1500,
+        "height": 900,
         "minWidth": 800,
         "minHeight": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "devtools": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https: http://localhost:*; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:;"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https: http://localhost:* ws://localhost:* ws://127.0.0.1:*; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:;"
     }
   },
   "bundle": {

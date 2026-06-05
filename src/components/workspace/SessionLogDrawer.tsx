@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { X, Trash2 } from 'lucide-react';
+import { Copy, X, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { formatIdShort } from '@/lib/id';
 import { useLogStore } from '@/stores';
 import type { LogEntry } from '@/store/session-log';
@@ -67,6 +68,22 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ onClose, onClear })
     onClear?.();
   };
 
+  const handleCopy = async () => {
+    if (logs.length === 0) {
+      toast.info('暂无日志可复制');
+      return;
+    }
+
+    const text = logs.map((log) => {
+      const detail = log.detail ? ` ${JSON.stringify(log.detail)}` : '';
+      const instance = log.instanceId ? `${formatIdShort(log.instanceId)} · ${log.source}` : log.source;
+      return `[${log.timestamp}] [${log.level.toUpperCase()}] [${instance}] ${log.message}${detail}`;
+    }).join('\n');
+
+    await navigator.clipboard.writeText(text);
+    toast.success('日志已复制');
+  };
+
   return (
     <div
       ref={containerRef}
@@ -83,6 +100,13 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ onClose, onClear })
       <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border-b border-gray-800">
         <span className="text-xs font-semibold text-gray-400">Session Logs ({logs.length})</span>
         <div className="flex items-center gap-1">
+          <button
+            onClick={handleCopy}
+            className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
+            title="复制日志"
+          >
+            <Copy className="w-3.5 h-3.5" />
+          </button>
           <button
             onClick={handleClear}
             className="p-1 text-gray-500 hover:text-red-400 transition-colors"

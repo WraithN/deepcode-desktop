@@ -15,10 +15,11 @@ import SettingsDialog from '@/components/workspace/SettingsDialog';
 import AddAgentDialog from '@/components/workspace/AddAgentDialog';
 import AgentIcon from '@/components/workspace/AgentIcon';
 import SessionLogDrawer from '@/components/workspace/SessionLogDrawer';
+import WindowTitleBar from '@/components/common/WindowTitleBar';
 import { invoke } from '@tauri-apps/api/core';
-import { useWebSocketStore, useChatStore, useAgentStore, useLogStore, useSessionWsStore, setSessionWsBaseUrl } from '@/stores';
-import type { AgentEvent, StreamEvent } from '@/stores';
+import { useWebSocketStore, useChatStore, useAgentStore, useLogStore, setSessionWsBaseUrl } from '@/stores';
 import { generateShortId, formatIdShort } from '@/lib/id';
+import { sessionLogger } from '@/services/logger';
 
 const defaultAgents: AgentInstance[] = [
   { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' }, status: 'stopped' },
@@ -53,6 +54,7 @@ export default function WorkspacePage() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationsLoaded, setConversationsLoaded] = useState(false);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [modifiedFiles, setModifiedFiles] = useState<ModifiedFile[]>([]);
@@ -66,6 +68,9 @@ export default function WorkspacePage() {
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [editContent, setEditContent] = useState<string | undefined>(undefined);
   const [logDrawerOpen, setLogDrawerOpen] = useState(false);
+  const creatingConversationRef = useRef(false);
+  const initialConversationCreatingRef = useRef(false);
+  const sendingMessageRef = useRef(false);
   const clickCountRef = useRef(0);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -74,8 +79,8 @@ export default function WorkspacePage() {
   const setMessages = useChatStore((s) => s.setMessages);
   const setIsStreaming = useChatStore((s) => s.setIsStreaming);
   const chatSendMessage = useChatStore((s) => s.sendMessage);
-  const appendEvent = useChatStore((s) => s.appendEvent);
   const setChatActiveInstanceId = useChatStore((s) => s.setActiveInstanceId);
+  const setChatCurrentConversation = useChatStore((s) => s.setCurrentConversation);
 
   const agentInstances = useAgentStore((s) => s.instances);
   const setAgentInstances = useAgentStore((s) => s.setInstances);
@@ -88,8 +93,6 @@ export default function WorkspacePage() {
   const logStoreAppend = useLogStore((s) => s.appendLog);
   const sessionLogs = useLogStore((s) => s.logs);
   const isTyping = useChatStore((s) => s.isTyping);
-  const handleStreamEvent = useChatStore((s) => s.handleStreamEvent);
-  const sessionWs = useSessionWsStore();
 
   // 智能体实例管理
   useEffect(() => {
@@ -120,13 +123,9 @@ export default function WorkspacePage() {
     init();
   }, []);
 
-  // 订阅 WebSocket 事件
+  // 订阅 WebSocket 状态和日志事件，消息由当前页面发送链路统一写入
   useEffect(() => {
     const wsStore = useWebSocketStore.getState();
-
-    const unsubEvents = wsStore.subscribe('agent.event', (params) => {
-      appendEvent(params as AgentEvent);
-    });
 
     const unsubStatus = wsStore.subscribe('agent.status', (params: unknown) => {
       const { instanceId, status, pid } = params as { instanceId: string; status: string; pid?: number };
@@ -138,27 +137,14 @@ export default function WorkspacePage() {
     });
 
     return () => {
-      unsubEvents();
       unsubStatus();
       unsubLogs();
     };
-  }, [appendEvent, logStoreAppend]);
+  }, [logStoreAppend]);
 
-  // 激活会话时建立每会话 WebSocket 连接
   useEffect(() => {
-    if (!activeConversation) return;
-
-    sessionWs.connect(activeConversation.id, (data) => {
-      // 处理流式事件
-      if (data && typeof data === 'object' && 'method' in data && !('id' in data)) {
-        handleStreamEvent(data as StreamEvent);
-      }
-    });
-
-    return () => {
-      sessionWs.disconnect(activeConversation.id);
-    };
-  }, [activeConversation?.id]);
+    setChatCurrentConversation(activeConversation?.id ?? null);
+  }, [activeConversation?.id, setChatCurrentConversation]);
 
   // 将相对路径的工作目录解析为绝对路径
   useEffect(() => {
@@ -200,6 +186,7 @@ export default function WorkspacePage() {
     if (!user) return;
     const data = await db.loadConversations(user.id, 50);
     setConversations(Array.isArray(data) ? data : []);
+    setConversationsLoaded(true);
   }, [user]);
 
   // 加载任务
@@ -249,54 +236,57 @@ export default function WorkspacePage() {
   //   // eslint-disable-next-line react-hooks/exhaustive-deps
   // }, [activeConversation, activeAgentId]);
 
-  // 如果没有任务，创建mock任务（三种状态各一个）
+  // 初始化主会话：新选择的智能体创建新会话；已有智能体进入最新会话
   useEffect(() => {
-    if (!user || tasks.length > 0) return;
-    const createMockTasks = async () => {
-      const mockTasks = [
-        { title: '初始化项目环境', status: 'completed' as const },
-        { title: '实现核心功能模块', status: 'in_progress' as const },
-        { title: '等待代码审查', status: 'pending' as const },
-      ];
-      for (const task of mockTasks) {
-        const data = await db.createTask({
-          user_id: user.id,
-          title: task.title,
-          status: task.status,
-          conversation_id: null,
-        });
-        if (data) setTasks((prev) => [data, ...prev]);
-      }
-    };
-    createMockTasks();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+    if (!user || !conversationsLoaded || activeConversation || agentInstances.length === 0 || initialConversationCreatingRef.current) return;
 
-  // 从 select-agent 返回后加载会话
-  useEffect(() => {
-    if (!user) return;
-    // SelectAgentPage 已经创建了 instance，这里只需创建会话
-    const timer = setTimeout(async () => {
-      if (conversations.length === 0 && agentInstances.length > 0) {
-        const activeAgent = agentInstances[0];
+    let cancelled = false;
+    const initConversation = async () => {
+      initialConversationCreatingRef.current = true;
+      try {
+        const createForAgentId = localStorage.getItem('create_conversation_for_agent_id');
+        const targetInstance = agentInstances.find((instance) => instance.id === createForAgentId)
+          || agentInstances.find((instance) => instance.id === activeAgentId)
+          || agentInstances[0];
+
+        if (!createForAgentId && conversations.length > 0) {
+          const latestConversation = conversations[0];
+          const latestAgent = agentInstances.find((instance) => instance.agentKey === latestConversation.agent);
+          if (!cancelled) {
+            if (latestAgent) {
+              setActiveAgentId(latestAgent.id);
+              setChatActiveInstanceId(latestAgent.id);
+            }
+            setActiveConversation(latestConversation);
+            await loadMessages(latestConversation.id);
+          }
+          return;
+        }
+
         const data = await db.createConversation({
           user_id: user.id,
           title: '新会话',
-          agent: activeAgent.agentKey,
+          agent: targetInstance.agentKey,
           model: 'gpt-4',
         });
 
-        if (data) {
-          setConversations((prev) => [data, ...prev]);
+        if (!cancelled && data) {
+          localStorage.removeItem('create_conversation_for_agent_id');
+          setConversations((prev) => prev.some((conv) => conv.id === data.id) ? prev : [data, ...prev]);
           setActiveConversation(data);
           setMessages([]);
         }
+      } finally {
+        initialConversationCreatingRef.current = false;
       }
-    }, 200);
+    };
 
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+    initConversation();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAgentId, activeConversation, agentInstances, conversations, conversationsLoaded, loadMessages, setActiveAgentId, setChatActiveInstanceId, setMessages, user]);
 
   // 选择会话（单击预览，不切换主窗口）
   const handleSelectConversation = async (conv: Conversation) => {
@@ -319,21 +309,26 @@ export default function WorkspacePage() {
 
   // 新建会话（使用当前激活智能体）
   const handleNewConversation = async () => {
-    if (!user) return;
-    const agentKey = activeAgent?.agentKey || 'opencode';
-    const data = await db.createConversation({
-      user_id: user.id,
-      title: '新会话',
-      agent: agentKey,
-      model: 'gpt-4',
-    });
-    if (!data) {
-      toast.error('创建会话失败');
-      return;
+    if (!user || creatingConversationRef.current) return;
+    creatingConversationRef.current = true;
+    try {
+      const agentKey = activeAgent?.agentKey || 'opencode';
+      const data = await db.createConversation({
+        user_id: user.id,
+        title: '新会话',
+        agent: agentKey,
+        model: 'gpt-4',
+      });
+      if (!data) {
+        toast.error('创建会话失败');
+        return;
+      }
+      setConversations((prev) => [data, ...prev]);
+      setActiveConversation(data);
+      setMessages([]);
+    } finally {
+      creatingConversationRef.current = false;
     }
-    setConversations((prev) => [data, ...prev]);
-    setActiveConversation(data);
-    setMessages([]);
   };
 
   // 添加智能体
@@ -445,6 +440,7 @@ export default function WorkspacePage() {
 
   // 发送消息
   const handleSendMessage = async (content: string) => {
+    if (sendingMessageRef.current) return;
     if (!activeConversation) {
       toast.error('请先创建或选择一个会话');
       return;
@@ -454,41 +450,73 @@ export default function WorkspacePage() {
       return;
     }
 
-    const userMsg = await db.createMessage({
-      conversation_id: activeConversation.id,
-      role: 'user',
-      content,
-    });
+    sendingMessageRef.current = true;
 
-    if (!userMsg) {
-      toast.error('发送消息失败');
-      return;
-    }
-
-    setMessages((prev) => [...prev, userMsg]);
-    setIsStreaming(true);
-
-    // 创建流式临时消息
-    const streamingMsg = {
-      id: `streaming-${Date.now()}`,
-      conversation_id: activeConversation.id,
-      role: 'assistant' as const,
-      content: '',
-      steps: [],
-      is_complete: false,
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, streamingMsg]);
+    let streamingMessageId: string | null = null;
 
     try {
-      await chatSendMessage(content);
-    } catch (error) {
-      const errMsg = String(error);
-      toast.error(`通信错误: ${errMsg}`);
-      setMessages((prev) => prev.filter((msg) => msg.id !== streamingMsg.id));
-    }
+      const userMsg = await db.createMessage({
+        conversation_id: activeConversation.id,
+        role: 'user',
+        content,
+      });
 
-    setIsStreaming(false);
+      if (!userMsg) {
+        toast.error('发送消息失败');
+        return;
+      }
+
+      setMessages((prev) => [...prev, userMsg]);
+      setIsStreaming(true);
+
+      const streamingMsg = {
+        id: `streaming-${Date.now()}`,
+        conversation_id: activeConversation.id,
+        role: 'assistant' as const,
+        content: '',
+        steps: [],
+        is_complete: false,
+        created_at: new Date().toISOString(),
+      };
+      streamingMessageId = streamingMsg.id;
+      setMessages((prev) => [...prev, streamingMsg]);
+
+      const result = await chatSendMessage(content);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === streamingMsg.id
+            ? { ...msg, content: result.text, is_complete: true }
+            : msg
+        )
+      );
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      logStoreAppend({
+        id: `log-${Date.now()}`,
+        conversationId: activeConversation.id,
+        instanceId: activeAgentId || undefined,
+        timestamp: new Date().toLocaleTimeString(),
+        level: 'error',
+        source: 'chat',
+        message: `通信错误: ${errMsg}`,
+        detail: { stack },
+      });
+      void sessionLogger.logError(error instanceof Error ? error : errMsg, {
+        conversationId: activeConversation.id,
+        instanceId: activeAgentId,
+        message: content,
+      }).catch(() => undefined);
+      toast.error('通信错误，详情已写入 Session Logs');
+      setLogDrawerOpen(true);
+      if (streamingMessageId) {
+        setMessages((prev) => prev.filter((msg) => msg.id !== streamingMessageId));
+      }
+    } finally {
+      sendingMessageRef.current = false;
+      setIsStreaming(false);
+      useChatStore.getState().setIsTyping(false);
+    }
   };
 
   // 处理权限询问回答
@@ -534,17 +562,21 @@ export default function WorkspacePage() {
 
   return (
     <div className="flex flex-col h-screen bg-background">
-      {/* 顶部栏 */}
-      <header className="h-10 border-b border-border flex items-center justify-between px-4 shrink-0 bg-card">
+      <WindowTitleBar title="">
         <div
-          className="flex items-center gap-2 cursor-pointer select-none"
+          data-no-drag
+          className="flex items-center gap-2 cursor-pointer select-none px-4 h-full [-webkit-app-region:no-drag]"
           onClick={handleLogoClick}
           title="快速点击5次打开日志抽屉"
         >
           <Bot className="w-5 h-5 text-primary" />
           <span className="font-semibold text-sm text-foreground">DeepHarness</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div
+          data-no-drag
+          onMouseDown={(event) => event.stopPropagation()}
+          className="flex items-center gap-2 ml-auto mr-2 h-full [-webkit-app-region:no-drag]"
+        >
           <span className="text-xs text-muted-foreground mr-2">
             {user?.email?.replace('@local.dev', '')}
           </span>
@@ -565,7 +597,7 @@ export default function WorkspacePage() {
             <LogOut className="w-4 h-4" />
           </Button>
         </div>
-      </header>
+      </WindowTitleBar>
 
       {/* 主内容区 */}
       <div className="flex flex-col flex-1 min-h-0">
@@ -577,6 +609,7 @@ export default function WorkspacePage() {
             agentInstances={agentInstances}
             activeAgentId={activeAgentId}
             messages={messages}
+            workspace={activeAgent.workspace}
             collapsed={leftCollapsed}
             onToggleCollapse={() => setLeftCollapsed((v) => !v)}
             onSelectConversation={handleSelectConversation}
@@ -614,6 +647,7 @@ export default function WorkspacePage() {
           <RightPanel
             tasks={tasks}
             modifiedFiles={modifiedFiles}
+            workspace={activeAgent.workspace}
             collapsed={rightCollapsed}
             onToggleCollapse={() => setRightCollapsed((v) => !v)}
           />

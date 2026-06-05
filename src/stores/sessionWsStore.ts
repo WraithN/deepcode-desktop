@@ -3,7 +3,7 @@ import { create } from 'zustand';
 interface SessionWsState {
   connections: Map<string, WebSocket>;
 
-  connect: (conversationId: string, onMessage?: (data: unknown) => void) => WebSocket;
+  connect: (conversationId: string, onMessage?: (data: unknown) => void) => WebSocket | null;
   disconnect: (conversationId: string) => void;
   disconnectAll: () => void;
   send: (conversationId: string, message: unknown) => void;
@@ -32,7 +32,13 @@ export const useSessionWsStore = create<SessionWsState>((set, get) => ({
     }
 
     const url = wsBaseUrl || `ws://127.0.0.1:9527`;
-    const ws = new WebSocket(`${url}/ws/${conversationId}`);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(`${url}/ws/${conversationId}`);
+    } catch (error) {
+      console.error(`[SessionWS] Failed to create connection for ${conversationId}:`, error);
+      return null;
+    }
 
     ws.onopen = () => {
       console.log(`[SessionWS] Connected to ${conversationId}`);

@@ -26,6 +26,8 @@ interface JsonRpcNotification {
 
 type WebSocketStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 
+let connectPromise: Promise<void> | null = null;
+
 interface WebSocketState {
   url: string | null;
   status: WebSocketStatus;
@@ -53,13 +55,17 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
     if (state.ws?.readyState === WebSocket.OPEN) {
       return;
     }
+    if (connectPromise && state.status === 'connecting') {
+      return connectPromise;
+    }
 
     set({ status: 'connecting', url });
 
-    return new Promise<void>((resolve, reject) => {
+    connectPromise = new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(url);
 
       ws.onopen = () => {
+        connectPromise = null;
         set({ status: 'connected', reconnectAttempts: 0, ws });
         resolve();
       };
@@ -92,6 +98,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
       };
 
       ws.onclose = () => {
+        connectPromise = null;
         set({ status: 'idle', ws: null });
         // Auto-reconnect logic
         const currentState = get();
@@ -109,12 +116,16 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
         }
       };
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+      ws.onerror = () => {
+        connectPromise = null;
+        const message = `WebSocket connection failed: ${url}`;
+        console.error(message);
         set({ status: 'error' });
-        reject(error);
+        reject(new Error(message));
       };
     });
+
+    return connectPromise;
   },
 
   disconnect: () => {
@@ -126,12 +137,22 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
   },
 
   sendRequest: async <T>(method: string, params?: unknown): Promise<T> => {
-    const { ws, pendingRequests } = get();
+    let { ws } = get();
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      const { url } = get();
+      if (!url) {
+        throw new Error('WebSocket not connected');
+      }
+      await get().connect(url);
+      ws = get().ws;
+    }
 
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket not connected');
     }
 
+    const { pendingRequests } = get();
     const id = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const request: JsonRpcRequest = {
       jsonrpc: '2.0',

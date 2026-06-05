@@ -14,12 +14,15 @@ const PageMeta = ({
   </Helmet>
 );
 
-export const AppWrapper = ({ children }: { children: React.ReactNode }) => (
-  <HelmetProvider>
-    <TooltipProvider>
-      {children}
-    </TooltipProvider>
-  </HelmetProvider>
-);
+export const AppWrapper = ({ children }: { children: React.ReactNode }) => {
+  console.log("[PageMeta.tsx] AppWrapper rendering...");
+  return (
+    <HelmetProvider>
+      <TooltipProvider>
+        {children}
+      </TooltipProvider>
+    </HelmetProvider>
+  );
+};
 
 export default PageMeta;

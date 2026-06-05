@@ -54,7 +54,7 @@ pub async fn handle_connection(
                     Ok(request) => {
                         let response = router.handle_request(&conn_id, request).await;
                         if let Ok(json) = serde_json::to_string(&response) {
-                            let _ = router.send_to_connection(&conn_id, Message::Text(json));
+                            let _ = router.send_to_connection(&conn_id, Message::Text(json)).await;
                         }
                     }
                     Err(e) => {
@@ -65,7 +65,7 @@ pub async fn handle_connection(
                             None,
                         );
                         if let Ok(json) = serde_json::to_string(&response) {
-                            let _ = router.send_to_connection(&conn_id, Message::Text(json));
+                            let _ = router.send_to_connection(&conn_id, Message::Text(json)).await;
                         }
                     }
                 }

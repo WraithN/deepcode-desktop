@@ -5,6 +5,7 @@ import path from "path";
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: "./",
   plugins: [
     react(),
     svgr({
@@ -30,15 +31,9 @@ export default defineConfig({
   // https://tauri.app/v1/api/config#buildconfig.beforedevcommand
   envPrefix: ["VITE_", "TAURI_"],
   build: {
-    // Tauri uses Chromium on Windows and WebKit on macOS and Linux
     target: "es2020",
-    // don't minify for debug builds
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
-    // produce sourcemaps for debug builds
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     outDir: "dist",
-    rollupOptions: {
-      external: ["antd"],
-    },
   },
 });

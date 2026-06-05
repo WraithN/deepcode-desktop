@@ -53,15 +53,11 @@ impl OpencodeService {
         message: &str,
         session_id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
-        let attach_url = self.get_attach_url();
-        
         let mut cmd = tokio::process::Command::new("opencode");
         cmd.arg("run")
             .arg(message)
             .arg("--format")
-            .arg("json")
-            .arg("--attach")
-            .arg(&attach_url);
+            .arg("json");
 
         if let Some(sid) = session_id {
             cmd.arg("--session").arg(sid);
@@ -86,16 +82,24 @@ impl OpencodeService {
             }
 
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
-                // 提取 session ID
                 if session_id_result.is_empty() {
-                    if let Some(sid) = event.get("sessionID").and_then(|v| v.as_str()) {
+                    if let Some(sid) = event.get("sessionID").or_else(|| event.get("sessionId")).or_else(|| event.get("session_id")).and_then(|v| v.as_str()) {
                         session_id_result = sid.to_string();
                     }
                 }
 
-                // 提取文本内容
+                if let Some(text) = event.get("content").or_else(|| event.get("text")).and_then(|v| v.as_str()) {
+                    text_parts.push(text.to_string());
+                }
+
                 if let Some(part) = event.get("part") {
-                    if part.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                        text_parts.push(text.to_string());
+                    }
+                }
+
+                if let Some(parts) = event.get("parts").and_then(|v| v.as_array()) {
+                    for part in parts {
                         if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                             text_parts.push(text.to_string());
                         }
@@ -104,8 +108,16 @@ impl OpencodeService {
             }
         }
 
-        if !output.status.success() && !stderr.is_empty() {
+        if !output.status.success() {
             return Err(format!("opencode run failed: {}", stderr));
+        }
+
+        if text_parts.is_empty() {
+            text_parts.push(if stderr.trim().is_empty() {
+                "opencode 未返回内容".to_string()
+            } else {
+                stderr.trim().to_string()
+            });
         }
 
         Ok(serde_json::json!({

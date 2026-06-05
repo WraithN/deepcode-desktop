@@ -48,7 +48,12 @@ impl GatewayRouter {
 
     pub async fn handle_request(&self, conn_id: &str, req: JsonRpcRequest) -> JsonRpcResponse {
         if req.method.starts_with("agent.") {
-            handle_agent_request(self.agent_service.clone(), req).await
+            handle_agent_request(
+                self.agent_service.clone(),
+                self.opencode_service.clone(),
+                self.session_manager.clone(),
+                req,
+            ).await
         } else if req.method.starts_with("session.") {
             handle_session_request(req).await
         } else if req.method.starts_with("db.") {
@@ -70,9 +75,10 @@ impl GatewayRouter {
         }
     }
 
-    pub fn send_to_connection(&self, _conn_id: &str, _msg: Message) -> Result<(), String> {
-        // TODO: Implement sync wrapper or change architecture
-        Ok(())
+    pub async fn send_to_connection(&self, conn_id: &str, msg: Message) -> Result<(), String> {
+        let conns = self.connections.read().await;
+        let handle = conns.get(conn_id).ok_or_else(|| format!("Connection {} not found", conn_id))?;
+        handle.sender.send(msg).map_err(|e| e.to_string())
     }
 
     pub fn session_manager(&self) -> Arc<SessionManager> {

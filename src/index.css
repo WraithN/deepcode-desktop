@@ -217,6 +217,9 @@
 @layer base {
   * {
     @apply border-border;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--border)) transparent;
   }

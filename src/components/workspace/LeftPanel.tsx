@@ -1,4 +1,4 @@
-import type { Conversation, Message, FileItem } from '@/types/types';
+import type { Conversation, Message, WorkspaceFileNode, WorkspaceFileContent, GitStatusEntry } from '@/types/types';
 import {
   Folder, MessageSquare, Bot, Plus, FileCode2, Check,
   ChevronLeft, ChevronRight, Info,
@@ -6,11 +6,15 @@ import {
   Settings, Braces, Hash, Globe, Coffee,
   RefreshCw, Search, Trash2,
 } from 'lucide-react';
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Sheet, SheetContent, SheetHeader, SheetTitle,
+} from '@/components/ui/sheet';
 import { useAgentStore } from '@/stores';
+import { invoke } from '@tauri-apps/api/core';
 import type { AgentInstance } from '@/stores';
 import { formatIdShort } from '@/lib/id';
 
@@ -28,6 +32,7 @@ interface LeftPanelProps {
   agentInstances?: AgentInstance[];
   activeAgentId?: string | null;
   messages: Message[];
+  workspace: string;
   collapsed: boolean;
   onToggleCollapse: () => void;
   onSelectConversation: (conv: Conversation) => void;
@@ -48,49 +53,154 @@ const agentConfig: Record<string, { name: string; color: string; bg: string; let
   custom: { name: '自定义', color: 'text-primary', bg: 'bg-primary/15', letter: 'C', desc: '自由配置的智能体', border: 'border-primary/20' },
 };
 
-const rawMockFiles = [
-  'src/App.tsx',
-  'src/main.tsx',
-  'src/index.css',
-  'src/components/ui/button.tsx',
-  'src/components/ui/card.tsx',
-  'src/components/ui/dialog.tsx',
-  'src/components/ui/sheet.tsx',
-  'src/components/ui/tabs.tsx',
-  'src/pages/Home.tsx',
-  'src/pages/About.tsx',
-  'src/lib/utils.ts',
-  'public/vite.svg',
-  'package.json',
-  'tsconfig.json',
-  'vite.config.ts',
-];
+function highlightCodeLine(line: string, path: string): ReactNode {
+  const text = line || ' ';
+  const lowerPath = path.toLowerCase();
+  const isCode = /\.(ts|tsx|js|jsx|json|rs|css|scss|html|md|py|go|java|c|cpp|h|hpp|sh|bash|zsh|ya?ml|toml|xml|env|dockerfile)$/.test(lowerPath) || lowerPath.endsWith('dockerfile');
+  if (!isCode) return text;
 
-// 扁平路径转文件树
-function buildFileTree(paths: string[]): FileItem[] {
-  const root: FileItem[] = [];
-  for (const path of paths) {
-    const parts = path.split('/');
-    let current = root;
-    for (let i = 0; i < parts.length; i++) {
-      const name = parts[i];
-      const isLast = i === parts.length - 1;
-      const existing = current.find((item) => item.name === name);
-      if (existing) {
-        if (!isLast) current = existing.children!;
-      } else {
-        const newItem: FileItem = {
-          name,
-          path: parts.slice(0, i + 1).join('/'),
-          type: isLast ? 'file' : 'folder',
-          children: isLast ? undefined : [],
-        };
-        current.push(newItem);
-        if (!isLast) current = newItem.children!;
+  const isYaml = /\.(ya?ml|toml)$/.test(lowerPath);
+  const isShell = /\.(sh|bash|zsh|env)$/.test(lowerPath) || lowerPath.endsWith('dockerfile');
+  const pattern = isYaml
+    ? /(#[^\n]*$)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(true|false|null|yes|no|on|off)\b|\b([0-9]+(?:\.[0-9]+)?)\b|^(\s*)([A-Za-z0-9_.-]+)(:)/g
+    : /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(\/\/[^\n]*$|#[^\n]*$)|(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]+\})|\b(import|export|from|const|let|var|function|return|if|else|elif|fi|then|for|while|do|done|case|esac|class|interface|type|async|await|match|pub|struct|enum|impl|use|fn|def|package|func|public|private|protected|static|new|try|catch|finally|throw|throws|echo|cd|pwd|ls|cat|grep|rg|find|mkdir|rm|cp|mv|chmod|chown|source|alias|local|readonly|printf|test)\b|\b(true|false|null|undefined|None|Some|Ok|Err|nil)\b|\b([0-9]+(?:\.[0-9]+)?)\b/g;
+
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) nodes.push(text.slice(lastIndex, index));
+    const value = match[0];
+    let className = 'text-foreground';
+    if (isYaml) {
+      if (match[7]) {
+        nodes.push(match[5] || '');
+        nodes.push(<span key={`${index}-yaml-key`} className="text-blue-300">{match[6]}</span>);
+        nodes.push(match[7]);
+        lastIndex = index + value.length;
+        continue;
       }
+      if (match[1]) className = 'text-muted-foreground';
+      else if (match[2]) className = 'text-green-300';
+      else if (match[3]) className = 'text-orange-300';
+      else if (match[4]) className = 'text-cyan-300';
+    } else {
+      if (match[2]) className = 'text-muted-foreground';
+      else if (match[1]) className = 'text-green-300';
+      else if (match[3] && isShell) className = 'text-yellow-300';
+      else if (match[4]) className = 'text-purple-300';
+      else if (match[5]) className = 'text-orange-300';
+      else if (match[6]) className = 'text-cyan-300';
     }
+    nodes.push(<span key={`${index}-${value}`} className={className}>{value}</span>);
+    lastIndex = index + value.length;
   }
-  return root;
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes;
+}
+
+
+function renderMarkdown(content: string) {
+  const lines = content.split('\n');
+  const blocks: ReactNode[] = [];
+  let listItems: string[] = [];
+  let codeLines: string[] = [];
+  let inCode = false;
+
+  const flushList = () => {
+    if (listItems.length > 0) {
+      blocks.push(
+        <ul key={`list-${blocks.length}`} className="list-disc pl-5 my-2 space-y-1">
+          {listItems.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+        </ul>
+      );
+      listItems = [];
+    }
+  };
+
+  const flushCode = () => {
+    if (codeLines.length > 0) {
+      blocks.push(
+        <pre key={`code-${blocks.length}`} className="my-2 p-3 rounded bg-secondary/40 overflow-auto text-[12px]">
+          {codeLines.join('\n')}
+        </pre>
+      );
+      codeLines = [];
+    }
+  };
+
+  lines.forEach((line, index) => {
+    if (line.startsWith('```')) {
+      if (inCode) {
+        flushCode();
+        inCode = false;
+      } else {
+        flushList();
+        inCode = true;
+      }
+      return;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      flushList();
+      const size = heading[1].length <= 2 ? 'text-base' : 'text-sm';
+      blocks.push(<div key={`h-${index}`} className={`${size} font-semibold mt-3 mb-1 text-foreground`}>{heading[2]}</div>);
+      return;
+    }
+
+    const list = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (list) {
+      listItems.push(list[1]);
+      return;
+    }
+
+    flushList();
+    if (line.trim()) {
+      blocks.push(<p key={`p-${index}`} className="my-1 text-foreground leading-relaxed">{line}</p>);
+    } else {
+      blocks.push(<div key={`br-${index}`} className="h-2" />);
+    }
+  });
+
+  flushList();
+  flushCode();
+  return blocks;
+}
+
+function isMarkdownFile(path: string): boolean {
+  return /\.(md|markdown|mdx)$/i.test(path);
+}
+
+function collectFilePaths(nodes: WorkspaceFileNode[]): string[] {
+  return nodes.flatMap((node) => {
+    if (node.is_dir) return collectFilePaths(node.children || []);
+    return [node.path];
+  });
+}
+
+function getNodeGitStatus(node: WorkspaceFileNode, gitStatus: Map<string, GitStatusEntry['status']>): GitStatusEntry['status'] | 'dot' | null {
+  if (!node.is_dir) return gitStatus.get(node.path) || null;
+  const hasChangedChild = collectFilePaths(node.children || []).some((path) => gitStatus.has(path));
+  return hasChangedChild ? 'dot' : null;
+}
+
+function filterWorkspaceTree(nodes: WorkspaceFileNode[], query: string): WorkspaceFileNode[] {
+  const keyword = query.trim().toLowerCase();
+  if (!keyword) return nodes;
+
+  return nodes.flatMap((node) => {
+    const children = node.children ? filterWorkspaceTree(node.children, keyword) : [];
+    if (node.name.toLowerCase().includes(keyword) || node.path.toLowerCase().includes(keyword) || children.length > 0) {
+      return [{ ...node, children }];
+    }
+    return [];
+  });
 }
 
 // 根据扩展名返回图标
@@ -112,29 +222,29 @@ function FileTreeNode({
   depth = 0,
   hoveredFile,
   setHoveredFile,
+  onOpenFile,
+  gitStatus,
 }: {
-  items: FileItem[];
+  items: WorkspaceFileNode[];
   depth?: number;
   hoveredFile: string | null;
   setHoveredFile: (f: string | null) => void;
+  onOpenFile: (path: string) => void;
+  gitStatus: Map<string, GitStatusEntry['status']>;
 }) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
-    // 默认展开第一层
-    const init: Record<string, boolean> = {};
-    items.forEach((item) => { if (item.type === 'folder') init[item.path] = true; });
-    return init;
-  });
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const sorted = [...items].sort((a, b) => {
-    if (a.type === b.type) return a.name.localeCompare(b.name);
-    return a.type === 'folder' ? -1 : 1;
+    if (a.is_dir === b.is_dir) return a.name.localeCompare(b.name);
+    return a.is_dir ? -1 : 1;
   });
 
   return (
     <>
       {sorted.map((item) => {
-        const isFolder = item.type === 'folder';
+        const isFolder = item.is_dir;
         const isHovered = hoveredFile === item.path;
+        const nodeStatus = getNodeGitStatus(item, gitStatus);
         if (isFolder) {
           const isOpen = expanded[item.path] ?? true;
           return (
@@ -150,7 +260,8 @@ function FileTreeNode({
                 ) : (
                   <Folder className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
                 )}
-                <span className="text-[12px] text-foreground">{item.name}</span>
+                <span className={`text-[12px] truncate flex-1 min-w-0 ${item.ignored ? 'text-muted-foreground/50' : 'text-foreground'}`} title={item.path}>{item.name}</span>
+                {nodeStatus === 'dot' && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />}
               </button>
               {isOpen && item.children && (
                 <FileTreeNode
@@ -158,6 +269,8 @@ function FileTreeNode({
                   depth={depth + 1}
                   hoveredFile={hoveredFile}
                   setHoveredFile={setHoveredFile}
+                  onOpenFile={onOpenFile}
+                  gitStatus={gitStatus}
                 />
               )}
             </div>
@@ -168,13 +281,20 @@ function FileTreeNode({
           <button
             key={item.path}
             type="button"
+            onDoubleClick={() => onOpenFile(item.path)}
             onMouseEnter={() => setHoveredFile(item.path)}
             onMouseLeave={() => setHoveredFile(null)}
             className={`w-full flex items-center gap-1 px-3 py-1 text-left hover:bg-secondary/40 transition-colors ${depth > 0 ? 'pl-6' : ''}`}
+            title={item.path}
           >
             <span className="w-3 shrink-0" />
-            <Icon className={`w-3.5 h-3.5 shrink-0 ${isHovered ? 'text-primary' : 'text-muted-foreground'}`} />
-            <span className={`text-[12px] truncate font-mono ${isHovered ? 'text-foreground' : 'text-muted-foreground'}`}>{item.name}</span>
+            <Icon className={`w-3.5 h-3.5 shrink-0 ${item.ignored ? 'text-muted-foreground/40' : isHovered ? 'text-primary' : 'text-muted-foreground'}`} />
+            <span className={`text-[12px] truncate font-mono flex-1 min-w-0 ${item.ignored ? 'text-muted-foreground/50' : isHovered ? 'text-foreground' : 'text-muted-foreground'}`}>{item.name}</span>
+            {nodeStatus && nodeStatus !== 'dot' && (
+              <span className={`text-[10px] shrink-0 ${nodeStatus === 'U' || nodeStatus === 'A' ? 'text-green-400' : nodeStatus === 'D' ? 'text-red-400' : 'text-orange-400'}`}>
+                {nodeStatus}
+              </span>
+            )}
           </button>
         );
       })}
@@ -190,6 +310,7 @@ export default function LeftPanel({
   agentInstances: agentInstancesProp,
   activeAgentId: activeAgentIdProp,
   messages,
+  workspace,
   collapsed,
   onToggleCollapse,
   onSelectConversation,
@@ -212,12 +333,61 @@ export default function LeftPanel({
   const [isResizing, setIsResizing] = useState(false);
   const [fileSearch, setFileSearch] = useState('');
   const [convSearch, setConvSearch] = useState('');
+  const [fileTree, setFileTree] = useState<WorkspaceFileNode[]>([]);
+  const [fileTreeLoading, setFileTreeLoading] = useState(false);
+  const [fileTreeError, setFileTreeError] = useState<string | null>(null);
+  const [gitStatus, setGitStatus] = useState<Map<string, GitStatusEntry['status']>>(new Map());
+  const [preview, setPreview] = useState<WorkspaceFileContent | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const resizeStartX = useRef(0);
   const resizeStartWidth = useRef(224);
 
   const handleActivateAgentAndSwitch = (id: string) => {
     onActivateAgent(id);
     setActiveTab('chat');
+  };
+
+  const loadFileTree = useCallback(async () => {
+    if (!workspace) return;
+    setFileTreeLoading(true);
+    setFileTreeError(null);
+    try {
+      const [data, status] = await Promise.all([
+        invoke<WorkspaceFileNode[]>('list_workspace_tree', { workspace }),
+        invoke<GitStatusEntry[]>('git_status_workspace', { workspace }),
+      ]);
+      setFileTree(Array.isArray(data) ? data : []);
+      setGitStatus(new Map((Array.isArray(status) ? status : []).map((entry) => [entry.path, entry.status])));
+    } catch (error) {
+      setFileTreeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFileTreeLoading(false);
+    }
+  }, [workspace]);
+
+  useEffect(() => {
+    loadFileTree();
+  }, [loadFileTree]);
+
+  const openFile = async (path: string) => {
+    if (!workspace) return;
+    setPreviewError(null);
+    try {
+      const data = await invoke<WorkspaceFileContent>('read_workspace_file', { workspace, path });
+      setPreview(data);
+    } catch (error) {
+      setPreview(null);
+      setPreviewError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const filePaths = collectFilePaths(filterWorkspaceTree(fileTree, fileSearch));
+  const previewIndex = preview ? filePaths.indexOf(preview.path) : -1;
+  const openAdjacentFile = (offset: number) => {
+    const nextPath = filePaths[previewIndex + offset];
+    if (nextPath) {
+      openFile(nextPath);
+    }
   };
 
   // 拖拽拉伸
@@ -375,13 +545,14 @@ export default function LeftPanel({
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => setFileSearch('')}
-                  className="w-5 h-5 flex items-center justify-center rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={loadFileTree}
+                  disabled={fileTreeLoading}
+                  className="w-5 h-5 flex items-center justify-center rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                   title="刷新"
                 >
-                  <RefreshCw className="w-3 h-3" />
+                  <RefreshCw className={`w-3 h-3 ${fileTreeLoading ? 'animate-spin' : ''}`} />
                 </button>
-                <span className="text-[11px] text-muted-foreground">{rawMockFiles.length} 个文件</span>
+
               </div>
             </div>
             <div className="px-3 py-2 border-b border-border shrink-0">
@@ -397,11 +568,19 @@ export default function LeftPanel({
               </div>
             </div>
             <div className="flex-1 overflow-y-auto py-1">
-              <FileTreeNode
-                items={buildFileTree(rawMockFiles.filter((f) => !fileSearch || f.toLowerCase().includes(fileSearch.toLowerCase())))}
-                hoveredFile={hoveredFile}
-                setHoveredFile={setHoveredFile}
-              />
+              {fileTreeError ? (
+                <div className="px-3 py-6 text-center text-xs text-red-400">{fileTreeError}</div>
+              ) : fileTree.length === 0 ? (
+                <div className="px-3 py-6 text-center text-xs text-muted-foreground">暂无文件</div>
+              ) : (
+                <FileTreeNode
+                  items={filterWorkspaceTree(fileTree, fileSearch)}
+                  hoveredFile={hoveredFile}
+                  setHoveredFile={setHoveredFile}
+                  onOpenFile={openFile}
+                  gitStatus={gitStatus}
+                />
+              )}
             </div>
           </div>
         )}
@@ -607,6 +786,80 @@ export default function LeftPanel({
           })()}
         </DialogContent>
       </Dialog>
+
+      <Sheet open={!!preview || !!previewError} onOpenChange={(open) => !open && (setPreview(null), setPreviewError(null))}>
+        <SheetContent side="right" className="w-screen sm:w-[72vw] p-0 bg-card border-l border-border flex flex-col">
+          <SheetHeader className="px-4 py-3 border-b border-border shrink-0 pr-12">
+            <SheetTitle className="flex items-center gap-2 text-sm text-foreground font-mono min-w-0">
+              <FileCode2 className="w-4 h-4 text-primary shrink-0" />
+              <span className="truncate" title={preview ? `${workspace}/${preview.path}` : '文件预览'}>
+                {preview ? `${workspace}/${preview.path}` : '文件预览'}
+              </span>
+            </SheetTitle>
+          </SheetHeader>
+          <div className="flex items-center justify-between px-3 py-0.5 border-b border-border shrink-0 bg-secondary/20">
+            <span className="text-[11px] text-muted-foreground">
+              {preview && previewIndex >= 0 ? `${previewIndex + 1} / ${filePaths.length}` : ''}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={previewIndex <= 0}
+                onClick={() => openAdjacentFile(-1)}
+                className="flex items-center gap-0.5 px-1 py-0 text-[10px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronLeft className="w-3 h-3" />
+                上一个
+              </button>
+              <button
+                type="button"
+                disabled={previewIndex < 0 || previewIndex >= filePaths.length - 1}
+                onClick={() => openAdjacentFile(1)}
+                className="flex items-center gap-0.5 px-1 py-0 text-[10px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                下一个
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+          {previewError ? (
+            <div className="p-4 text-sm text-red-400">{previewError}</div>
+          ) : preview ? (
+            preview.is_image ? (
+              <div className="flex-1 overflow-auto p-6 flex items-center justify-center bg-background/60">
+                <img src={preview.content} alt={preview.path} className="max-w-full max-h-full object-contain rounded border border-border bg-card" />
+              </div>
+            ) : isMarkdownFile(preview.path) ? (
+              <div className="flex-1 overflow-auto px-6 py-4 text-sm text-foreground">
+                {preview.truncated && (
+                  <div className="mb-3 px-3 py-2 rounded bg-orange-400/10 text-orange-300 border border-orange-400/20">
+                    文件较大，仅显示前 512KB
+                  </div>
+                )}
+                <div className="max-w-4xl mx-auto">{renderMarkdown(preview.content)}</div>
+              </div>
+            ) : (
+              <div className="flex-1 overflow-auto font-mono text-[12px] leading-relaxed">
+                {preview.truncated && (
+                  <div className="sticky top-0 z-10 px-3 py-2 bg-orange-400/10 text-orange-300 border-b border-border">
+                    文件较大，仅显示前 512KB
+                  </div>
+                )}
+                {preview.content.split('\n').map((line, index) => (
+                  <div key={`${preview.path}-${index}`} className="flex hover:bg-secondary/20">
+                    <span className="w-12 shrink-0 text-right pr-3 text-muted-foreground select-none border-r border-border/60">
+                      {index + 1}
+                    </span>
+                    <pre className="flex-1 min-w-max px-3 whitespace-pre text-foreground">
+                      {highlightCodeLine(line || ' ', preview.path)}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            )
+          ) : null}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

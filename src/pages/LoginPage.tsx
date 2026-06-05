@@ -5,17 +5,38 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import WindowTitleBar from '@/components/common/WindowTitleBar';
 import { toast } from 'sonner';
-import { Code2, Terminal } from 'lucide-react';
+import { Code2, Settings, Terminal } from 'lucide-react';
+
+function getPostLoginPath(): string {
+  try {
+    const raw = localStorage.getItem('agent_instances');
+    const agents = raw ? JSON.parse(raw) : [];
+    return Array.isArray(agents) && agents.length > 0 ? '/workspace' : '/select-agent';
+  } catch {
+    return '/select-agent';
+  }
+}
 
 export default function LoginPage() {
+  console.log("[LoginPage.tsx] Rendering...");
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [cloudUrlOpen, setCloudUrlOpen] = useState(false);
+  const [cloudUrl, setCloudUrl] = useState(() => localStorage.getItem('cloud_url') || '');
   const { mockSignIn } = useAuth();
   const navigate = useNavigate();
+
+  const handleSaveCloudUrl = () => {
+    localStorage.setItem('cloud_url', cloudUrl.trim());
+    toast.success('云端地址已保存');
+    setCloudUrlOpen(false);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,13 +50,29 @@ export default function LoginPage() {
     const finalUsername = username.trim() || 'guest';
     await mockSignIn(finalUsername);
     toast.success(isLogin ? '登录成功' : '注册成功');
-    navigate('/select-agent');
+    navigate(getPostLoginPath());
     setLoading(false);
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="w-full max-w-md p-8">
+    <div className="min-h-screen flex flex-col bg-background">
+      <WindowTitleBar title="DeepHarness Desktop">
+        <div data-no-drag className="ml-auto mr-2 h-full flex items-center [-webkit-app-region:no-drag]">
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={() => setCloudUrlOpen(true)}
+            className="h-7 w-7 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors [-webkit-app-region:no-drag]"
+            aria-label="设置云端地址"
+            title="设置云端地址"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        </div>
+      </WindowTitleBar>
+      <div className="flex flex-1 items-center justify-center">
+        <div className="w-full max-w-md p-8">
         {/* Logo区域 */}
         <div className="flex flex-col items-center mb-8">
           <div className="w-16 h-16 rounded-lg bg-primary/10 flex items-center justify-center mb-4">
@@ -138,7 +175,7 @@ export default function LoginPage() {
               setLoading(true);
               await mockSignIn('guest');
               toast.success('访客登录成功');
-              navigate('/select-agent');
+              navigate(getPostLoginPath());
               setLoading(false);
             }}
             className="w-full"
@@ -147,10 +184,34 @@ export default function LoginPage() {
           </Button>
         </div>
 
-        <p className="text-center text-xs text-muted-foreground mt-6">
-          © 2026 DeepHarness. All rights reserved.
-        </p>
+          <p className="text-center text-xs text-muted-foreground mt-6">
+            © 2026 DeepHarness. All rights reserved.
+          </p>
+        </div>
       </div>
+
+      <Dialog open={cloudUrlOpen} onOpenChange={setCloudUrlOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>云端地址设置</DialogTitle>
+            <DialogDescription>请输入 DeepHarness 云端服务 URL 地址。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="cloud-url" className="text-sm font-normal">云端 URL</Label>
+            <Input
+              id="cloud-url"
+              value={cloudUrl}
+              onChange={(e) => setCloudUrl(e.target.value)}
+              placeholder="https://example.com"
+              className="bg-secondary border-border"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCloudUrlOpen(false)}>取消</Button>
+            <Button type="button" onClick={handleSaveCloudUrl}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

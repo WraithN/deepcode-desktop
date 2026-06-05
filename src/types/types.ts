@@ -99,3 +99,31 @@ export interface FileItem {
   type: 'file' | 'folder';
   children?: FileItem[];
 }
+
+export interface WorkspaceFileNode {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  ignored: boolean;
+  children?: WorkspaceFileNode[] | null;
+}
+
+export interface WorkspaceFileContent {
+  path: string;
+  content: string;
+  truncated: boolean;
+  is_image: boolean;
+}
+
+export interface GitStatusEntry {
+  path: string;
+  status: 'M' | 'U' | 'A' | 'D' | 'R';
+}
+
+export interface GitChangedFile {
+  path: string;
+  status: 'M' | 'U' | 'A' | 'D' | 'R';
+  additions: number;
+  deletions: number;
+  diff: string;
+}

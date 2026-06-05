@@ -3,7 +3,8 @@ import { writeTextFile, mkdir, BaseDirectory } from '@tauri-apps/plugin-fs';
 function isTauri(): boolean {
   return !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
 }
-import type { AgentEvent } from '@/stores';
+
+type LoggableEvent = { type: string } & Record<string, unknown>;
 
 interface LogEntry {
   timestamp: string;
@@ -76,7 +77,7 @@ class SessionLogger {
     });
   }
 
-  async logEvent(event: AgentEvent, metadata?: Record<string, unknown>): Promise<void> {
+  async logEvent(event: LoggableEvent, metadata?: Record<string, unknown>): Promise<void> {
     await this.append({
       timestamp: new Date().toISOString(),
       type: 'event',

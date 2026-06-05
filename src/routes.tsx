@@ -3,6 +3,8 @@ import SelectAgentPage from './pages/SelectAgentPage';
 import WorkspacePage from './pages/WorkspacePage';
 import type { ReactNode } from 'react';
 
+console.log("[routes.tsx] Loading route modules...");
+
 export interface RouteConfig {
   name: string;
   path: string;
@@ -36,3 +38,5 @@ export const routes: RouteConfig[] = [
     public: true,
   },
 ];
+
+console.log("[routes.tsx] Routes defined:", routes.map(r => r.path));

@@ -383,14 +383,22 @@ function MessageBubble({ message, onAnswerPermission, onAnswerUser, onEditUserMe
           {isComplete && (
             <span className="flex items-center gap-1 text-[11px] text-green-400">
               <Check className="w-2.5 h-2.5" />
-              已完成
+              编程已完成
             </span>
           )}
         </div>
         {!isComplete ? (
           // 流式生成中：同时显示实时文本和步骤
           <>
-            <div className="text-sm text-foreground leading-relaxed">{renderContent(message.content)}</div>
+            <div className="text-sm text-foreground leading-relaxed">
+              {message.content ? renderContent(message.content) : (
+                <div className="flex items-center gap-1 py-1">
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:0.2s]" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:0.4s]" />
+                </div>
+              )}
+            </div>
             {message.steps && message.steps.length > 0 && (
               <div className="space-y-1.5 mt-2">{message.steps.map((step, i) => (
                 <StepItem
@@ -807,46 +815,18 @@ export default function ChatPanel({
           ))
         )}
 
-        {isTyping && (
-          <div className="flex gap-3 px-4 py-3">
-            <div className="w-7 h-7 rounded shrink-0 flex items-center justify-center bg-accent relative">
-              <Bot className="w-3.5 h-3.5 text-primary" />
-              <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-primary border-2 border-background animate-pulse" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-[11px] text-muted-foreground mb-1">AI助手</div>
-              <div className="flex items-center gap-1">
-                <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:0.2s]" />
-                <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse [animation-delay:0.4s]" />
-              </div>
-            </div>
-          </div>
-        )}
         <div ref={messagesEndRef} />
       </div>
 
       {/* 底部输入区域 */}
       <div className="border-t border-border p-3 shrink-0 bg-card">
-        {/* Agent执行中来回走的进度条 */}
-        {isTyping && (
-          <div className="w-full h-0.5 bg-secondary/50 rounded-full overflow-hidden mb-2 relative">
-            <div className="absolute top-0 bottom-0 w-1/3 bg-primary rounded-full animate-[loading-bar_1.2s_ease-in-out_infinite]" />
-          </div>
-        )}
-        {/* 状态栏：模型 + 上下文 + Token统计 */}
+        {/* 状态栏：模型 + Token统计 */}
         <div className="flex items-center justify-between mb-2 px-0.5">
           <div className="flex items-center gap-3">
             <span className="text-[11px] text-muted-foreground">
               模型: <span className="text-foreground font-medium">{modelLabel}</span>
             </span>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground">上下文</span>
-              <div className="w-16 h-1.5 bg-secondary rounded-full overflow-hidden">
-                <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${contextPercent}%` }} />
-              </div>
-              <span className="text-[11px] text-muted-foreground w-6 text-right">{contextPercent}%</span>
-            </div>
+            <span className="text-[11px] text-muted-foreground">上下文 {contextPercent}%</span>
           </div>
           <div className="flex items-center gap-3">
             {(() => {

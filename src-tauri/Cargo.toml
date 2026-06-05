@@ -25,6 +25,7 @@ tokio = { version = "1", features = ["rt", "sync", "process", "io-util", "time",
 tokio-tungstenite = "0.24"
 log = "0.4"
 futures-util = "0.3"
+base64 = "0.22"
 
 # workspace crates
 agent-core = { path = "crates/agent-core" }
@@ -33,3 +34,6 @@ opencode-plugin = { path = "crates/opencode-plugin" }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies.env_logger]
+version = "0.11"

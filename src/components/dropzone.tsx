@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils'
 
 interface FileWithPreview extends File {
   preview?: string
+  errors: { message: string }[]
 }
 
 interface FileUploadState {

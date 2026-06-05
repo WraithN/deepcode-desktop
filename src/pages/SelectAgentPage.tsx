@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { ArrowRight, Sparkles, Bot } from 'lucide-react';
 import DirectoryPickerButton from '@/components/DirectoryPickerButton';
+import WindowTitleBar from '@/components/common/WindowTitleBar';
 import AgentIcon from '@/components/workspace/AgentIcon';
 import { invoke } from '@tauri-apps/api/core';
 import { useAgentStore } from '@/stores';
@@ -92,6 +93,7 @@ export default function SelectAgentPage() {
       const currentInstances = useAgentStore.getState().instances;
       localStorage.setItem('agent_instances', JSON.stringify(currentInstances));
       localStorage.setItem('active_agent_id', instanceId);
+      localStorage.setItem('create_conversation_for_agent_id', instanceId);
 
       toast.success(`已选择 ${agents.find((a) => a.id === targetAgent)?.name}`);
       navigate('/workspace');
@@ -105,14 +107,29 @@ export default function SelectAgentPage() {
   };
 
   useEffect(() => {
+    if (!user) return;
+    try {
+      const raw = localStorage.getItem('agent_instances');
+      const instances = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(instances) && instances.length > 0) {
+        navigate('/workspace');
+      }
+    } catch {
+      // ignore
+    }
+  }, [navigate, user]);
+
+  useEffect(() => {
     invoke<string>('get_current_dir')
       .then((dir) => setWorkspace(dir))
       .catch(() => setWorkspace(''));
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
-      <div className="w-full max-w-2xl">
+    <div className="min-h-screen flex flex-col bg-background">
+      <WindowTitleBar title="DeepHarness Desktop" />
+      <div className="flex flex-1 flex-col items-center justify-center p-4">
+        <div className="w-full max-w-2xl">
         {/* 标题 */}
         <div className="text-center mb-8">
           <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center mx-auto mb-4">
@@ -207,9 +224,10 @@ export default function SelectAgentPage() {
           )}
         </Button>
 
-        <p className="text-center text-xs text-muted-foreground mt-4">
-          登录用户：{user?.email?.replace('@local.dev', '') || '未知'}
-        </p>
+          <p className="text-center text-xs text-muted-foreground mt-4">
+            登录用户：{user?.email?.replace('@local.dev', '') || '未知'}
+          </p>
+        </div>
       </div>
     </div>
   );
