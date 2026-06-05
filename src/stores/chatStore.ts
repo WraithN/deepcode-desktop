@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { useWebSocketStore } from './websocketStore';
-import type { Message } from '@/types/types';
+import type { Message, TodoItem } from '@/types/types';
 
 interface ChatState {
   conversations: Array<{ id: string; title: string }>;
@@ -11,6 +11,8 @@ interface ChatState {
   isStreaming: boolean;
   isTyping: boolean;
   activeInstanceId: string | null;
+  pendingInteraction: { sessionId: string; type: string; payload: unknown } | null;
+  todos: TodoItem[];
 
   sendMessage: (content: string) => Promise<{ sessionID?: string; text: string }>;
   loadConversation: (conversationId: string) => Promise<void>;
@@ -21,6 +23,9 @@ interface ChatState {
   setIsStreaming: (isStreaming: boolean) => void;
   setIsTyping: (isTyping: boolean) => void;
   setOpencodeSessionId: (sessionId: string | null) => void;
+  setPendingInteraction: (interaction: ChatState['pendingInteraction']) => void;
+  setTodos: (todos: TodoItem[]) => void;
+  sendInteractionResponse: (response: Record<string, unknown>) => Promise<void>;
 }
 
 async function ensureWebSocketConnected() {
@@ -41,6 +46,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   isTyping: false,
   activeInstanceId: null,
+  pendingInteraction: null,
+  todos: [],
 
   sendMessage: async (content: string) => {
     const { activeInstanceId, opencodeSessionId } = get();
@@ -126,5 +133,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setOpencodeSessionId: (sessionId) => {
     set({ opencodeSessionId: sessionId });
+  },
+
+  setPendingInteraction: (interaction) => set({ pendingInteraction: interaction }),
+
+  setTodos: (todos) => set({ todos }),
+
+  sendInteractionResponse: async (response) => {
+    const { pendingInteraction } = get();
+    if (!pendingInteraction) return;
+
+    await useWebSocketStore.getState().sendRequest('agent.respond', {
+      sessionId: pendingInteraction.sessionId,
+      interactionType: pendingInteraction.type,
+      response,
+    });
+
+    set({ pendingInteraction: null });
   },
 }));

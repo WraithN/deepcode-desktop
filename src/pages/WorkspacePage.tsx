@@ -103,6 +103,7 @@ export default function WorkspacePage() {
   const logStoreAppend = useLogStore((s) => s.appendLog);
   const sessionLogs = useLogStore((s) => s.logs);
   const isTyping = useChatStore((s) => s.isTyping);
+  const todos = useChatStore((s) => s.todos);
 
   // 智能体实例管理
   useEffect(() => {
@@ -164,6 +165,103 @@ export default function WorkspacePage() {
       unsubLogs();
     };
   }, [logStoreAppend]);
+
+  // 订阅智能体交互事件（问题、权限、任务列表）
+  useEffect(() => {
+    const wsStore = useWebSocketStore.getState();
+
+    const unsubQuestion = wsStore.subscribe('agent.question', (params) => {
+      const p = params as Record<string, unknown>;
+      const interaction = p.interaction as Record<string, unknown>;
+      const sessionId = (p.sessionID as string) || '';
+
+      useChatStore.getState().setPendingInteraction({ sessionId, type: 'question', payload: interaction });
+
+      // Add question step to the latest streaming message
+      useChatStore.getState().setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (!lastMsg || lastMsg.role !== 'assistant') return prev;
+        return prev.map((msg, idx) =>
+          idx === prev.length - 1
+            ? {
+                ...msg,
+                steps: [
+                  ...(msg.steps || []),
+                  {
+                    type: 'ask_user' as const,
+                    content: '用户确认',
+                    interaction: interaction as unknown as import('@/types/types').InteractionPayload,
+                  },
+                ],
+              }
+            : msg
+        );
+      });
+    });
+
+    const unsubPermission = wsStore.subscribe('agent.permission', (params) => {
+      const p = params as Record<string, unknown>;
+      const interaction = p.interaction as Record<string, unknown>;
+      const sessionId = (p.sessionID as string) || '';
+
+      useChatStore.getState().setPendingInteraction({ sessionId, type: 'permission', payload: interaction });
+
+      useChatStore.getState().setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (!lastMsg || lastMsg.role !== 'assistant') return prev;
+        return prev.map((msg, idx) =>
+          idx === prev.length - 1
+            ? {
+                ...msg,
+                steps: [
+                  ...(msg.steps || []),
+                  {
+                    type: 'ask_permission' as const,
+                    content: (interaction.action as string) || '权限询问',
+                    interaction: interaction as unknown as import('@/types/types').InteractionPayload,
+                  },
+                ],
+              }
+            : msg
+        );
+      });
+    });
+
+    const unsubTodo = wsStore.subscribe('agent.todowrite', (params) => {
+      const p = params as Record<string, unknown>;
+      const interaction = p.interaction as Record<string, unknown>;
+      const newTodos = (interaction.todos as import('@/types/types').TodoItem[]) || [];
+
+      useChatStore.getState().setTodos(newTodos);
+
+      useChatStore.getState().setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (!lastMsg || lastMsg.role !== 'assistant') return prev;
+        return prev.map((msg, idx) =>
+          idx === prev.length - 1
+            ? {
+                ...msg,
+                steps: [
+                  ...(msg.steps || []),
+                  {
+                    type: 'tool_result' as const,
+                    content: '任务列表更新',
+                    toolName: 'todowrite',
+                    interaction: interaction as unknown as import('@/types/types').InteractionPayload,
+                  },
+                ],
+              }
+            : msg
+        );
+      });
+    });
+
+    return () => {
+      unsubQuestion();
+      unsubPermission();
+      unsubTodo();
+    };
+  }, []);
 
   useEffect(() => {
     setChatCurrentConversation(activeConversation?.id ?? null);
@@ -543,16 +641,31 @@ export default function WorkspacePage() {
   };
 
   // 处理权限询问回答
-  const handleAnswerPermission = (_stepIndex: number, answer: 'once' | 'session' | 'deny') => {
+  const handleAnswerPermission = async (_stepIndex: number, answer: 'once' | 'session' | 'deny') => {
     const label = answer === 'once' ? '本次同意' : answer === 'session' ? '本Session同意' : '不同意';
     toast.success(`已${label}`);
     setContextPercent((prev) => Math.min(prev + 5, 100));
+
+    try {
+      await useChatStore.getState().sendInteractionResponse({ answer });
+    } catch (e) {
+      console.error('Failed to send permission response:', e);
+      toast.error('发送回答失败');
+    }
   };
 
   // 处理用户问题回答
-  const handleAnswerUserQuestions = (_stepIndex: number, _answers: Record<string, string>) => {
+  const handleAnswerUserQuestions = async (_stepIndex: number, answers: Record<string, string | string[]>) => {
     toast.success('已提交回答');
     setContextPercent((prev) => Math.min(prev + 3, 100));
+
+    try {
+      const answerValues = Object.values(answers).flat();
+      await useChatStore.getState().sendInteractionResponse({ answers: answerValues });
+    } catch (e) {
+      console.error('Failed to send question response:', e);
+      toast.error('发送回答失败');
+    }
   };
 
 
@@ -690,6 +803,7 @@ export default function WorkspacePage() {
           {/* 右侧栏 */}
           <RightPanel
             tasks={tasks}
+            todos={todos}
             modifiedFiles={modifiedFiles}
             workspace={activeAgent.workspace}
             collapsed={rightCollapsed}
