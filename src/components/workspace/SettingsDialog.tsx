@@ -197,8 +197,8 @@ function AgentTypeConfigCard({
   return (
     <div className="rounded-lg border border-border bg-secondary/20 p-3 space-y-3">
       <div className="flex items-center gap-2">
-        <span className="text-xs font-semibold text-foreground">{agentType.name}</span>
-        <Badge variant="secondary" className="text-[9px] px-1.5 h-4">{agentType.key}</Badge>
+        <span className="text-xs font-medium text-foreground">{agentType.name}</span>
+        <Badge variant="secondary" className="text-xs px-1.5 h-4">{agentType.key}</Badge>
       </div>
       <p className="text-[12px] text-muted-foreground">{agentType.desc}</p>
 
@@ -224,7 +224,7 @@ function AgentTypeConfigCard({
 
       {config.type === 'builtin' ? (
         <div className="space-y-1">
-          <Label className="text-[11px] text-muted-foreground">选择模型</Label>
+          <Label className="text-xs text-muted-foreground">选择模型</Label>
           <Select
             value={config.modelId || 'gpt-4'}
             onValueChange={(v) => onChange({ ...config, modelId: v })}
@@ -242,15 +242,15 @@ function AgentTypeConfigCard({
       ) : (
         <div className="space-y-2">
           <div className="space-y-1">
-            <Label className="text-[11px] text-muted-foreground">模型名称</Label>
+            <Label className="text-xs text-muted-foreground">模型名称</Label>
             <Input value={config.name || ''} onChange={(e) => onChange({ ...config, name: e.target.value })} placeholder="例如：自定义 GPT" className="bg-secondary border-border text-xs h-8" />
           </div>
           <div className="space-y-1">
-            <Label className="text-[11px] text-muted-foreground">API URL</Label>
+            <Label className="text-xs text-muted-foreground">API URL</Label>
             <Input value={config.url || ''} onChange={(e) => onChange({ ...config, url: e.target.value })} placeholder="https://api.example.com/v1/chat/completions" className="bg-secondary border-border text-xs h-8" />
           </div>
           <div className="space-y-1">
-            <Label className="text-[11px] text-muted-foreground">API KEY</Label>
+            <Label className="text-xs text-muted-foreground">API KEY</Label>
             <div className="flex items-center gap-1.5">
               <Input type={showKey ? 'text' : 'password'} value={config.apiKey || ''} onChange={(e) => onChange({ ...config, apiKey: e.target.value })} placeholder="sk-..." className="bg-secondary border-border text-xs h-8" />
               <button type="button" onClick={() => setShowKey(!showKey)} className="w-8 h-8 flex items-center justify-center rounded border border-border bg-secondary text-muted-foreground hover:text-foreground transition-colors shrink-0" title={showKey ? '隐藏' : '显示'}>
@@ -770,7 +770,7 @@ export default function SettingsDialog({ open, onOpenChange, agents = [], onUpda
                       <button
                         type="button"
                         onClick={() => setActiveTag(tag)}
-                        className={`px-2 py-0.5 text-[11px] rounded-full transition-colors inline-flex items-center gap-1 ${
+                        className={`px-2 py-0.5 text-xs rounded-full transition-colors inline-flex items-center gap-1 ${
                           activeTag === tag ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground hover:text-foreground'
                         }`}
                       >
@@ -781,7 +781,7 @@ export default function SettingsDialog({ open, onOpenChange, agents = [], onUpda
                             tabIndex={0}
                             onClick={(e) => { e.stopPropagation(); handleDeleteTag(tag); }}
                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); handleDeleteTag(tag); } }}
-                            className="ml-0.5 text-[8px] opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity cursor-pointer"
+                            className="ml-0.5 text-xs opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity cursor-pointer"
                           >
                             ×
                           </span>
@@ -792,7 +792,7 @@ export default function SettingsDialog({ open, onOpenChange, agents = [], onUpda
                   <button
                     type="button"
                     onClick={() => setShowAddTag(true)}
-                    className="px-2 py-0.5 text-[11px] rounded-full border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors"
+                    className="px-2 py-0.5 text-xs rounded-full border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors"
                   >
                     + 类型
                   </button>
@@ -843,7 +843,7 @@ export default function SettingsDialog({ open, onOpenChange, agents = [], onUpda
                                 setNewPromptTags(selected ? newPromptTags.filter((t) => t !== tag) : [...newPromptTags, tag]);
                               }
                             }}
-                            className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
+                            className={`px-2 py-0.5 text-xs rounded-full border transition-colors ${
                               selected ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-secondary text-muted-foreground'
                             }`}
                           >
@@ -874,7 +874,7 @@ export default function SettingsDialog({ open, onOpenChange, agents = [], onUpda
                           <h4 className="text-xs font-medium text-foreground">{card.title}</h4>
                           <div className="flex gap-1 shrink-0 items-center opacity-0 group-hover:opacity-100 transition-opacity">
                             {card.tags.map((tag) => (
-                              <Badge key={tag} variant="secondary" className="text-[9px] px-1.5 py-0 h-4">{tag}</Badge>
+                              <Badge key={tag} variant="secondary" className="text-xs px-1.5 py-0 h-4">{tag}</Badge>
                             ))}
                             <button type="button" onClick={() => handleCopyPrompt(card)} className="ml-1 text-muted-foreground hover:text-foreground transition-colors">
                               {copiedId === card.id ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
@@ -927,20 +927,20 @@ export default function SettingsDialog({ open, onOpenChange, agents = [], onUpda
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div className="space-y-1">
-                          <Label className="text-[11px] text-muted-foreground">名称</Label>
+                          <Label className="text-xs text-muted-foreground">名称</Label>
                           <Input value={server.name} onChange={(e) => handleUpdateMcpServer(server.id, 'name', e.target.value)} placeholder="server-name" className="bg-secondary border-border text-xs h-7" />
                         </div>
                         <div className="space-y-1">
-                          <Label className="text-[11px] text-muted-foreground">命令</Label>
+                          <Label className="text-xs text-muted-foreground">命令</Label>
                           <Input value={server.command} onChange={(e) => handleUpdateMcpServer(server.id, 'command', e.target.value)} placeholder="npx, uvx, python..." className="bg-secondary border-border text-xs h-7" />
                         </div>
                       </div>
                       <div className="space-y-1">
-                        <Label className="text-[11px] text-muted-foreground">参数</Label>
+                        <Label className="text-xs text-muted-foreground">参数</Label>
                         <Input value={server.args} onChange={(e) => handleUpdateMcpServer(server.id, 'args', e.target.value)} placeholder="-y @modelcontextprotocol/server-filesystem" className="bg-secondary border-border text-xs h-7" />
                       </div>
                       <div className="space-y-1">
-                        <Label className="text-[11px] text-muted-foreground">环境变量</Label>
+                        <Label className="text-xs text-muted-foreground">环境变量</Label>
                         <Input value={server.env} onChange={(e) => handleUpdateMcpServer(server.id, 'env', e.target.value)} placeholder="KEY=VALUE;KEY2=VALUE2" className="bg-secondary border-border text-xs h-7" />
                       </div>
                     </div>

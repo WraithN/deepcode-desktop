@@ -6,10 +6,10 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::net::SocketAddr;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State};
+use tauri::{CursorIcon, Emitter, Manager, State};
 use agent_db::{AgentDbManager, agent_db_create_conversation, agent_db_load_conversations, agent_db_create_message, agent_db_load_messages, agent_db_delete_agent};
 use base64::Engine;
 
@@ -20,6 +20,7 @@ mod service;
 mod gateway;
 
 use ai_coding_desktop::DbState;
+use crate::service::opencode_service::OpencodeService;
 
 fn db_path(app_handle: &tauri::App) -> PathBuf {
     let mut path = app_handle.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -123,6 +124,12 @@ fn window_control(window: tauri::Window, action: String) -> Result<(), String> {
         "close" => window.close().map_err(|e| e.to_string()),
         _ => Err(format!("unknown window action: {}", action)),
     }
+}
+
+#[tauri::command]
+fn hide_system_cursor(_window: tauri::Window) -> Result<(), String> {
+    // 所有平台均使用系统鼠标，此命令已弃用
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -419,75 +426,12 @@ fn git_changed_files(workspace: String) -> Result<Vec<GitChangedFile>, String> {
 }
 
 #[tauri::command]
-async fn agent_send_message_direct(message: String, session_id: Option<String>) -> Result<Value, String> {
-    let mut cmd = tokio::process::Command::new("opencode");
-    cmd.arg("run")
-        .arg(&message)
-        .arg("--format")
-        .arg("json");
-
-    if let Some(session_id) = session_id {
-        if !session_id.is_empty() {
-            cmd.arg("--session").arg(session_id);
-        }
-    }
-
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    let output = cmd.output().await.map_err(|e| format!("Failed to execute opencode run: {}", e))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut session_id_result = String::new();
-    let mut text_parts: Vec<String> = Vec::new();
-
-    for line in stdout.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        if let Ok(event) = serde_json::from_str::<Value>(line) {
-            if session_id_result.is_empty() {
-                if let Some(sid) = event.get("sessionID").or_else(|| event.get("sessionId")).or_else(|| event.get("session_id")).and_then(|v| v.as_str()) {
-                    session_id_result = sid.to_string();
-                }
-            }
-
-            if let Some(text) = event.get("content").or_else(|| event.get("text")).and_then(|v| v.as_str()) {
-                text_parts.push(text.to_string());
-            }
-
-            if let Some(part) = event.get("part") {
-                if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                    text_parts.push(text.to_string());
-                }
-            }
-
-            if let Some(parts) = event.get("parts").and_then(|v| v.as_array()) {
-                for part in parts {
-                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                        text_parts.push(text.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    if !output.status.success() {
-        return Err(format!("opencode run failed: {}", stderr));
-    }
-
-    if text_parts.is_empty() {
-        text_parts.push(if stderr.trim().is_empty() {
-            "opencode 未返回内容".to_string()
-        } else {
-            stderr.trim().to_string()
-        });
-    }
-
-    Ok(serde_json::json!({
-        "sessionID": session_id_result,
-        "parts": text_parts.iter().map(|text| serde_json::json!({ "type": "text", "text": text })).collect::<Vec<_>>(),
-    }))
+async fn agent_send_message_direct(
+    opencode_service: State<'_, Arc<OpencodeService>>,
+    message: String,
+    session_id: Option<String>,
+) -> Result<Value, String> {
+    opencode_service.run_message(&message, session_id.as_deref()).await
 }
 
 #[tauri::command]
@@ -872,6 +816,7 @@ fn main() {
                 log::warn!("[main.rs] Failed to initialize OpencodeService: {}, using fallback", e);
                 service::opencode_service::OpencodeService::new_fallback()
             }));
+            app.manage(opencode_service.clone());
             let session_manager = Arc::new(gateway::session_manager::SessionManager::new());
             log::info!("[main.rs] Services initialized");
 
@@ -914,6 +859,7 @@ fn main() {
             agent_db_delete_agent,
             get_current_dir,
             window_control,
+            hide_system_cursor,
             list_workspace_tree,
             read_workspace_file,
             git_status_workspace,

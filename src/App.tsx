@@ -31,6 +31,8 @@ const App: React.FC = () => {
     console.log("[App.tsx] Theme set to:", savedColor, hsl);
   }, []);
 
+
+
   console.log("[App.tsx] Routes count:", routes.length);
   console.log("[App.tsx] Route paths:", routes.map(r => r.path));
 

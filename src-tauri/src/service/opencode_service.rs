@@ -5,12 +5,14 @@ use tokio::sync::Mutex;
 pub struct OpencodeService {
     serve_process: Arc<Mutex<Option<Child>>>,
     port: u16,
+    base_url: String,
+    client: reqwest::Client,
 }
 
 impl OpencodeService {
     pub fn new() -> Result<Self, String> {
         let port = Self::find_available_port_sync()?;
-        
+
         let mut cmd = std::process::Command::new("opencode");
         cmd.arg("serve")
             .arg("--port")
@@ -19,21 +21,30 @@ impl OpencodeService {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let child = cmd.spawn()
+        let child = cmd
+            .spawn()
             .map_err(|e| format!("Failed to start opencode serve: {}", e))?;
 
         std::thread::sleep(std::time::Duration::from_secs(3));
 
+        let base_url = format!("http://127.0.0.1:{}", port);
+
         Ok(Self {
             serve_process: Arc::new(Mutex::new(Some(child))),
             port,
+            base_url,
+            client: reqwest::Client::new(),
         })
     }
 
     pub fn new_fallback() -> Self {
+        let port = 3001;
+        let base_url = format!("http://127.0.0.1:{}", port);
         Self {
             serve_process: Arc::new(Mutex::new(None)),
-            port: 3001,
+            port,
+            base_url,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -42,82 +53,94 @@ impl OpencodeService {
     }
 
     pub fn get_attach_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.base_url.clone()
     }
 
-    /// 执行 opencode run 并实时推送事件
-    /// 
-    /// callback 会在每读取一行 JSON 时被调用
+    /// 通过 opencode serve HTTP API 创建新会话
+    pub async fn create_session(&self) -> Result<serde_json::Value, String> {
+        let resp = self
+            .client
+            .post(format!("{}/session", self.base_url))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .map_err(|e| format!("Failed to create session: {}", e))?;
+
+        resp.json()
+            .await
+            .map_err(|e| format!("Failed to parse create_session response: {}", e))
+    }
+
+    /// 通过 opencode serve HTTP API 发送消息
+    pub async fn send_message(
+        &self,
+        session_id: &str,
+        message: &str,
+    ) -> Result<serde_json::Value, String> {
+        let resp = self
+            .client
+            .post(format!("{}/session/{}/message", self.base_url, session_id))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "parts": [{ "type": "text", "text": message }]
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send message: {}", e))?;
+
+        resp.json()
+            .await
+            .map_err(|e| format!("Failed to parse send_message response: {}", e))
+    }
+
+    /// 执行消息并返回结果
+    ///
+    /// 流程：
+    /// 1. 如果没有 session_id，先调用 create_session 创建
+    /// 2. 调用 send_message 发送消息
+    /// 3. 解析返回的 parts 提取文本内容
     pub async fn run_message(
         &self,
         message: &str,
         session_id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
-        let mut cmd = tokio::process::Command::new("opencode");
-        cmd.arg("run")
-            .arg(message)
-            .arg("--format")
-            .arg("json");
+        // 创建或复用 session
+        let sid = match session_id {
+            Some(sid) if !sid.is_empty() => sid.to_string(),
+            _ => {
+                let session = self.create_session().await?;
+                session
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| {
+                        "Failed to get session ID from create_session response".to_string()
+                    })?
+            }
+        };
 
-        if let Some(sid) = session_id {
-            cmd.arg("--session").arg(sid);
-        }
+        let result = self.send_message(&sid, message).await?;
 
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let session_id_result = result
+            .get("info")
+            .and_then(|i| i.get("sessionID"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(&sid)
+            .to_string();
 
-        let output = cmd.output().await
-            .map_err(|e| format!("Failed to execute opencode run: {}", e))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        // 解析 JSON Lines 输出
-        let mut session_id_result = String::new();
         let mut text_parts: Vec<String> = Vec::new();
 
-        for line in stdout.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
-                if session_id_result.is_empty() {
-                    if let Some(sid) = event.get("sessionID").or_else(|| event.get("sessionId")).or_else(|| event.get("session_id")).and_then(|v| v.as_str()) {
-                        session_id_result = sid.to_string();
-                    }
-                }
-
-                if let Some(text) = event.get("content").or_else(|| event.get("text")).and_then(|v| v.as_str()) {
+        if let Some(parts) = result.get("parts").and_then(|v| v.as_array()) {
+            for part in parts {
+                if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                     text_parts.push(text.to_string());
                 }
-
-                if let Some(part) = event.get("part") {
-                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                        text_parts.push(text.to_string());
-                    }
-                }
-
-                if let Some(parts) = event.get("parts").and_then(|v| v.as_array()) {
-                    for part in parts {
-                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                            text_parts.push(text.to_string());
-                        }
-                    }
-                }
             }
-        }
-
-        if !output.status.success() {
-            return Err(format!("opencode run failed: {}", stderr));
         }
 
         if text_parts.is_empty() {
-            text_parts.push(if stderr.trim().is_empty() {
-                "opencode 未返回内容".to_string()
-            } else {
-                stderr.trim().to_string()
-            });
+            text_parts.push("opencode 未返回内容".to_string());
         }
 
         Ok(serde_json::json!({

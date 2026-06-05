@@ -2,12 +2,10 @@ use crate::gateway::session_manager::SessionManager;
 use crate::service::opencode_service::OpencodeService;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use std::process::Stdio;
 use tokio_tungstenite::tungstenite::Message;
 
-/// 流式读取 opencode run 输出并推送到会话 WebSocket
-/// 
+/// 通过 opencode serve HTTP API 获取响应，并模拟流式事件推送到会话 WebSocket
+///
 /// 事件类型：
 /// - agent.thinking: AI 开始思考
 /// - agent.token: 文本 token（逐字推送）
@@ -20,52 +18,33 @@ pub async fn stream_opencode_output(
     message: String,
     opencode_session_id: Option<String>,
 ) {
-    let attach_url = opencode_service.get_attach_url();
-
     log::info!(
         "[streaming] starting stream for conversation={}, session={:?}",
-        conversation_id, opencode_session_id
+        conversation_id,
+        opencode_session_id
     );
 
-    let mut cmd = tokio::process::Command::new("opencode");
-    cmd.arg("run")
-        .arg(&message)
-        .arg("--format")
-        .arg("json")
-        .arg("--attach")
-        .arg(&attach_url);
+    // 创建或复用 session
+    let sid = match opencode_session_id {
+        Some(sid) if !sid.is_empty() => sid,
+        _ => match opencode_service.create_session().await {
+            Ok(session) => session
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            Err(e) => {
+                log::error!("[streaming] Failed to create session: {}", e);
+                let _ = send_error(&session_manager, &conversation_id, &e).await;
+                return;
+            }
+        },
+    };
 
-    if let Some(sid) = &opencode_session_id {
-        cmd.arg("--session").arg(sid);
+    if sid.is_empty() {
+        let _ = send_error(&session_manager, &conversation_id, "Failed to get session ID").await;
+        return;
     }
-
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("[streaming] Failed to spawn opencode run: {}", e);
-            let _ = send_error(
-                &session_manager,
-                &conversation_id,
-                &format!("Failed to spawn opencode run: {}", e),
-            ).await;
-            return;
-        }
-    };
-
-    let stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => {
-            log::error!("[streaming] Failed to capture stdout");
-            let _ = send_error(&session_manager, &conversation_id, "Failed to capture stdout").await;
-            return;
-        }
-    };
-
-    let mut reader = BufReader::new(stdout).lines();
-    let mut session_id_result = String::new();
 
     // 发送 thinking 事件
     let _ = send_event(
@@ -73,90 +52,72 @@ pub async fn stream_opencode_output(
         &conversation_id,
         "agent.thinking",
         json!({ "content": "AI 正在思考..." }),
-    ).await;
+    )
+    .await;
 
-    // 逐行读取并推送
-    while let Ok(Some(line)) = reader.next_line().await {
-        if line.trim().is_empty() {
-            continue;
-        }
+    // 调用 opencode serve HTTP API
+    match opencode_service.send_message(&sid, &message).await {
+        Ok(result) => {
+            let session_id_result = result
+                .get("info")
+                .and_then(|i| i.get("sessionID"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(&sid)
+                .to_string();
 
-        log::debug!("[streaming] received line: {}", line);
-
-        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
-            // 提取 session ID
-            if session_id_result.is_empty() {
-                if let Some(sid) = event.get("sessionID").and_then(|v| v.as_str()) {
-                    session_id_result = sid.to_string();
+            // 遍历 parts，模拟流式事件
+            if let Some(parts) = result.get("parts").and_then(|v| v.as_array()) {
+                for part in parts {
+                    let part_type = part.get("type").and_then(|v| v.as_str());
+                    match part_type {
+                        Some("step-start") => {
+                            let _ = send_event(
+                                &session_manager,
+                                &conversation_id,
+                                "agent.thinking",
+                                part.clone(),
+                            )
+                            .await;
+                        }
+                        Some("text") => {
+                            let _ = send_event(
+                                &session_manager,
+                                &conversation_id,
+                                "agent.token",
+                                part.clone(),
+                            )
+                            .await;
+                        }
+                        Some("step-finish") => {
+                            // 步骤完成，不单独推送
+                        }
+                        _ => {
+                            log::debug!("[streaming] unknown part type: {:?}", part_type);
+                        }
+                    }
                 }
             }
 
-            // 解析事件类型
-            let event_type = event.get("type").and_then(|v| v.as_str());
-            let method = match event_type {
-                Some("step_start") => "agent.thinking",
-                Some("text") => "agent.token",
-                Some("step_finish") => "agent.done",
-                _ => {
-                    log::debug!("[streaming] unknown event type: {:?}", event_type);
-                    continue;
-                }
-            };
+            // 发送 done 事件
+            let _ = send_event(
+                &session_manager,
+                &conversation_id,
+                "agent.done",
+                json!({ "sessionID": session_id_result }),
+            )
+            .await;
 
-            let payload = if method == "agent.token" {
-                // 提取文本内容
-                let text = event
-                    .get("part")
-                    .and_then(|p| p.get("text"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                json!({ "text": text })
-            } else {
-                event.get("part").cloned().unwrap_or(event)
-            };
-
-            let _ = send_event(&session_manager, &conversation_id, method, payload).await;
-        } else {
-            log::warn!("[streaming] failed to parse JSON line: {}", line);
+            log::info!(
+                "[streaming] stream completed for conversation={}, sessionID={}",
+                conversation_id,
+                session_id_result
+            );
         }
-    }
-
-    // 检查 stderr
-    let stderr_output = {
-        let mut stderr_buf = String::new();
-        if let Some(stderr) = child.stderr.take() {
-            let mut stderr_reader = BufReader::new(stderr);
-            let _ = stderr_reader.read_to_string(&mut stderr_buf).await;
-        }
-        stderr_buf
-    };
-
-    // 等待进程结束
-    let status = match child.wait().await {
-        Ok(s) => s,
         Err(e) => {
-            log::error!("[streaming] failed to wait for child: {}", e);
-            let _ = send_error(&session_manager, &conversation_id, &format!("Process error: {}", e)).await;
-            return;
+            log::error!("[streaming] HTTP API error: {}", e);
+            let _ = send_error(&session_manager, &conversation_id, &e).await;
         }
-    };
-
-    if !status.success() && !stderr_output.is_empty() {
-        log::error!("[streaming] opencode run stderr: {}", stderr_output);
     }
-
-    // 发送 done 事件
-    let _ = send_event(
-        &session_manager,
-        &conversation_id,
-        "agent.done",
-        json!({ "sessionID": session_id_result }),
-    ).await;
-
-    log::info!(
-        "[streaming] stream completed for conversation={}, sessionID={}",
-        conversation_id, session_id_result
-    );
 }
 
 async fn send_event(

@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, Info,
   FolderOpen, FileText, FileJson, FileType, FileImage,
   Settings, Braces, Hash, Globe, Coffee,
-  RefreshCw, Search, Trash2,
+  RefreshCw, Search, Trash2, ChevronsDown,
 } from 'lucide-react';
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import {
@@ -150,7 +150,7 @@ function renderMarkdown(content: string) {
     if (heading) {
       flushList();
       const size = heading[1].length <= 2 ? 'text-base' : 'text-sm';
-      blocks.push(<div key={`h-${index}`} className={`${size} font-semibold mt-3 mb-1 text-foreground`}>{heading[2]}</div>);
+      blocks.push(<div key={`h-${index}`} className={`${size} font-medium mt-3 mb-1 text-foreground`}>{heading[2]}</div>);
       return;
     }
 
@@ -181,6 +181,13 @@ function collectFilePaths(nodes: WorkspaceFileNode[]): string[] {
   return nodes.flatMap((node) => {
     if (node.is_dir) return collectFilePaths(node.children || []);
     return [node.path];
+  });
+}
+
+function collectFolderPaths(nodes: WorkspaceFileNode[]): string[] {
+  return nodes.flatMap((node) => {
+    if (!node.is_dir) return [];
+    return [node.path, ...collectFolderPaths(node.children || [])];
   });
 }
 
@@ -224,6 +231,8 @@ function FileTreeNode({
   setHoveredFile,
   onOpenFile,
   gitStatus,
+  expanded,
+  onToggleFolder,
 }: {
   items: WorkspaceFileNode[];
   depth?: number;
@@ -231,8 +240,9 @@ function FileTreeNode({
   setHoveredFile: (f: string | null) => void;
   onOpenFile: (path: string) => void;
   gitStatus: Map<string, GitStatusEntry['status']>;
+  expanded: Record<string, boolean>;
+  onToggleFolder: (path: string, open: boolean) => void;
 }) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const sorted = [...items].sort((a, b) => {
     if (a.is_dir === b.is_dir) return a.name.localeCompare(b.name);
@@ -246,12 +256,12 @@ function FileTreeNode({
         const isHovered = hoveredFile === item.path;
         const nodeStatus = getNodeGitStatus(item, gitStatus);
         if (isFolder) {
-          const isOpen = expanded[item.path] ?? true;
+          const isOpen = expanded[item.path] === true;
           return (
             <div key={item.path}>
               <button
                 type="button"
-                onClick={() => setExpanded((prev) => ({ ...prev, [item.path]: !isOpen }))}
+                onClick={() => onToggleFolder(item.path, !isOpen)}
                 className={`w-full flex items-center gap-1 px-3 py-1 text-left hover:bg-secondary/40 transition-colors ${depth > 0 ? 'pl-6' : ''}`}
               >
                 <ChevronRight className={`w-3 h-3 shrink-0 text-muted-foreground transition-transform ${isOpen ? 'rotate-90' : ''}`} />
@@ -271,6 +281,8 @@ function FileTreeNode({
                   setHoveredFile={setHoveredFile}
                   onOpenFile={onOpenFile}
                   gitStatus={gitStatus}
+                  expanded={expanded}
+                  onToggleFolder={onToggleFolder}
                 />
               )}
             </div>
@@ -291,7 +303,7 @@ function FileTreeNode({
             <Icon className={`w-3.5 h-3.5 shrink-0 ${item.ignored ? 'text-muted-foreground/40' : isHovered ? 'text-primary' : 'text-muted-foreground'}`} />
             <span className={`text-[12px] truncate font-mono flex-1 min-w-0 ${item.ignored ? 'text-muted-foreground/50' : isHovered ? 'text-foreground' : 'text-muted-foreground'}`}>{item.name}</span>
             {nodeStatus && nodeStatus !== 'dot' && (
-              <span className={`text-[10px] shrink-0 ${nodeStatus === 'U' || nodeStatus === 'A' ? 'text-green-400' : nodeStatus === 'D' ? 'text-red-400' : 'text-orange-400'}`}>
+              <span className={`text-xs shrink-0 ${nodeStatus === 'U' || nodeStatus === 'A' ? 'text-green-400' : nodeStatus === 'D' ? 'text-red-400' : 'text-orange-400'}`}>
                 {nodeStatus}
               </span>
             )}
@@ -337,6 +349,7 @@ export default function LeftPanel({
   const [fileTreeLoading, setFileTreeLoading] = useState(false);
   const [fileTreeError, setFileTreeError] = useState<string | null>(null);
   const [gitStatus, setGitStatus] = useState<Map<string, GitStatusEntry['status']>>(new Map());
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [preview, setPreview] = useState<WorkspaceFileContent | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const resizeStartX = useRef(0);
@@ -379,6 +392,15 @@ export default function LeftPanel({
       setPreview(null);
       setPreviewError(error instanceof Error ? error.message : String(error));
     }
+  };
+
+  const handleToggleFolder = (path: string, open: boolean) => {
+    setExpandedFolders((prev) => ({ ...prev, [path]: open }));
+  };
+
+  const handleExpandAllFolders = () => {
+    const next = Object.fromEntries(collectFolderPaths(filterWorkspaceTree(fileTree, fileSearch)).map((path) => [path, true]));
+    setExpandedFolders(next);
   };
 
   const filePaths = collectFilePaths(filterWorkspaceTree(fileTree, fileSearch));
@@ -438,7 +460,7 @@ export default function LeftPanel({
   // 收缩状态：只显示图标栏 + 展开按钮
   if (collapsed) {
     return (
-      <div className="w-10 shrink-0 border-r border-border bg-card flex flex-col items-center py-3 gap-3 relative">
+      <div className="w-10 shrink-0 border-r border-border bg-card flex flex-col items-center py-3 gap-3 relative" onContextMenu={(event) => event.preventDefault()}>
         <button
           type="button"
           onClick={onToggleCollapse}
@@ -495,7 +517,7 @@ export default function LeftPanel({
       </button>
 
       {/* 第一级：图标栏 */}
-      <div className="w-10 shrink-0 border-r border-border bg-card flex flex-col items-center py-3 gap-3">
+      <div className="w-10 shrink-0 border-r border-border bg-card flex flex-col items-center py-3 gap-3" onContextMenu={(event) => event.preventDefault()}>
         <button
           type="button"
           onClick={() => setActiveTab('files')}
@@ -539,10 +561,19 @@ export default function LeftPanel({
 
         {/* 文件 Tab */}
         {activeTab === 'files' && (
-          <div className="flex flex-col h-full">
+          <div className="flex flex-col h-full" data-workspace-context-menu="false" onContextMenu={(event) => event.preventDefault()}>
             <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
               <span className="text-xs font-medium text-foreground">文件</span>
               <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handleExpandAllFolders}
+                  disabled={fileTree.length === 0}
+                  className="w-5 h-5 flex items-center justify-center rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                  title="全部展开"
+                >
+                  <ChevronsDown className="w-3 h-3" />
+                </button>
                 <button
                   type="button"
                   onClick={loadFileTree}
@@ -552,7 +583,6 @@ export default function LeftPanel({
                 >
                   <RefreshCw className={`w-3 h-3 ${fileTreeLoading ? 'animate-spin' : ''}`} />
                 </button>
-
               </div>
             </div>
             <div className="px-3 py-2 border-b border-border shrink-0">
@@ -579,6 +609,8 @@ export default function LeftPanel({
                   setHoveredFile={setHoveredFile}
                   onOpenFile={openFile}
                   gitStatus={gitStatus}
+                  expanded={expandedFolders}
+                  onToggleFolder={handleToggleFolder}
                 />
               )}
             </div>
@@ -637,14 +669,14 @@ export default function LeftPanel({
                         isAct ? 'bg-primary/5' : 'hover:bg-secondary/40'
                       }`}
                     >
-                      <span className={`w-5 h-5 rounded text-[11px] font-bold flex items-center justify-center shrink-0 ${cfg.bg} ${cfg.color} overflow-hidden`}>
+                      <span className={`w-5 h-5 rounded text-xs font-medium flex items-center justify-center shrink-0 ${cfg.bg} ${cfg.color} overflow-hidden`}>
                         <AgentIcon agentKey={conv.agent} size={16} />
                       </span>
                       <div className="flex-1 min-w-0">
                         <div className={`text-[12px] truncate ${isAct ? 'text-foreground font-medium' : 'text-foreground'}`}>
                           {truncateTitle(conv.title)}
                         </div>
-                        <div className="text-[11px] text-muted-foreground mt-0.5">{cfg.name}</div>
+                        <div className="text-xs text-muted-foreground mt-0.5">{cfg.name}</div>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {showDet && (
@@ -710,12 +742,12 @@ export default function LeftPanel({
                       onDoubleClick={() => handleActivateAgentAndSwitch(instance.id)}
                       className="flex-1 flex items-center gap-2 text-left min-w-0"
                     >
-                      <span className={`w-7 h-7 rounded-md text-sm font-bold flex items-center justify-center shrink-0 ${config.bg} ${config.color} overflow-hidden`}>
+                      <span className={`w-7 h-7 rounded-md text-sm font-medium flex items-center justify-center shrink-0 ${config.bg} ${config.color} overflow-hidden`}>
                         <AgentIcon agentKey={instance.agentKey} size={18} />
                       </span>
                       <div className="flex-1 min-w-0">
                         <div className="text-xs font-medium text-foreground">{instance.displayName}</div>
-                        <div className="text-[11px] text-muted-foreground">{config.name} · {formatIdShort(instance.id)}</div>
+                        <div className="text-xs text-muted-foreground">{config.name} · {formatIdShort(instance.id)}</div>
                       </div>
                       {isActive && (
                         <Check className="w-3.5 h-3.5 text-primary shrink-0" />
@@ -757,15 +789,15 @@ export default function LeftPanel({
             return (
               <div className="space-y-3 text-sm">
                 <div>
-                  <div className="text-[11px] text-muted-foreground uppercase tracking-wider">会话ID</div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider">会话ID</div>
                   <div className="text-xs font-mono text-foreground mt-0.5 break-all">{detailConv.id}</div>
                 </div>
                 <div>
-                  <div className="text-[11px] text-muted-foreground uppercase tracking-wider">消息数</div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider">消息数</div>
                   <div className="text-foreground mt-0.5">{stats.msgCount}</div>
                 </div>
                 <div>
-                  <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Token 使用</div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Token 使用</div>
                   <div className="space-y-1">
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-muted-foreground">上下文</span>
@@ -798,7 +830,7 @@ export default function LeftPanel({
             </SheetTitle>
           </SheetHeader>
           <div className="flex items-center justify-between px-3 py-0.5 border-b border-border shrink-0 bg-secondary/20">
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {preview && previewIndex >= 0 ? `${previewIndex + 1} / ${filePaths.length}` : ''}
             </span>
             <div className="flex items-center gap-1">
@@ -806,7 +838,7 @@ export default function LeftPanel({
                 type="button"
                 disabled={previewIndex <= 0}
                 onClick={() => openAdjacentFile(-1)}
-                className="flex items-center gap-0.5 px-1 py-0 text-[10px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-0.5 px-1 py-0 text-xs rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 <ChevronLeft className="w-3 h-3" />
                 上一个
@@ -815,7 +847,7 @@ export default function LeftPanel({
                 type="button"
                 disabled={previewIndex < 0 || previewIndex >= filePaths.length - 1}
                 onClick={() => openAdjacentFile(1)}
-                className="flex items-center gap-0.5 px-1 py-0 text-[10px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-0.5 px-1 py-0 text-xs rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 下一个
                 <ChevronRight className="w-3 h-3" />

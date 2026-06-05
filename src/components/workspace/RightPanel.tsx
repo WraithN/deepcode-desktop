@@ -177,7 +177,7 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
                       <StatusIcon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${config.color} ${task.status === 'in_progress' ? 'animate-spin' : ''}`} />
                       <div className="flex-1 min-w-0">
                         <div className="text-xs text-foreground truncate">{task.title}</div>
-                        <div className="text-[11px] text-muted-foreground mt-0.5">{config.label}</div>
+                        <div className="text-xs text-muted-foreground mt-0.5">{config.label}</div>
                       </div>
                     </div>
                   );
@@ -223,9 +223,9 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
                           title={file.path}
                         >
                           <span className="text-[12px] text-foreground truncate flex-1 min-w-0">{file.path}</span>
-                          <span className={`text-[11px] shrink-0 ${status.className}`}>{status.label}</span>
-                          <span className="text-[11px] text-green-400 shrink-0">+{file.additions}</span>
-                          <span className="text-[11px] text-red-400 shrink-0">-{file.deletions}</span>
+                          <span className={`text-xs shrink-0 ${status.className}`}>{status.label}</span>
+                          <span className="text-xs text-green-400 shrink-0">+{file.additions}</span>
+                          <span className="text-xs text-red-400 shrink-0">-{file.deletions}</span>
                         </button>
                       );
                     })}
@@ -256,7 +256,7 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
 
           {/* 导航工具栏（与关闭按钮错开） */}
           <div className="flex items-center justify-between px-3 py-0.5 border-b border-border shrink-0 bg-secondary/20">
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {expandedDiff ? `${displayFiles.findIndex((f) => f.path === expandedDiff.path) + 1} / ${displayFiles.length}` : ''}
             </span>
             <div className="flex items-center gap-1">
@@ -268,7 +268,7 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
                   const idx = displayFiles.findIndex((f) => f.path === expandedDiff.path);
                   if (idx > 0) setExpandedDiff(displayFiles[idx - 1]);
                 }}
-                className="flex items-center gap-0.5 px-1 py-0 text-[10px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-0.5 px-1 py-0 text-xs rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 <ChevronLeft className="w-3 h-3" />
                 上一个
@@ -281,7 +281,7 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
                   const idx = displayFiles.findIndex((f) => f.path === expandedDiff.path);
                   if (idx < displayFiles.length - 1) setExpandedDiff(displayFiles[idx + 1]);
                 }}
-                className="flex items-center gap-0.5 px-1 py-0 text-[10px] rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-0.5 px-1 py-0 text-xs rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 下一个
                 <ChevronRight className="w-3 h-3" />
@@ -297,7 +297,7 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
                 <>
                   {/* 左侧：修改前 */}
                   <div className="flex-1 min-w-0 border-r border-border">
-                    <div className="sticky top-0 z-10 px-3 py-1.5 text-[11px] text-muted-foreground bg-card border-b border-border flex items-center gap-1">
+                    <div className="sticky top-0 z-10 px-3 py-1.5 text-xs text-muted-foreground bg-card border-b border-border flex items-center gap-1">
                       <FileMinus className="w-3 h-3" />
                       修改前
                     </div>
@@ -328,7 +328,7 @@ export default function RightPanel({ tasks, modifiedFiles, workspace, collapsed,
                   </div>
                   {/* 右侧：修改后 */}
                   <div className="flex-1 min-w-0">
-                    <div className="sticky top-0 z-10 px-3 py-1.5 text-[11px] text-muted-foreground bg-card border-b border-border flex items-center gap-1">
+                    <div className="sticky top-0 z-10 px-3 py-1.5 text-xs text-muted-foreground bg-card border-b border-border flex items-center gap-1">
                       <FilePlus className="w-3 h-3" />
                       修改后
                     </div>

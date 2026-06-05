@@ -98,7 +98,7 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ onClose, onClear })
 
       {/* Toolbar */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-gray-900 border-b border-gray-800">
-        <span className="text-xs font-semibold text-gray-400">Session Logs ({logs.length})</span>
+        <span className="text-xs font-normal text-gray-400">Session Logs ({logs.length})</span>
         <div className="flex items-center gap-1">
           <button
             onClick={handleCopy}
@@ -137,7 +137,7 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ onClose, onClear })
             className={`flex gap-2 px-3 py-0.5 text-[12px] font-mono border-b border-gray-900/50 hover:bg-gray-800/30 ${levelBg[log.level] || ''}`}
           >
             <span className="text-gray-600 shrink-0 w-[60px]">{log.timestamp}</span>
-            <span className={`shrink-0 w-[40px] font-bold ${levelColors[log.level] || 'text-gray-400'}`}>
+            <span className={`shrink-0 w-[40px] font-semibold ${levelColors[log.level] || 'text-gray-400'}`}>
               {log.level.toUpperCase()}
             </span>
             <span className="text-gray-500 shrink-0 w-[100px] truncate">

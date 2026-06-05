@@ -234,6 +234,12 @@
     border-radius: 3px;
   }
 
+  html,
+  body,
+  #root {
+    pointer-events: auto;
+  }
+
   body {
     @apply bg-background text-foreground;
     font-family: 'JetBrains Mono', 'Noto Sans SC', 'Noto Sans JP', 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;

@@ -7,7 +7,7 @@ export default function NotFound() {
       <PageMeta title="页面未找到" description="" />
       <div className="relative flex flex-col items-center justify-center min-h-screen p-6 overflow-hidden z-1">
         <div className="mx-auto w-full max-w-[242px] text-center sm:max-w-[472px]">
-          <h1 className="mb-8 font-bold text-gray-800 text-title-md dark:text-white/90 xl:text-title-2xl">
+          <h1 className="mb-8 font-semibold text-gray-800 text-[18px] dark:text-white/90">
             错误
           </h1>
 
@@ -18,7 +18,7 @@ export default function NotFound() {
             className="hidden dark:block"
           />
 
-          <p className="mt-10 mb-6 text-base text-gray-700 dark:text-gray-400 sm:text-lg">
+          <p className="mt-10 mb-6 text-sm text-gray-700 dark:text-gray-400">
             页面可能已被删除或不存在，请检查网址是否正确。
           </p>
 

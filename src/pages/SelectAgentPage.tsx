@@ -126,7 +126,7 @@ export default function SelectAgentPage() {
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <div className="min-h-screen flex flex-col bg-background" onContextMenu={(event) => event.preventDefault()}>
       <WindowTitleBar title="DeepHarness Desktop" />
       <div className="flex flex-1 flex-col items-center justify-center p-4">
         <div className="w-full max-w-2xl">
@@ -135,7 +135,7 @@ export default function SelectAgentPage() {
           <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center mx-auto mb-4">
             <Bot className="w-6 h-6 text-primary" />
           </div>
-          <h1 className="text-2xl font-bold text-foreground">选择编码智能体</h1>
+          <h1 className="text-[18px] font-semibold text-foreground">选择编码智能体</h1>
           <p className="text-sm text-muted-foreground mt-2">选择一个AI智能体开始你的编码之旅</p>
         </div>
 
@@ -174,7 +174,7 @@ export default function SelectAgentPage() {
             />
             <DirectoryPickerButton onSelect={setWorkspace} />
           </div>
-          <span className="text-[11px] text-muted-foreground mt-1 block">智能体将以此目录作为工作根目录</span>
+          <span className="text-xs text-muted-foreground mt-1 block">智能体将以此目录作为工作根目录</span>
         </div>
 
         {/* 智能体列表 */}
@@ -197,7 +197,7 @@ export default function SelectAgentPage() {
                   <AgentIcon agentKey={agent.id} size={28} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-semibold text-foreground">{agent.name}</h3>
+                  <h3 className="text-[16px] font-medium text-foreground">{agent.name}</h3>
                   <p className="text-sm text-muted-foreground mt-0.5 line-clamp-2">{agent.description}</p>
                 </div>
                 <div className={`w-5 h-5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${

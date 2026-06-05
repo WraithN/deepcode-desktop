@@ -104,7 +104,7 @@ export default function AddAgentDialog({ open, onOpenChange, onAddAgent, existin
         <div className="bg-card/95 backdrop-blur-sm border border-border rounded-xl p-5 shadow-2xl">
           <DialogHeader className="mb-4 pb-3 border-b border-border">
             <div className="flex items-center justify-between">
-              <DialogTitle className="text-sm font-semibold text-foreground">添加智能体</DialogTitle>
+              <DialogTitle className="text-lg font-semibold text-foreground">添加智能体</DialogTitle>
               <button
                 type="button"
                 onClick={() => onOpenChange(false)}
@@ -150,7 +150,7 @@ export default function AddAgentDialog({ open, onOpenChange, onAddAgent, existin
               />
               <DirectoryPickerButton onSelect={setWorkspace} />
             </div>
-            <span className="text-[11px] text-muted-foreground mt-1 block">智能体将以此目录作为工作根目录</span>
+            <span className="text-xs text-muted-foreground mt-1 block">智能体将以此目录作为工作根目录</span>
           </div>
 
           {/* 选择智能体类型 */}

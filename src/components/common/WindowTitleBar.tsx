@@ -45,14 +45,14 @@ export default function WindowTitleBar({ title = 'DeepHarness Desktop', children
 
   return (
     <div
-      className="h-[38px] border-b border-border bg-card flex items-center justify-between shrink-0 select-none"
+      className="h-[38px] border-b border-border bg-card flex items-center justify-between shrink-0 select-none cursor-move pointer-events-auto"
       onMouseDown={startDragging}
     >
       <div className="flex items-center min-w-0 flex-1 h-full">
         <div className="px-3 text-xs text-muted-foreground truncate pointer-events-none">{title}</div>
         {children}
       </div>
-      <div data-no-drag className="flex h-full [-webkit-app-region:no-drag]">
+      <div data-no-drag className="flex h-full pointer-events-auto [-webkit-app-region:no-drag]">
         <button
           type="button"
           onPointerDown={(event) => {
@@ -62,7 +62,7 @@ export default function WindowTitleBar({ title = 'DeepHarness Desktop', children
           onMouseDown={(event) => event.stopPropagation()}
           onPointerUp={() => console.log('[WindowTitleBar] pointer up: minimize')}
           onClick={minimize}
-          className="w-11 h-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors [-webkit-app-region:no-drag]"
+          className="w-11 h-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors cursor-pointer pointer-events-auto [-webkit-app-region:no-drag]"
           aria-label="最小化"
         >
           <Minus className="w-4 h-4" />
@@ -76,7 +76,7 @@ export default function WindowTitleBar({ title = 'DeepHarness Desktop', children
           onMouseDown={(event) => event.stopPropagation()}
           onPointerUp={() => console.log('[WindowTitleBar] pointer up: toggle_maximize')}
           onClick={toggleMaximize}
-          className="w-11 h-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors [-webkit-app-region:no-drag]"
+          className="w-11 h-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors cursor-pointer pointer-events-auto [-webkit-app-region:no-drag]"
           aria-label="最大化"
         >
           <Square className="w-3.5 h-3.5" />
@@ -90,7 +90,7 @@ export default function WindowTitleBar({ title = 'DeepHarness Desktop', children
           onMouseDown={(event) => event.stopPropagation()}
           onPointerUp={() => console.log('[WindowTitleBar] pointer up: close')}
           onClick={closeWindow}
-          className="w-11 h-full flex items-center justify-center text-muted-foreground hover:text-white hover:bg-red-500 transition-colors [-webkit-app-region:no-drag]"
+          className="w-11 h-full flex items-center justify-center text-muted-foreground hover:text-white hover:bg-red-500 transition-colors cursor-pointer pointer-events-auto [-webkit-app-region:no-drag]"
           aria-label="关闭"
         >
           <X className="w-4 h-4" />

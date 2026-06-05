@@ -8,7 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import WindowTitleBar from '@/components/common/WindowTitleBar';
 import { toast } from 'sonner';
-import { Code2, Settings, Terminal } from 'lucide-react';
+import { Code2, Settings } from 'lucide-react';
 
 function getPostLoginPath(): string {
   try {
@@ -55,7 +55,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <div className="min-h-screen flex flex-col bg-background" onContextMenu={(event) => event.preventDefault()}>
       <WindowTitleBar title="DeepHarness Desktop">
         <div data-no-drag className="ml-auto mr-2 h-full flex items-center [-webkit-app-region:no-drag]">
           <button
@@ -75,10 +75,12 @@ export default function LoginPage() {
         <div className="w-full max-w-md p-8">
         {/* Logo区域 */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 rounded-lg bg-primary/10 flex items-center justify-center mb-4">
-            <Terminal className="w-8 h-8 text-primary" />
-          </div>
-          <h1 className="text-2xl font-bold text-foreground">DeepHarness</h1>
+          <img
+            src="/images/logo.png"
+            alt="DeepHarness"
+            className="w-16 h-16 object-contain mb-4"
+          />
+          <h1 className="text-[18px] font-semibold text-foreground">DeepHarness</h1>
           <p className="text-sm text-muted-foreground mt-1">智能编码助手</p>
         </div>
 

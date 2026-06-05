@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '@/db';
 import type { Conversation, Task, ModifiedFile } from '@/types/types';
-import { Settings, LogOut, Bot, ChevronDown } from 'lucide-react';
+import { Settings, LogOut, Bot, ChevronDown, Plus, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { toast } from 'sonner';
@@ -20,6 +20,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { useWebSocketStore, useChatStore, useAgentStore, useLogStore, setSessionWsBaseUrl } from '@/stores';
 import { generateShortId, formatIdShort } from '@/lib/id';
 import { sessionLogger } from '@/services/logger';
+
+const CONTEXT_MENU_OFFSET = 8;
+const CONTEXT_MENU_AREA_SELECTOR = '[data-workspace-context-menu]';
+const CONTEXT_MENU_ENABLED = 'true';
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+}
 
 const defaultAgents: AgentInstance[] = [
   { id: 'default-1', agentKey: 'opencode', displayName: '小智', workspace: '.', modelConfig: { type: 'builtin', modelId: 'gpt-4' }, status: 'stopped' },
@@ -68,6 +77,7 @@ export default function WorkspacePage() {
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [editContent, setEditContent] = useState<string | undefined>(undefined);
   const [logDrawerOpen, setLogDrawerOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const creatingConversationRef = useRef(false);
   const initialConversationCreatingRef = useRef(false);
   const sendingMessageRef = useRef(false);
@@ -106,6 +116,19 @@ export default function WorkspacePage() {
   }, [setAgentInstances, setActiveAgentId, setChatActiveInstanceId]);
 
   const activeAgent = agentInstances.find((a) => a.id === activeAgentId) || agentInstances[0] || defaultAgents[0];
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const closeContextMenu = () => setContextMenu(null);
+    window.addEventListener('click', closeContextMenu);
+    window.addEventListener('keydown', closeContextMenu);
+    window.addEventListener('resize', closeContextMenu);
+    return () => {
+      window.removeEventListener('click', closeContextMenu);
+      window.removeEventListener('keydown', closeContextMenu);
+      window.removeEventListener('resize', closeContextMenu);
+    };
+  }, [contextMenu]);
 
   // 初始化 WebSocket 连接
   useEffect(() => {
@@ -554,6 +577,26 @@ export default function WorkspacePage() {
     );
   };
 
+  const handleWorkspaceContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const menuArea = target.closest(CONTEXT_MENU_AREA_SELECTOR);
+    event.preventDefault();
+    if (!(menuArea instanceof HTMLElement)) return;
+    if (menuArea.dataset.workspaceContextMenu !== CONTEXT_MENU_ENABLED) return;
+    setContextMenu({ x: event.clientX + CONTEXT_MENU_OFFSET, y: event.clientY + CONTEXT_MENU_OFFSET });
+  };
+
+  const handleContextAddAgent = () => {
+    setContextMenu(null);
+    handleAddAgent();
+  };
+
+  const handleContextNewConversation = () => {
+    setContextMenu(null);
+    void handleNewConversation();
+  };
+
   // 退出登录
   const handleLogout = async () => {
     await signOut();
@@ -561,7 +604,7 @@ export default function WorkspacePage() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="flex flex-col h-screen bg-background" onContextMenu={handleWorkspaceContextMenu}>
       <WindowTitleBar title="">
         <div
           data-no-drag
@@ -570,7 +613,7 @@ export default function WorkspacePage() {
           title="快速点击5次打开日志抽屉"
         >
           <Bot className="w-5 h-5 text-primary" />
-          <span className="font-semibold text-sm text-foreground">DeepHarness</span>
+          <span className="font-medium text-sm text-foreground">DeepHarness</span>
         </div>
         <div
           data-no-drag
@@ -627,6 +670,7 @@ export default function WorkspacePage() {
             activeConversation={activeConversation}
             conversations={conversations}
             activeAgentName={activeAgent.displayName}
+            activeAgentType={activeAgent.agentKey}
             currentModel={currentModel}
             contextPercent={contextPercent}
             agentMode={agentMode}
@@ -662,18 +706,45 @@ export default function WorkspacePage() {
         )}
       </div>
 
+      {contextMenu && (
+        <div
+          className="fixed z-[2147483646] min-w-36 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={handleContextAddAgent}
+            className="flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+            智能体
+          </button>
+          <button
+            type="button"
+            onClick={handleContextNewConversation}
+            className="flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <MessageSquare className="w-3.5 h-3.5 text-muted-foreground" />
+            新建会话
+          </button>
+        </div>
+      )}
+
       {/* 底部状态栏 */}
-      <div className="h-7 border-t border-border bg-card flex items-center justify-between px-4 shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="border-t border-border bg-card pb-2.5 shrink-0">
+        <div className="h-7 flex items-center justify-between px-4 pointer-events-auto [-webkit-app-region:no-drag]">
+          <div className="flex items-center gap-3">
           <Popover open={agentSwitcherOpen} onOpenChange={setAgentSwitcherOpen}>
             <PopoverTrigger asChild>
               <button
                 type="button"
-                className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                data-no-drag
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors pointer-events-auto [-webkit-app-region:no-drag]"
               >
-                <Bot className="w-2.5 h-2.5" />
+                <Bot className="w-3.5 h-3.5" />
                 <span>{activeAgent.displayName}</span>
-                <ChevronDown className="w-2.5 h-2.5" />
+                <ChevronDown className="w-3.5 h-3.5" />
               </button>
             </PopoverTrigger>
             <PopoverContent side="top" align="start" className="w-48 p-1">
@@ -696,22 +767,23 @@ export default function WorkspacePage() {
                       isActive ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-secondary'
                     }`}
                   >
-                    <span className={`w-5 h-5 rounded text-[11px] font-bold flex items-center justify-center ${config.bg} ${config.color} overflow-hidden`}>
+                    <span className={`w-5 h-5 rounded text-xs font-medium flex items-center justify-center ${config.bg} ${config.color} overflow-hidden`}>
                       <AgentIcon agentKey={instance.agentKey} size={14} />
                     </span>
                     <span className="flex-1 text-left truncate">{instance.displayName}</span>
-                    {isActive && <span className="text-[11px] text-primary">当前</span>}
+                    {isActive && <span className="text-xs text-primary">当前</span>}
                   </button>
                 );
               })}
             </PopoverContent>
           </Popover>
-          <span className="text-[11px] text-muted-foreground truncate max-w-[200px]" title={activeAgent.workspace}>
+          <span className="text-xs text-muted-foreground truncate max-w-[260px]" title={activeAgent.workspace}>
             工作目录：{activeAgent.workspace}
           </span>
         </div>
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-          <span>DeepHarness v1.0</span>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span>DeepHarness v1.0</span>
+          </div>
         </div>
       </div>
 
