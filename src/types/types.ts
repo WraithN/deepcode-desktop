@@ -27,6 +27,34 @@ export interface MessageStep {
   summary?: ToolSummary; // 工具调用摘要
   compressInfo?: { originalSize: number; compressedSize: number; ratio: number; status: 'compressing' | 'done' };
   diff?: string; // 写文件时的diff内容
+  interaction?: InteractionPayload;
+}
+
+export interface InteractionPayload {
+  type: 'question' | 'permission' | 'todowrite';
+  questions?: QuestionItem[];
+  toolName?: string;
+  action?: string;
+  todos?: TodoItem[];
+}
+
+export interface QuestionItem {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+  multiple: boolean;
+}
+
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  priority: 'high' | 'medium' | 'low';
 }
 
 export interface ToolSummary {
