@@ -6,6 +6,7 @@ use std::sync::Mutex as StdMutex;
 use crate::models::interaction::{InteractionRequest, QuestionItem, TodoItem};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SseEvent {
     pub event_type: String,
     pub session_id: Option<String>,
@@ -61,10 +62,12 @@ impl OpencodeService {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_port(&self) -> u16 {
         self.port
     }
 
+    #[allow(dead_code)]
     pub fn get_attach_url(&self) -> String {
         self.base_url.clone()
     }

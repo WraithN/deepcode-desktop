@@ -22,6 +22,7 @@ impl InstanceRegistry {
         self.instances.get(id).cloned()
     }
 
+    #[allow(dead_code)]
     pub fn remove(&mut self, id: &str) {
         self.instances.remove(id);
     }

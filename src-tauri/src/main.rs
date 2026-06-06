@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{CursorIcon, Emitter, Manager, State};
+use tauri::{Manager, State};
 use agent_db::{AgentDbManager, agent_db_create_conversation, agent_db_load_conversations, agent_db_create_message, agent_db_load_messages, agent_db_delete_agent};
 use base64::Engine;
 

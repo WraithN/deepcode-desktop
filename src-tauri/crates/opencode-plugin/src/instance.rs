@@ -116,6 +116,7 @@ impl OpencodeInstance {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn emit_event(&self, event: AgentEvent) {
         let payload = serde_json::json!({
             "instance_id": self.config.id,

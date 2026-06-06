@@ -46,7 +46,7 @@ impl GatewayRouter {
         conns.remove(conn_id);
     }
 
-    pub async fn handle_request(&self, conn_id: &str, req: JsonRpcRequest) -> JsonRpcResponse {
+    pub async fn handle_request(&self, _conn_id: &str, req: JsonRpcRequest) -> JsonRpcResponse {
         if req.method.starts_with("agent.") {
             handle_agent_request(
                 self.agent_service.clone(),
