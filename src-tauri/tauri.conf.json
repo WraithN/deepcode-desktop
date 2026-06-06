@@ -12,7 +12,7 @@
     "windows": [
       {
         "title": "dh",
-        "decorations": true,
+        "decorations": false,
         "transparent": false,
         "width": 1500,
         "height": 900,
