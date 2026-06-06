@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import type { IDataStore, AuthUser, AuthSession, AuthStateChangeCallback } from './types';
 import type { Conversation, Message, Task, ModifiedFile, Profile } from '@/types/types';
 
@@ -11,7 +12,6 @@ class TauriDataStore implements IDataStore {
   }
 
   private async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-    const { invoke } = await import('@tauri-apps/api/core');
     return invoke<T>(cmd, args);
   }
 

@@ -118,6 +118,7 @@ code, pre, .font-mono {
 ### 4.2 布局模式
 
 - **页面级**：`min-h-screen flex flex-col bg-background`
+- **桌面窗口**：Linux 桌面端使用系统原生窗口装饰，避免 WSLg/GTK 环境下无边框窗口被映射为 `0x0`
 - **居中内容**：`flex flex-1 items-center justify-center` + `max-w-md`
 - **三栏工作区**：左侧导航栏（固定宽度）+ 中间内容区（flex-1）+ 右侧边栏（固定宽度）
 - **卡片网格**：`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4`

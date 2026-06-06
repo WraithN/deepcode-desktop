@@ -10,7 +10,7 @@ interface WindowTitleBarProps {
 
 const appWindow = getCurrentWindow();
 
-export default function WindowTitleBar({ title = 'DeepHarness Desktop', children }: WindowTitleBarProps) {
+export default function WindowTitleBar({ title = 'dh', children }: WindowTitleBarProps) {
   const runWindowAction = async (action: 'minimize' | 'toggle_maximize' | 'close') => {
     console.log('[WindowTitleBar] button clicked:', action);
     try {

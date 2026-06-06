@@ -56,7 +56,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex flex-col bg-background" onContextMenu={(event) => event.preventDefault()}>
-      <WindowTitleBar title="DeepHarness Desktop">
+      <WindowTitleBar title="dh">
         <div data-no-drag className="ml-auto mr-2 h-full flex items-center [-webkit-app-region:no-drag]">
           <button
             type="button"

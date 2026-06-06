@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Manager, PhysicalSize, Size, State};
 use agent_db::{AgentDbManager, agent_db_create_conversation, agent_db_load_conversations, agent_db_create_message, agent_db_load_messages, agent_db_delete_agent};
 use base64::Engine;
 
@@ -19,8 +19,12 @@ mod models;
 mod service;
 mod gateway;
 
-use ai_coding_desktop::DbState;
+use dh::{DbState, WebSocketShutdown};
 use crate::service::opencode_service::OpencodeService;
+
+const DEFAULT_WINDOW_WIDTH: u32 = 1500;
+const DEFAULT_WINDOW_HEIGHT: u32 = 900;
+const WINDOW_LAYOUT_RETRY_DELAY_MS: u64 = 500;
 
 fn db_path(app_handle: &tauri::App) -> PathBuf {
     let mut path = app_handle.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -771,9 +775,56 @@ fn start_ws_server(
     rx.recv().map_err(|e| e.to_string())?
 }
 
+fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        log::warn!("[main.rs] Main window not found");
+        return Ok(());
+    };
+    apply_main_window_layout(&window)?;
+    schedule_main_window_layout_retry(window);
+    Ok(())
+}
+
+fn apply_main_window_layout(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let window_size = Size::Physical(PhysicalSize::new(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT));
+    log::info!("[main.rs] Main window found, sizing, showing and focusing");
+    window.set_min_size(Some(window_size)).map_err(|e| e.to_string())?;
+    window.set_size(window_size).map_err(|e| e.to_string())?;
+    window.center().map_err(|e| e.to_string())?;
+    window.show().map_err(|e| e.to_string())?;
+    window.unminimize().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    log_window_state(window);
+    Ok(())
+}
+
+fn schedule_main_window_layout_retry(window: tauri::WebviewWindow) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(WINDOW_LAYOUT_RETRY_DELAY_MS));
+        let retry_window = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            if let Err(error) = apply_main_window_layout(&retry_window) {
+                log::error!("[main.rs] Failed to retry main window layout: {}", error);
+            }
+        });
+    });
+}
+
+fn log_window_state(window: &tauri::WebviewWindow) {
+    let visible = window.is_visible();
+    let outer_size = window.outer_size();
+    let outer_position = window.outer_position();
+    log::info!(
+        "[main.rs] Main window state visible={:?}, size={:?}, position={:?}",
+        visible,
+        outer_size,
+        outer_position,
+    );
+}
+
 fn main() {
     env_logger::init();
-    log::info!("[main.rs] Starting DeepHarness Desktop...");
+    log::info!("[main.rs] Starting dh...");
     
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -843,8 +894,9 @@ fn main() {
                 session_manager,
             ));
             let ws_server = gateway::server::WebSocketServer::new(router);
-            let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+            let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
             let addr = start_ws_server(ws_server, shutdown_rx).unwrap();
+            app.manage(WebSocketShutdown { _sender: shutdown_tx });
             app.manage(commands::system::WebSocketState {
                 addr: Mutex::new(Some(addr)),
             });
@@ -885,6 +937,13 @@ fn main() {
             commands::system::get_webview_html,
             commands::system::console_logs,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Ready = event {
+                if let Err(error) = show_main_window(app) {
+                    log::error!("[main.rs] Failed to show main window: {}", error);
+                }
+            }
+        });
 }

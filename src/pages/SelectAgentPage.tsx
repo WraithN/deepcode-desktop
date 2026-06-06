@@ -127,7 +127,7 @@ export default function SelectAgentPage() {
 
   return (
     <div className="min-h-screen flex flex-col bg-background" onContextMenu={(event) => event.preventDefault()}>
-      <WindowTitleBar title="DeepHarness Desktop" />
+      <WindowTitleBar title="dh" />
       <div className="flex flex-1 flex-col items-center justify-center p-4">
         <div className="w-full max-w-2xl">
         {/* 标题 */}

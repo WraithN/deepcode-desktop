@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 import svgr from "vite-plugin-svgr";
 import path from "path";
 
+const CHUNK_SIZE_WARNING_LIMIT_KB = 700;
+
 // https://vite.dev/config/
 export default defineConfig({
   base: "./",
@@ -35,5 +37,6 @@ export default defineConfig({
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     outDir: "dist",
+    chunkSizeWarningLimit: CHUNK_SIZE_WARNING_LIMIT_KB,
   },
 });
