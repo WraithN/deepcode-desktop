@@ -18,7 +18,7 @@ const PUBLIC_ROUTES = [...SYSTEM_PUBLIC_ROUTES, ...routePublicPaths];
 function matchPublicRoute(path: string, patterns: string[]) {
   return patterns.some(pattern => {
     if (pattern.includes('*')) {
-      const regex = new RegExp('^' + pattern.replace('*', '.*') + '$');
+      const regex = new RegExp(`^${pattern.replace('*', '.*')}$`);
       return regex.test(path);
     }
     return path === pattern;
@@ -31,7 +31,7 @@ export function RouteGuard({ children }: RouteGuardProps) {
   const location = useLocation();
 
   useEffect(() => {
-    if (loading) return;
+    if (loading) { return; }
 
     const isPublic = matchPublicRoute(location.pathname, PUBLIC_ROUTES);
 

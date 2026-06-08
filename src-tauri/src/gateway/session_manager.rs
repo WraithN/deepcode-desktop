@@ -28,10 +28,12 @@ impl SessionManager {
         }
     }
 
-    /// 注册连接到指定会话
+    /// 注册连接到指定会话（同一连接 ID 去重，避免重复推送）
     pub async fn register(&self, conversation_id: String, handle: ConnectionHandle) {
         let mut conns = self.connections.write().await;
         let handles = conns.entry(conversation_id).or_insert_with(Vec::new);
+        // 去重：如果已有相同 conn_id，先移除旧 handle
+        handles.retain(|h| h.id != handle.id);
         handles.push(handle);
     }
 
@@ -78,5 +80,20 @@ impl SessionManager {
     pub async fn active_session_count(&self) -> usize {
         let conns = self.connections.read().await;
         conns.len()
+    }
+
+    /// 从所有会话中注销指定连接
+    pub async fn unregister_all(&self, conn_id: &str) {
+        let mut conns = self.connections.write().await;
+        let mut empty_keys = Vec::new();
+        for (key, handles) in conns.iter_mut() {
+            handles.retain(|h| h.id != conn_id);
+            if handles.is_empty() {
+                empty_keys.push(key.clone());
+            }
+        }
+        for key in empty_keys {
+            conns.remove(&key);
+        }
     }
 }

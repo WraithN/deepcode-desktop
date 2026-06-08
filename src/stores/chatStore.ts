@@ -26,6 +26,7 @@ interface ChatState {
   setPendingInteraction: (interaction: ChatState['pendingInteraction']) => void;
   setTodos: (todos: TodoItem[]) => void;
   sendInteractionResponse: (response: Record<string, unknown>) => Promise<void>;
+  appendToken: (text: string) => void;
 }
 
 async function ensureWebSocketConnected() {
@@ -141,7 +142,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendInteractionResponse: async (response) => {
     const { pendingInteraction } = get();
-    if (!pendingInteraction) return;
+    if (!pendingInteraction) { return; }
 
     await useWebSocketStore.getState().sendRequest('agent.respond', {
       sessionId: pendingInteraction.sessionId,
@@ -150,5 +151,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     set({ pendingInteraction: null });
+  },
+
+  appendToken: (text: string) => {
+    set((state) => {
+      const messages = [...state.messages];
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant') {
+        messages[messages.length - 1] = {
+          ...lastMsg,
+          content: lastMsg.content + text,
+        };
+      }
+      return { messages };
+    });
   },
 }));

@@ -1,7 +1,7 @@
 import type { Task, ModifiedFile, GitChangedFile, TodoItem } from '@/types/types';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  ListTodo, FileEdit, CheckCircle2, Clock, Loader2,
+  FileEdit, CheckCircle2, Clock, Loader2,
   ChevronDown, ChevronRight,
   ChevronLeft, FileCode2, FilePlus, FileMinus,
 } from 'lucide-react';
@@ -20,7 +20,7 @@ interface DiffLine {
 }
 
 function parseDiffToSplit(diff?: string): DiffLine[] {
-  if (!diff) return [];
+  if (!diff) { return []; }
   const lines = diff.split('\n');
   const result: DiffLine[] = [];
   let leftNum = 0;
@@ -100,12 +100,12 @@ export default function RightPanel({ tasks, todos, modifiedFiles, workspace, col
   const [expandedDiff, setExpandedDiff] = useState<GitChangedFile | null>(null);
   const [expandedFiles, setExpandedFiles] = useState(true);
   const [expandedTasks, setExpandedTasks] = useState(true);
-  const [expandedTodos, setExpandedTodos] = useState(true);
   const [gitFiles, setGitFiles] = useState<GitChangedFile[]>([]);
   const [gitError, setGitError] = useState<string | null>(null);
+  const lastClickRef = useRef<{ path: string; time: number } | null>(null);
 
-  useEffect(() => {
-    if (!workspace) return;
+  const loadGitFiles = () => {
+    if (!workspace) { return; }
     invoke<GitChangedFile[]>('git_changed_files', { workspace })
       .then((data) => {
         setGitFiles(Array.isArray(data) ? data : []);
@@ -115,7 +115,19 @@ export default function RightPanel({ tasks, todos, modifiedFiles, workspace, col
         setGitFiles([]);
         setGitError(error instanceof Error ? error.message : String(error));
       });
+  };
+
+  useEffect(() => {
+    loadGitFiles();
   }, [workspace, modifiedFiles]);
+
+  // Git 状态定时刷新：每 5 秒轮询一次，保持变更列表实时同步
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadGitFiles();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [workspace]);
 
   const displayFiles = gitFiles;
 
@@ -149,49 +161,7 @@ export default function RightPanel({ tasks, todos, modifiedFiles, workspace, col
           <ChevronRight className="w-3.5 h-3.5" />
         </button>
 
-        {/* Todo 列表 */}
-        <div className="flex-1 min-h-0 flex flex-col border-b border-border">
-          <button
-            type="button"
-            onClick={() => setExpandedTodos(!expandedTodos)}
-            className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0 hover:bg-secondary/30 transition-colors"
-          >
-            <span className="text-xs font-medium text-foreground">
-              <ListTodo className="w-3.5 h-3.5 inline mr-1.5 text-primary" />
-              Todo
-            </span>
-            {expandedTodos ? (
-              <ChevronDown className="w-3 h-3 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="w-3 h-3 text-muted-foreground" />
-            )}
-          </button>
-          {expandedTodos && (
-            <div className="flex-1 overflow-y-auto py-1">
-              {(!todos || todos.length === 0) ? (
-                <div className="px-3 py-6 text-center text-xs text-muted-foreground">暂无 Todo</div>
-              ) : (
-                todos.map((todo) => {
-                  const priorityColor = todo.priority === 'high' ? 'text-red-400' : todo.priority === 'medium' ? 'text-yellow-400' : 'text-muted-foreground';
-                  const statusIcon = todo.status === 'completed' ? '●' : todo.status === 'in_progress' ? '◐' : '○';
-                  return (
-                    <div key={todo.id} className="flex items-start gap-2 px-3 py-2 hover:bg-secondary/30 transition-colors">
-                      <span className="text-xs text-muted-foreground mt-0.5">{statusIcon}</span>
-                      <span className={`text-[10px] font-medium mt-0.5 ${priorityColor}`}>
-                        {todo.priority === 'high' ? '高' : todo.priority === 'medium' ? '中' : '低'}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <div className={`text-xs truncate ${todo.status === 'completed' ? 'text-muted-foreground line-through' : 'text-foreground'}`}>{todo.content}</div>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* 上方：任务列表 */}
+        {/* 任务列表（合并 tasks + todos） */}
         <div className="flex-1 min-h-0 flex flex-col border-b border-border">
           <button
             type="button"
@@ -262,7 +232,15 @@ export default function RightPanel({ tasks, todos, modifiedFiles, workspace, col
                         <button
                           key={file.path}
                           type="button"
-                          onClick={() => setExpandedDiff(file)}
+                          onClick={() => {
+                            const now = Date.now();
+                            if (lastClickRef.current?.path === file.path && now - lastClickRef.current.time < 350) {
+                              setExpandedDiff(file);
+                              lastClickRef.current = null;
+                            } else {
+                              lastClickRef.current = { path: file.path, time: now };
+                            }
+                          }}
                           className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-secondary/30 transition-colors text-left"
                           title={file.path}
                         >
@@ -308,9 +286,9 @@ export default function RightPanel({ tasks, todos, modifiedFiles, workspace, col
                 type="button"
                 disabled={!expandedDiff || displayFiles.findIndex((f) => f.path === expandedDiff.path) <= 0}
                 onClick={() => {
-                  if (!expandedDiff) return;
+                  if (!expandedDiff) { return; }
                   const idx = displayFiles.findIndex((f) => f.path === expandedDiff.path);
-                  if (idx > 0) setExpandedDiff(displayFiles[idx - 1]);
+                  if (idx > 0) { setExpandedDiff(displayFiles[idx - 1]); }
                 }}
                 className="flex items-center gap-0.5 px-1 py-0 text-xs rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
@@ -321,9 +299,9 @@ export default function RightPanel({ tasks, todos, modifiedFiles, workspace, col
                 type="button"
                 disabled={!expandedDiff || displayFiles.findIndex((f) => f.path === expandedDiff.path) >= displayFiles.length - 1}
                 onClick={() => {
-                  if (!expandedDiff) return;
+                  if (!expandedDiff) { return; }
                   const idx = displayFiles.findIndex((f) => f.path === expandedDiff.path);
-                  if (idx < displayFiles.length - 1) setExpandedDiff(displayFiles[idx + 1]);
+                  if (idx < displayFiles.length - 1) { setExpandedDiff(displayFiles[idx + 1]); }
                 }}
                 className="flex items-center gap-0.5 px-1 py-0 text-xs rounded border border-border bg-card text-foreground hover:bg-secondary/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >

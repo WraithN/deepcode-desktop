@@ -47,7 +47,7 @@ class TauriDataStore implements IDataStore {
   async getSession(): Promise<AuthSession | null> {
     try {
       const raw = localStorage.getItem(SESSION_KEY);
-      if (!raw) return null;
+      if (!raw) { return null; }
       return JSON.parse(raw) as AuthSession;
     } catch {
       return null;
@@ -58,7 +58,7 @@ class TauriDataStore implements IDataStore {
     this.callbacks.push(callback);
     const session = this.getSession();
     session.then((s) => {
-      if (s) callback('SIGNED_IN', s);
+      if (s) { callback('SIGNED_IN', s); }
     });
     return {
       unsubscribe: () => {

@@ -65,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signInWithUsername = async (username: string, password: string) => {
     try {
       const { error } = await db.signIn(username, password);
-      if (error) throw error;
+      if (error) { throw error; }
       return { error: null };
     } catch (error) {
       return { error: error as Error };
@@ -75,7 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signUpWithUsername = async (username: string, password: string) => {
     try {
       const { error } = await db.signUp(username, password);
-      if (error) throw error;
+      if (error) { throw error; }
       return { error: null };
     } catch (error) {
       return { error: error as Error };

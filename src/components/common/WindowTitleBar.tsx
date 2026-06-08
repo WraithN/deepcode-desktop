@@ -14,9 +14,9 @@ export default function WindowTitleBar({ title = 'dh', children }: WindowTitleBa
   const runWindowAction = async (action: 'minimize' | 'toggle_maximize' | 'close') => {
     console.log('[WindowTitleBar] button clicked:', action);
     try {
-      if (action === 'minimize') await appWindow.minimize();
-      if (action === 'toggle_maximize') await appWindow.toggleMaximize();
-      if (action === 'close') await appWindow.close();
+      if (action === 'minimize') { await appWindow.minimize(); }
+      if (action === 'toggle_maximize') { await appWindow.toggleMaximize(); }
+      if (action === 'close') { await appWindow.close(); }
       console.log('[WindowTitleBar] js window api success:', action);
     } catch (error) {
       console.error('[WindowTitleBar] js window api failed:', action, error);
@@ -32,8 +32,8 @@ export default function WindowTitleBar({ title = 'dh', children }: WindowTitleBa
   const closeWindow = () => runWindowAction('close');
 
   const startDragging = async (event: MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    if (event.target instanceof HTMLElement && event.target.closest('[data-no-drag]')) return;
+    if (event.button !== 0) { return; }
+    if (event.target instanceof HTMLElement && event.target.closest('[data-no-drag]')) { return; }
     console.log('[WindowTitleBar] start dragging');
     try {
       await appWindow.startDragging();

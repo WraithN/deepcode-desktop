@@ -55,7 +55,7 @@ impl GatewayRouter {
                 req,
             ).await
         } else if req.method.starts_with("session.") {
-            handle_session_request(req).await
+            handle_session_request(req, self.db_service.clone()).await
         } else if req.method.starts_with("db.") {
             handle_db_request(self.db_service.clone(), req).await
         } else {

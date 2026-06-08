@@ -31,7 +31,7 @@ export const useSessionWsStore = create<SessionWsState>((set, get) => ({
       oldWs?.close();
     }
 
-    const url = wsBaseUrl || `ws://127.0.0.1:9527`;
+    const url = wsBaseUrl || "ws://127.0.0.1:9527";
     let ws: WebSocket;
     try {
       ws = new WebSocket(`${url}/ws/${conversationId}`);

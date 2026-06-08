@@ -35,9 +35,9 @@ export const formatBytes = (
   const dm = decimals < 0 ? 0 : decimals
   const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
 
-  if (bytes === 0 || bytes === undefined) return size !== undefined ? `0 ${size}` : '0 bytes'
+  if (bytes === 0 || bytes === undefined) { return size !== undefined ? `0 ${size}` : '0 bytes' }
   const i = size !== undefined ? sizes.indexOf(size) : Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
 }
 
 type DropzoneContextType = Omit<FileUploadState, 'getRootProps' | 'getInputProps'>
@@ -222,7 +222,7 @@ const DropzoneEmptyState = ({ className }: { className?: string }) => {
             onClick={() => inputRef.current?.click()}
             className="underline cursor-pointer transition hover:text-foreground"
           >
-            select {maxFiles === 1 ? `file` : 'files'}
+            select {maxFiles === 1 ? "file" : 'files'}
           </a>{' '}
           to upload
         </p>

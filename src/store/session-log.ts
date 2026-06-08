@@ -23,7 +23,7 @@ class SessionLogStore {
   ): void {
     const entry: LogEntry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }) + '.' + String(new Date().getMilliseconds()).padStart(3, '0'),
+      timestamp: `${new Date().toLocaleTimeString('en-US', { hour12: false })}.${String(new Date().getMilliseconds()).padStart(3, '0')}`,
       level,
       source,
       message,

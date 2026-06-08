@@ -10,3 +10,5 @@ pub struct DbState(pub Mutex<rusqlite::Connection>);
 pub struct WebSocketShutdown {
     pub _sender: tokio::sync::broadcast::Sender<()>,
 }
+
+pub struct RouterState(pub std::sync::Arc<crate::gateway::router::GatewayRouter>);

@@ -36,6 +36,7 @@ impl WebSocketServer {
                         let router = router.clone();
                         let conn_id = format!("conn-{}", uuid::Uuid::new_v4());
 
+                        log::info!("WebSocket new connection: {}", conn_id);
                         tokio::spawn(async move {
                             match tokio_tungstenite::accept_async(stream).await {
                                 Ok(ws_stream) => {

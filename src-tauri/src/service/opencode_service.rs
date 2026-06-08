@@ -18,7 +18,7 @@ pub struct OpencodeService {
     port: u16,
     base_url: String,
     client: reqwest::Client,
-    event_sender: Arc<StdMutex<Option<tokio::sync::mpsc::Sender<SseEvent>>>>,
+    event_sender: Arc<StdMutex<Option<tokio::sync::broadcast::Sender<SseEvent>>>>,
 }
 
 impl OpencodeService {
@@ -33,19 +33,55 @@ impl OpencodeService {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to start opencode serve: {}", e))?;
 
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
         let base_url = format!("http://127.0.0.1:{}", port);
+
+        // 健康检查：验证进程存活和端口可连接
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(10);
+        let mut service_ready = false;
+
+        while start.elapsed() < timeout {
+            // 检查进程是否已提前退出
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "opencode serve exited prematurely with status: {}",
+                        status
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => return Err(format!("Failed to check opencode process status: {}", e)),
+            }
+
+            // 尝试连接端口验证服务就绪
+            if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+                service_ready = true;
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        if !service_ready {
+            let _ = child.kill();
+            return Err(format!(
+                "opencode serve did not become ready on port {} within {:?}",
+                port, timeout
+            ));
+        }
 
         Ok(Self {
             serve_process: Arc::new(Mutex::new(Some(child))),
             port,
             base_url,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             event_sender: Arc::new(StdMutex::new(None)),
         })
     }
@@ -57,7 +93,10 @@ impl OpencodeService {
             serve_process: Arc::new(Mutex::new(None)),
             port,
             base_url,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             event_sender: Arc::new(StdMutex::new(None)),
         }
     }
@@ -72,9 +111,19 @@ impl OpencodeService {
         self.base_url.clone()
     }
 
-    pub fn set_event_sender(&self, sender: tokio::sync::mpsc::Sender<SseEvent>) {
+    pub fn set_event_sender(&self, sender: tokio::sync::broadcast::Sender<SseEvent>) {
         if let Ok(mut guard) = self.event_sender.lock() {
             *guard = Some(sender);
+        }
+    }
+
+    pub fn subscribe_events(&self) -> Result<tokio::sync::broadcast::Receiver<SseEvent>, String> {
+        match self.event_sender.lock() {
+            Ok(guard) => match guard.as_ref() {
+                Some(sender) => Ok(sender.subscribe()),
+                None => Err("Event sender not set".to_string()),
+            },
+            Err(_) => Err("Event sender lock poisoned".to_string()),
         }
     }
 
@@ -95,7 +144,10 @@ impl OpencodeService {
         };
 
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
             loop {
                 match client
                     .get(format!("{}/event", base_url))
@@ -115,11 +167,12 @@ impl OpencodeService {
                                             if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
                                                 let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
                                                 let session_id = event.get("properties").and_then(|p| p.get("sessionID")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                                                log::info!("[opencode SSE] received event_type={} session_id={:?}", event_type, session_id);
                                                 let _ = sender.send(SseEvent {
                                                     event_type,
                                                     session_id,
                                                     payload: event,
-                                                }).await;
+                                                });
                                             }
                                         }
                                     }
@@ -132,7 +185,7 @@ impl OpencodeService {
                         }
                     }
                     Err(e) => {
-                        log::error!("[opencode] SSE connect error: {}", e);
+                        log::warn!("[opencode] SSE connect error: {}, retrying...", e);
                     }
                 }
                 log::info!("[opencode] SSE disconnected, retrying in 3s...");
@@ -245,12 +298,12 @@ impl OpencodeService {
     }
 
     fn find_available_port_sync() -> Result<u16, String> {
-        for port in 3001..=3010 {
+        for port in 3001..=3050 {
             if Self::is_port_available_sync(port) {
                 return Ok(port);
             }
         }
-        Err("No available port found in range 3001-3010".to_string())
+        Err("No available port found in range 3001-3050".to_string())
     }
 
     fn is_port_available_sync(port: u16) -> bool {

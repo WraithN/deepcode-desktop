@@ -5,7 +5,7 @@ class DebugLogger {
   private logFile = 'logs/debug.log';
 
   private async init(): Promise<void> {
-    if (this.initialized) return;
+    if (this.initialized) { return; }
     try {
       await mkdir('logs', { baseDir: BaseDirectory.AppLocalData, recursive: true });
       console.log('[DebugLogger] init success, log dir created');
@@ -24,7 +24,7 @@ class DebugLogger {
       message,
       data: data || {},
     };
-    const line = JSON.stringify(entry) + '\n';
+    const line = `${JSON.stringify(entry)}\n`;
     try {
       await this.init();
       await writeTextFile(this.logFile, line, { baseDir: BaseDirectory.AppLocalData, append: true });

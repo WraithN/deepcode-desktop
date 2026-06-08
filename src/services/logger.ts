@@ -1,7 +1,7 @@
 import { writeTextFile, mkdir, BaseDirectory } from '@tauri-apps/plugin-fs';
 
 function isTauri(): boolean {
-  return !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
+  return !!(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ || !!(window as unknown as Record<string, unknown>).__TAURI__;
 }
 
 type LoggableEvent = { type: string } & Record<string, unknown>;
@@ -19,7 +19,7 @@ class SessionLogger {
   private baseDir = isTauri() ? BaseDirectory.AppLog : BaseDirectory.Temp;
 
   private async init(): Promise<void> {
-    if (this.initialized) return;
+    if (this.initialized) { return; }
     try {
       await mkdir(this.logDir, { baseDir: this.baseDir, recursive: true });
     } catch {
@@ -34,10 +34,11 @@ class SessionLogger {
   }
 
   private async append(entry: LogEntry): Promise<void> {
-    if (!isTauri()) return; // 浏览器环境下不写入文件
+    if (!isTauri()) { return; // 浏览器环境下不写入文件
+}
     await this.init();
     const file = this.currentFile || this.getLogFile('default');
-    const line = JSON.stringify(entry) + '\n';
+    const line = `${JSON.stringify(entry)}\n`;
     try {
       await writeTextFile(file, line, { baseDir: this.baseDir, append: true });
     } catch {

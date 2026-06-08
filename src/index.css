@@ -217,9 +217,11 @@
 @layer base {
   * {
     @apply border-border;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeLegibility;
+    /* Linux WebKitGTK 软件渲染下，antialiased 会导致深色背景字体发虚；
+       默认使用系统 subpixel 渲染更清晰。macOS 单独处理。 */
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
+    text-rendering: auto;
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--border)) transparent;
   }
@@ -243,6 +245,19 @@
   body {
     @apply bg-background text-foreground;
     font-family: 'JetBrains Mono', 'Noto Sans SC', 'Noto Sans JP', 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    /* WebKitGTK 软件渲染下，400 字重容易发虚；提升到 500 让笔画更实 */
+    font-weight: 500;
+    /* 适度增加字距，防止字符挤压导致的模糊 */
+    letter-spacing: 0.01em;
+    font-feature-settings: "liga" 1, "calt" 1;
+    /* WebKit 字体清晰度 hack：极弱的 text-shadow 能让子像素渲染更稳定 */
+    text-shadow: 0 0 0.3px rgba(255, 255, 255, 0.08);
+  }
+
+  /* 等宽代码区域不需要 text-shadow hack，保持原生渲染 */
+  code, pre, .font-mono, .code-block {
+    text-shadow: none;
+    letter-spacing: 0;
   }
 
   code, pre, .font-mono {

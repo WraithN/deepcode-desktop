@@ -42,7 +42,7 @@ const SessionLogDrawer: React.FC<SessionLogDrawerProps> = ({ onClose, onClear })
   }, [height]);
 
   useEffect(() => {
-    if (!isDragging) return;
+    if (!isDragging) { return; }
     const handleMouseMove = (e: MouseEvent) => {
       const delta = startYRef.current - e.clientY;
       const newHeight = Math.min(Math.max(startHeightRef.current + delta, 100), 400);

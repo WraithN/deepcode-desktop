@@ -107,7 +107,7 @@ export default function SelectAgentPage() {
   };
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) { return; }
     try {
       const raw = localStorage.getItem('agent_instances');
       const instances = raw ? JSON.parse(raw) : [];

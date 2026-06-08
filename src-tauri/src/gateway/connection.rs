@@ -52,6 +52,15 @@ pub async fn handle_connection(
             Message::Text(text) => {
                 match serde_json::from_str::<JsonRpcRequest>(&text) {
                     Ok(request) => {
+                        // 注册连接到 session_manager（如果请求包含 conversationId）
+                        if let Some(conversation_id) = request.params.get("conversationId").and_then(|v| v.as_str()) {
+                            let session_handle = crate::gateway::session_manager::ConnectionHandle {
+                                id: conn_id.clone(),
+                                sender: tx.clone(),
+                            };
+                            router.session_manager().register(conversation_id.to_string(), session_handle).await;
+                        }
+
                         let response = router.handle_request(&conn_id, request).await;
                         if let Ok(json) = serde_json::to_string(&response) {
                             let _ = router.send_to_connection(&conn_id, Message::Text(json)).await;
@@ -78,4 +87,7 @@ pub async fn handle_connection(
     // Unregister connection
     router.unregister_connection(&conn_id).await;
     log::info!("WebSocket connection closed: {}", conn_id);
+    
+    // Also unregister from session_manager to prevent stale handles
+    router.session_manager().unregister_all(&conn_id).await;
 }

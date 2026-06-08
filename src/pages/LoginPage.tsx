@@ -100,7 +100,7 @@ export default function LoginPage() {
               type="button"
               onClick={() => setIsLogin(false)}
               className={`flex-1 py-2 text-sm font-medium rounded transition-colors ${
-                !isLogin ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                isLogin ? 'text-muted-foreground hover:text-foreground' : 'bg-background text-foreground shadow-sm'
               }`}
             >
               注册

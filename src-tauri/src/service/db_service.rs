@@ -244,6 +244,37 @@ impl DbService {
         }))
     }
 
+    pub fn load_session_logs(&self, conversation_id: String) -> Result<Vec<Value>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, conversation_id, instance_id, timestamp, level, source, message, payload
+                 FROM session_logs
+                 WHERE conversation_id = ?1
+                 ORDER BY timestamp ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![&conversation_id], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "conversation_id": row.get::<_, String>(1)?,
+                    "instance_id": row.get::<_, Option<String>>(2)?,
+                    "timestamp": row.get::<_, String>(3)?,
+                    "level": row.get::<_, String>(4)?,
+                    "source": row.get::<_, String>(5)?,
+                    "message": row.get::<_, String>(6)?,
+                    "payload": row.get::<_, Option<String>>(7)?,
+                }))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(results)
+    }
+
     pub fn load_modified_files(&self, user_id: String, limit: i64) -> Result<Vec<Value>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn

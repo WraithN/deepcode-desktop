@@ -118,7 +118,7 @@ code, pre, .font-mono {
 ### 4.2 布局模式
 
 - **页面级**：`min-h-screen flex flex-col bg-background`
-- **桌面窗口**：Linux 桌面端使用系统原生窗口装饰，避免 WSLg/GTK 环境下无边框窗口被映射为 `0x0`
+- **桌面窗口**：无边框窗口（`decorations: false`），使用自定义 `WindowTitleBar` 组件实现窗口拖动/控制按钮；通过 `apply_main_window_layout` 确保窗口在 WSLg/GTK 环境下正确定位，500ms 重试机制避免 `0x0` 映射问题
 - **居中内容**：`flex flex-1 items-center justify-center` + `max-w-md`
 - **三栏工作区**：左侧导航栏（固定宽度）+ 中间内容区（flex-1）+ 右侧边栏（固定宽度）
 - **卡片网格**：`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4`
@@ -317,7 +317,80 @@ scrollbar-color: hsl(var(--border)) transparent;
 
 ---
 
-## 13. 文件位置速查
+---
+
+## 13. 会话日志架构
+
+### 13.1 日志存储与流转
+
+```
+SessionLogger (Rust)
+  ├─ emit Tauri event "session:log" (snake_case fields)
+  ├─ write to SQLite table `session_logs`
+  └─ write to local file `session.log`
+
+main.rs event listener
+  └─ convert snake_case → camelCase
+  └─ forward as WebSocket notification "session.log"
+
+frontend logStore
+  ├─ subscribe "session.log" → appendLog
+  └─ loadHistory(conversationId) → WS request "session.logLoad"
+
+session.logLoad handler (Rust)
+  └─ query `session_logs` table via DbService
+  └─ return camelCase JSON array
+```
+
+### 13.2 日志字段约定
+
+| 存储字段 (snake_case) | 前端字段 (camelCase) | 说明 |
+|------------------------|----------------------|------|
+| `conversation_id` | `conversationId` | 所属会话 |
+| `instance_id` | `instanceId` | 智能体实例 |
+| `timestamp` | `timestamp` | RFC3339 时间戳 |
+| `level` | `level` | debug/info/warn/error |
+| `source` | `source` | 日志来源组件 |
+| `message` | `message` | 日志消息 |
+| `payload` | `payload` | 附加数据结构（JSON 字符串） |
+
+### 13.3 日志限制
+
+- 前端 logStore 保留最多 500 条日志（`session-log.ts`）
+- 数据库表 `session_logs` 无自动清理，定期由用户手动清理
+
+---
+
+## 14. 流式架构与 Thinking 去重
+
+### 14.1 事件流
+
+```
+SSE event stream (from opencode serve)
+  ├─ "message.updated" → 追踪 assistant message ID
+  ├─ "message.part.delta" → agent.token（逐字推送）
+  ├─ "message.part.updated" (type=step-start) → agent.thinking
+  ├─ "session.status" → 检测 busy→idle 结束信号
+  └─ "session.idle" / "session.error" → 结束
+
+Simulated fallback (SSE unavailable)
+  └─ 解析完整 HTTP 响应 parts，模拟相同事件序列
+```
+
+### 14.2 Thinking 去重策略
+
+- 仅 `step-start` 类型触发 `agent.thinking`（`tool_use` 不再触发）
+- 前端 `useWebSocketListeners.ts` 使用 `seenThinkingPartIds: Set<string>` 按 `part.id` 严格去重
+- Thinking 步骤始终插入到 **assistant 消息 steps 数组的开头**（`filter + prepend`），确保在内容之前渲染
+
+### 14.3 Done 事件语义
+
+- `agent.done` 在流式结束后发送
+- 标记 `is_complete: true`，停止流式状态
+
+---
+
+## 15. 文件位置速查
 
 | 文件 | 用途 |
 |------|------|

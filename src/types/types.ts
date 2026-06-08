@@ -28,6 +28,7 @@ export interface MessageStep {
   compressInfo?: { originalSize: number; compressedSize: number; ratio: number; status: 'compressing' | 'done' };
   diff?: string; // 写文件时的diff内容
   interaction?: InteractionPayload;
+  partId?: string; // 关联的 part ID，用于去重
 }
 
 export interface InteractionPayload {

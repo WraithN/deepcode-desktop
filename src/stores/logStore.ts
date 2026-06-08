@@ -41,7 +41,18 @@ export const useLogStore = create<LogState>((set, get) => ({
 
   loadHistory: async (conversationId: string) => {
     const ws = useWebSocketStore.getState();
-    const logs = await ws.sendRequest<SessionLogEntry[]>('session.logLoad', { conversationId });
+    const rawLogs = await ws.sendRequest<Record<string, unknown>[]>('session.logLoad', { conversationId });
+
+    const logs: SessionLogEntry[] = rawLogs.map((log) => ({
+      id: String(log.id ?? ''),
+      conversationId: String(log.conversationId ?? ''),
+      instanceId: log.instanceId as string | undefined,
+      timestamp: String(log.timestamp ?? ''),
+      level: (log.level as SessionLogEntry['level']) || 'info',
+      source: String(log.source ?? ''),
+      message: String(log.message ?? ''),
+      detail: log.payload ? (typeof log.payload === 'string' ? JSON.parse(log.payload as string) : log.payload) as Record<string, unknown> : undefined,
+    }));
 
     set((state) => {
       const newLogs = [...logs, ...state.logs];

@@ -59,7 +59,7 @@ const SheetContent = React.forwardRef<
 >(({ side = "right", className, children, onOpenAutoFocus, ...props }, ref) => {
   const handleOpenAutoFocus: React.ComponentPropsWithoutRef<typeof SheetPrimitive.Content>["onOpenAutoFocus"] = (event) => {
     onOpenAutoFocus?.(event)
-    if (event.defaultPrevented) return
+    if (event.defaultPrevented) { return }
     event.preventDefault()
   }
 

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { invoke } from '@tauri-apps/api/core';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -67,12 +68,20 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
       ws.onopen = () => {
         connectPromise = null;
         set({ status: 'connected', reconnectAttempts: 0, ws });
+        console.log('[WebSocket] connected to', url);
         resolve();
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data) as JsonRpcResponse | JsonRpcNotification;
+          // Log to Rust for debugging
+          try {
+            const method = ((data as unknown) as Record<string, unknown>).method || ((data as unknown) as Record<string, unknown>).id || 'unknown';
+            void invoke('console_logs', {
+              logs: [{ type: 'info', message: `[WS raw] ${method}: ${JSON.stringify(data).slice(0, 200)}` }]
+            });
+          } catch (_) { /* ignore */ }
 
           // Check if it's a response with an id
           if ('id' in data && data.id !== undefined && data.id !== null) {
@@ -110,7 +119,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
 
           setTimeout(() => {
             if (get().url) {
-              get().connect(get().url!);
+              get().connect(get().url as string);
             }
           }, delay);
         }
@@ -182,7 +191,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
       notificationHandlers.set(method, new Set());
     }
 
-    notificationHandlers.get(method)!.add(handler);
+    notificationHandlers.get(method)?.add(handler);
 
     // Return unsubscribe function
     return () => {

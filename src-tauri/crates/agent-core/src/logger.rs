@@ -53,6 +53,20 @@ impl SessionLogger {
             .open(&log_file_path);
         let mut log_writer = log_file.ok().map(|f| std::io::LineWriter::new(f));
 
+        let _ = db_conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                instance_id TEXT,
+                timestamp TEXT NOT NULL,
+                level TEXT NOT NULL,
+                source TEXT NOT NULL,
+                message TEXT NOT NULL,
+                payload TEXT
+            )",
+            [],
+        );
+
         std::thread::spawn(move || {
             while let Some(entry) = rx.blocking_recv() {
                 let _ = app_handle.emit("session:log", &entry);

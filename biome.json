@@ -15,13 +15,39 @@
     "rules": {
       "recommended": false,
       "correctness": {
-        "noUndeclaredDependencies": "error"
+        "noUndeclaredDependencies": "error",
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error",
+        "noConstAssign": "error",
+        "noUnreachable": "error",
+        "noInvalidUseBeforeDeclaration": "error"
       },
       "suspicious": {
-        "noRedeclare": "error"
+        "noRedeclare": "error",
+        "noExplicitAny": "warn",
+        "noExtraNonNullAssertion": "warn",
+        "noNonNullAssertedOptionalChain": "error",
+        "noConfusingVoidType": "error",
+        "noDoubleEquals": "error",
+        "noGlobalIsNan": "error",
+        "noSelfCompare": "error",
+        "noAssignInExpressions": "error",
+        "noDuplicateClassMembers": "error"
       },
       "style": {
-        "noCommonJs": "error"
+        "noCommonJs": "error",
+        "noNonNullAssertion": "warn",
+        "noNegationElse": "warn",
+        "noUnusedTemplateLiteral": "warn",
+        "useBlockStatements": "warn",
+        "useConst": "error",
+        "useTemplate": "warn"
+      },
+      "complexity": {
+        "noUselessTernary": "warn",
+        "noUselessSwitchCase": "warn",
+        "noUselessCatch": "error",
+        "noUselessThisAlias": "error"
       }
     }
   },

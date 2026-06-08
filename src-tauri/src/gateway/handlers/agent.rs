@@ -4,7 +4,7 @@ use crate::service::agent_service::AgentService;
 use crate::service::opencode_service::OpencodeService;
 use serde_json::json;
 use std::sync::Arc;
-use tokio_tungstenite::tungstenite::Message;
+
 
 pub async fn handle_agent_request(
     service: Arc<AgentService>,
@@ -58,40 +58,32 @@ async fn handle_send_message(
     let conversation_id = req.params.get("conversationId").and_then(|v| v.as_str());
     let message = req.params.get("message").and_then(|v| v.as_str());
     let opencode_session_id = req.params.get("opencodeSessionId").and_then(|v| v.as_str());
-    
+
     if instance_id.is_none() || conversation_id.is_none() || message.is_none() {
         return JsonRpcResponse::error(req.id, INVALID_PARAMS, "Missing required params: instanceId, conversationId, message", None);
     }
 
-    match opencode_service.run_message(message.unwrap(), opencode_session_id).await {
-        Ok(result) => {
-            // If interaction detected, push notification via WebSocket
-            if let Some(interaction) = result.get("interaction").and_then(|v| v.as_object()) {
-                let method = match interaction.get("type").and_then(|v| v.as_str()) {
-                    Some("question") => "agent.question",
-                    Some("permission") => "agent.permission",
-                    Some("todowrite") => "agent.todowrite",
-                    _ => "agent.interaction",
-                };
-                let notification = json!({
-                    "jsonrpc": "2.0",
-                    "method": method,
-                    "params": {
-                        "instanceId": instance_id.unwrap(),
-                        "conversationId": conversation_id.unwrap(),
-                        "sessionID": result.get("sessionID"),
-                        "interaction": interaction,
-                    }
-                });
-                let _ = session_manager.send_to_session(
-                    conversation_id.unwrap(),
-                    Message::Text(notification.to_string()),
-                ).await;
-            }
-            JsonRpcResponse::success(req.id, result)
-        }
-        Err(error) => JsonRpcResponse::error(req.id, INTERNAL_ERROR, &error, None),
-    }
+    let conversation_id_str = conversation_id.unwrap().to_string();
+    let message_str = message.unwrap().to_string();
+    let opencode_session_id_opt = opencode_session_id.map(|s| s.to_string());
+
+    // 在后台启动流式处理，立即返回，避免阻塞 WebSocket
+    let opencode_service_clone = opencode_service.clone();
+    let session_manager_clone = session_manager.clone();
+    tokio::spawn(async move {
+        crate::gateway::handlers::streaming::stream_opencode_output(
+            opencode_service_clone,
+            session_manager_clone,
+            conversation_id_str,
+            message_str,
+            opencode_session_id_opt,
+        ).await;
+    });
+
+    JsonRpcResponse::success(req.id, json!({
+        "status": "started",
+        "message": "Message processing started"
+    }))
 }
 
 async fn handle_respond(

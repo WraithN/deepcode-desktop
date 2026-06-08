@@ -91,7 +91,7 @@ export default function AddAgentDialog({ open, onOpenChange, onAddAgent, existin
   }, [open, existingNames]);
 
   const handleConfirm = () => {
-    if (!selectedAgent) return;
+    if (!selectedAgent) { return; }
     const trimmed = displayName.trim().slice(0, 3);
     const ws = workspace.trim() || '.';
     onAddAgent(selectedAgent, trimmed || generateName(existingNames), ws);

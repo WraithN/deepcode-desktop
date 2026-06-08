@@ -33,7 +33,7 @@ export default function DirectoryPickerButton({ onSelect }: DirectoryPickerButto
       onSelect(dirPath);
     }
     // 重置 input 以便可以重复选择同一目录
-    if (inputRef.current) inputRef.current.value = '';
+    if (inputRef.current) { inputRef.current.value = ''; }
   };
 
   return (
