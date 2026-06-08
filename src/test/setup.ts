@@ -12,6 +12,20 @@ Object.defineProperty(window, '__TAURI_INTERNALS__', {
   writable: true,
 });
 
+// Mock localStorage for jsdom
+const localStorageMock = (() => {
+  let store: Record<string, string> = {};
+  return {
+    getItem: (key: string) => store[key] || null,
+    setItem: (key: string, value: string) => { store[key] = String(value); },
+    removeItem: (key: string) => { delete store[key]; },
+    clear: () => { store = {}; },
+    length: 0,
+    key: (_index: number) => null,
+  };
+})();
+Object.defineProperty(window, 'localStorage', { value: localStorageMock });
+
 // Mock WebSocket for store tests
 class MockWebSocket {
   static CONNECTING = 0;
