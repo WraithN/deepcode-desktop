@@ -1,5 +1,6 @@
 import type { IDataStore, AuthUser, AuthSession, AuthStateChangeCallback } from './types';
 import type { Conversation, Message, Task, ModifiedFile, Profile } from '@/types/types';
+import { generateId } from '@/lib/id';
 
 const SESSION_KEY = 'aicoding_session';
 const PROFILES_KEY = 'aicoding_profiles';
@@ -19,10 +20,6 @@ function getLocalItem<T>(key: string, defaultValue: T): T {
 
 function setLocalItem<T>(key: string, value: T) {
   localStorage.setItem(key, JSON.stringify(value));
-}
-
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function now(): string {

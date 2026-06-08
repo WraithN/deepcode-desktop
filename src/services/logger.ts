@@ -1,8 +1,5 @@
 import { writeTextFile, mkdir, BaseDirectory } from '@tauri-apps/plugin-fs';
-
-function isTauri(): boolean {
-  return !!(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ || !!(window as unknown as Record<string, unknown>).__TAURI__;
-}
+import { isTauri } from '@/lib/env';
 
 type LoggableEvent = { type: string } & Record<string, unknown>;
 

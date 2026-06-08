@@ -1,3 +1,5 @@
+import { generateId } from '@/lib/id';
+
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
 export interface LogEntry {
@@ -22,7 +24,7 @@ class SessionLogStore {
     detail?: Record<string, unknown>,
   ): void {
     const entry: LogEntry = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: generateId(),
       timestamp: `${new Date().toLocaleTimeString('en-US', { hour12: false })}.${String(new Date().getMilliseconds()).padStart(3, '0')}`,
       level,
       source,

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
+import { generateRequestId } from '@/lib/id';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -29,6 +30,10 @@ type WebSocketStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'e
 
 let connectPromise: Promise<void> | null = null;
 
+// Circuit breaker constants
+const CIRCUIT_FAILURE_THRESHOLD = 5;
+const CIRCUIT_COOLDOWN_MS = 30000;
+
 interface WebSocketState {
   url: string | null;
   status: WebSocketStatus;
@@ -36,11 +41,15 @@ interface WebSocketState {
   ws: WebSocket | null;
   pendingRequests: Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>;
   notificationHandlers: Map<string, Set<(params: unknown) => void>>;
+  consecutiveFailures: number;
+  circuitOpen: boolean;
+  circuitResetTime: number;
 
   connect: (url: string) => Promise<void>;
   disconnect: () => void;
   sendRequest: <T>(method: string, params?: unknown) => Promise<T>;
   subscribe: (method: string, handler: (params: unknown) => void) => () => void;
+  resetCircuit: () => void;
 }
 
 export const useWebSocketStore = create<WebSocketState>((set, get) => ({
@@ -50,9 +59,22 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
   ws: null,
   pendingRequests: new Map(),
   notificationHandlers: new Map(),
+  consecutiveFailures: 0,
+  circuitOpen: false,
+  circuitResetTime: 0,
 
   connect: async (url: string) => {
     const state = get();
+
+    // Circuit breaker check
+    if (state.circuitOpen) {
+      if (Date.now() < state.circuitResetTime) {
+        throw new Error('WebSocket circuit breaker is open');
+      }
+      // Cooldown expired, half-open: allow one attempt
+      set({ circuitOpen: false, consecutiveFailures: 0 });
+    }
+
     if (state.ws?.readyState === WebSocket.OPEN) {
       return;
     }
@@ -67,7 +89,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
 
       ws.onopen = () => {
         connectPromise = null;
-        set({ status: 'connected', reconnectAttempts: 0, ws });
+        set({ status: 'connected', reconnectAttempts: 0, ws, consecutiveFailures: 0 });
         console.log('[WebSocket] connected to', url);
         resolve();
       };
@@ -108,10 +130,18 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
 
       ws.onclose = () => {
         connectPromise = null;
-        set({ status: 'idle', ws: null });
-        // Auto-reconnect logic
+        const failures = get().consecutiveFailures + 1;
+        const shouldOpenCircuit = failures >= CIRCUIT_FAILURE_THRESHOLD;
+        set({
+          status: 'idle',
+          ws: null,
+          consecutiveFailures: failures,
+          circuitOpen: shouldOpenCircuit,
+          circuitResetTime: shouldOpenCircuit ? Date.now() + CIRCUIT_COOLDOWN_MS : 0,
+        });
+        // Auto-reconnect logic (skip if circuit is open)
         const currentState = get();
-        if (currentState.url && currentState.status !== 'error') {
+        if (currentState.url && currentState.status !== 'error' && !currentState.circuitOpen) {
           const attempts = currentState.reconnectAttempts + 1;
           const delay = Math.min(1000 * Math.pow(2, attempts - 1), 30000);
 
@@ -127,9 +157,16 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
 
       ws.onerror = () => {
         connectPromise = null;
+        const failures = get().consecutiveFailures + 1;
+        const shouldOpenCircuit = failures >= CIRCUIT_FAILURE_THRESHOLD;
         const message = `WebSocket connection failed: ${url}`;
         console.error(message);
-        set({ status: 'error' });
+        set({
+          status: 'error',
+          consecutiveFailures: failures,
+          circuitOpen: shouldOpenCircuit,
+          circuitResetTime: shouldOpenCircuit ? Date.now() + CIRCUIT_COOLDOWN_MS : 0,
+        });
         reject(new Error(message));
       };
     });
@@ -162,7 +199,7 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
     }
 
     const { pendingRequests } = get();
-    const id = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const id = generateRequestId();
     const request: JsonRpcRequest = {
       jsonrpc: '2.0',
       id,
@@ -203,5 +240,10 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
         }
       }
     };
+  },
+
+  resetCircuit: () => {
+    set({ consecutiveFailures: 0, circuitOpen: false, circuitResetTime: 0 });
+    console.log('[WebSocket] circuit breaker reset');
   },
 }));

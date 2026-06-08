@@ -4,6 +4,62 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::Message;
 
+/// 智能分块：将文本拆分为适合流式推送的块
+/// - 英文按单词边界拆分
+/// - 中文按 1-2 字符拆分
+/// - 混合文本智能处理
+fn simulate_stream_chunks(text: &str) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut prev_was_ascii = false;
+
+    for ch in text.chars() {
+        let is_ascii = ch.is_ascii() && !ch.is_ascii_whitespace();
+        let is_space = ch.is_ascii_whitespace();
+
+        if is_space {
+            // 空格作为英文单词的结束标记
+            if !current.is_empty() {
+                current.push(ch);
+                if current.len() >= 3 {
+                    chunks.push(current.clone());
+                    current.clear();
+                }
+            }
+            prev_was_ascii = false;
+        } else if is_ascii {
+            current.push(ch);
+            // 英文单词达到 3-5 个字符时推送，保持自然感
+            if prev_was_ascii && current.len() >= 4 {
+                chunks.push(current.clone());
+                current.clear();
+                prev_was_ascii = false;
+            } else {
+                prev_was_ascii = true;
+            }
+        } else {
+            // 非 ASCII（中文等）：积累 1-2 个字符后推送
+            if !current.is_empty() && prev_was_ascii {
+                // 切换到中文字符前，先推送积累的英文
+                chunks.push(current.clone());
+                current.clear();
+            }
+            current.push(ch);
+            if current.chars().count() >= 2 {
+                chunks.push(current.clone());
+                current.clear();
+                prev_was_ascii = false;
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
+}
+
 /// 通过 opencode serve HTTP API 获取响应，并通过 SSE 事件实现真正的流式推送
 ///
 /// 事件类型：
@@ -284,28 +340,30 @@ pub async fn stream_opencode_output(
                 Some("text") => {
                     let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
                     if !text.is_empty() {
-                        // 拆分成小块模拟流式，每块 1-3 个字符，间隔 15-35ms
-                        let chars: Vec<char> = text.chars().collect();
-                        let mut i = 0;
-                        while i < chars.len() {
-                            let chunk_size = if i + 3 < chars.len() && chars[i].is_ascii() && chars[i+1].is_ascii() && chars[i+2].is_ascii() {
-                                3 // 英文多字符一起发
-                            } else if i + 2 < chars.len() && !chars[i].is_ascii() {
-                                2 // 中文字符2个一起发
-                            } else {
-                                1
-                            };
-                            let chunk: String = chars[i..(i+chunk_size).min(chars.len())].iter().collect();
+                        // 首字延迟：营造"思考后开始输出"的自然感
+                        tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
+
+                        // 智能分块：英文按单词边界、中文按字符组
+                        let chunks = simulate_stream_chunks(text);
+                        let total_chunks = chunks.len().max(1);
+
+                        for (idx, chunk) in chunks.into_iter().enumerate() {
                             let _ = send_event(
                                 &session_manager,
                                 &conversation_id,
                                 "agent.token",
                                 serde_json::json!({ "text": chunk }),
                             ).await;
-                            i += chunk_size;
-                            // 动态延迟：短内容快、长内容慢，保持自然感
-                            let delay_ms = if chars.len() < 20 { 40u64 } else if chars.len() < 100 { 25u64 } else { 15u64 };
-                            tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+
+                            // 动态延迟：前 20% 慢（启动感），中间匀速，最后略快
+                            let base_delay = if idx < total_chunks / 5 {
+                                45u64
+                            } else if idx > total_chunks * 4 / 5 {
+                                12u64
+                            } else {
+                                25u64
+                            };
+                            tokio::time::sleep(tokio::time::Duration::from_millis(base_delay)).await;
                         }
                     }
                 }

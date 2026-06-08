@@ -129,4 +129,45 @@ describe('websocketStore', () => {
       expect(handlers.has('test.notification')).toBe(false);
     });
   });
+
+  describe('circuit breaker', () => {
+    it('should open circuit after 5 consecutive failures', async () => {
+      // Simulate multiple failed connections
+      for (let i = 0; i < 5; i++) {
+        useWebSocketStore.setState({ consecutiveFailures: i, circuitOpen: false });
+        // Trigger onerror path by creating a connection that fails
+        const connectPromise = useWebSocketStore.getState().connect('ws://fail');
+        const ws = useWebSocketStore.getState().ws;
+        if (ws && ws.onerror) {
+          ws.onerror(new Event('error'));
+        }
+        try { await connectPromise; } catch { /* ignore */ }
+      }
+
+      expect(useWebSocketStore.getState().circuitOpen).toBe(true);
+    });
+
+    it('should reject new connections when circuit is open', async () => {
+      useWebSocketStore.setState({
+        circuitOpen: true,
+        circuitResetTime: Date.now() + 30000,
+        consecutiveFailures: 5,
+      });
+
+      await expect(useWebSocketStore.getState().connect('ws://test')).rejects.toThrow('circuit breaker');
+    });
+
+    it('should reset circuit via resetCircuit', () => {
+      useWebSocketStore.setState({
+        circuitOpen: true,
+        consecutiveFailures: 5,
+        circuitResetTime: Date.now() + 30000,
+      });
+
+      useWebSocketStore.getState().resetCircuit();
+
+      expect(useWebSocketStore.getState().circuitOpen).toBe(false);
+      expect(useWebSocketStore.getState().consecutiveFailures).toBe(0);
+    });
+  });
 });
