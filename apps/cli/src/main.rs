@@ -5,7 +5,7 @@ mod commands;
 mod wrapper;
 
 #[derive(Parser, Debug)]
-#[command(name = "deepharness")]
+#[command(name = "dh")]
 #[command(about = "DeepHarness CLI - LLM Gateway management and agent wrapper")]
 #[command(version)]
 struct Cli {
@@ -41,7 +41,7 @@ fn main() {
     });
 
     if let Err(e) = result {
-        eprintln!("deepharness error: {}", e);
+        eprintln!("dh error: {}", e);
         std::process::exit(1);
     }
 }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "dh",
+  "productName": "dh-desktop",
   "version": "0.0.1",
-  "identifier": "com.deepharness.dh",
+  "identifier": "com.deepharness.dh-desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npx vite build",

@@ -13,8 +13,8 @@ mod agent_db;
 mod commands;
 mod setup;
 
-use dh::{DbState, RouterState, WebSocketShutdown};
-use dh::service::opencode_service::OpencodeService;
+use dh_desktop::{DbState, RouterState, WebSocketShutdown};
+use dh_desktop::service::opencode_service::OpencodeService;
 use crate::setup::db::{db_path, init_db};
 use crate::setup::window::show_main_window;
 use crate::commands::db::*;
@@ -31,7 +31,7 @@ async fn agent_send_message_direct(
 }
 
 fn start_ws_server(
-    mut ws_server: dh::gateway::server::WebSocketServer,
+    mut ws_server: dh_desktop::gateway::server::WebSocketServer,
     shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) -> Result<SocketAddr, String> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -79,7 +79,7 @@ fn main() {
 
             // 初始化 AgentService 并注册 opencode plugin
             let app_handle = app.handle().clone();
-            let mut agent_service = Arc::new(dh::service::agent_service::AgentService::new(logger.clone()));
+            let mut agent_service = Arc::new(dh_desktop::service::agent_service::AgentService::new(logger.clone()));
             Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(
                 app_handle,
                 logger.clone(),
@@ -89,14 +89,14 @@ fn main() {
 
             // 初始化服务和 SessionManager
             let db_conn = Connection::open(&db_path).expect("打开数据库失败");
-            let db_service = Arc::new(dh::service::db_service::DbService::new(Arc::new(Mutex::new(db_conn))));
-            let opencode_service = Arc::new(dh::service::opencode_service::OpencodeService::new().unwrap_or_else(|e| {
+            let db_service = Arc::new(dh_desktop::service::db_service::DbService::new(Arc::new(Mutex::new(db_conn))));
+            let opencode_service = Arc::new(dh_desktop::service::opencode_service::OpencodeService::new().unwrap_or_else(|e| {
                 log::warn!("[main.rs] Failed to initialize OpencodeService: {}, using fallback", e);
-                dh::service::opencode_service::OpencodeService::new_fallback()
+                dh_desktop::service::opencode_service::OpencodeService::new_fallback()
             }));
             app.manage(opencode_service.clone());
 
-            let (event_tx, _event_rx) = tokio::sync::broadcast::channel::<dh::service::opencode_service::SseEvent>(1000);
+            let (event_tx, _event_rx) = tokio::sync::broadcast::channel::<dh_desktop::service::opencode_service::SseEvent>(1000);
             {
                 let svc = opencode_service.as_ref();
                 svc.set_event_sender(event_tx);
@@ -108,17 +108,17 @@ fn main() {
                 svc_for_sse.start_event_listener().await;
             });
 
-            let session_manager = Arc::new(dh::gateway::session_manager::SessionManager::new());
+            let session_manager = Arc::new(dh_desktop::gateway::session_manager::SessionManager::new());
             log::info!("[main.rs] Services initialized");
 
             // 初始化 WebSocket server
-            let router = Arc::new(dh::gateway::router::GatewayRouter::new(
+            let router = Arc::new(dh_desktop::gateway::router::GatewayRouter::new(
                 agent_service,
                 db_service,
                 opencode_service,
                 session_manager,
             ));
-            let ws_server = dh::gateway::server::WebSocketServer::new(router.clone());
+            let ws_server = dh_desktop::gateway::server::WebSocketServer::new(router.clone());
             let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
             let addr = start_ws_server(ws_server, shutdown_rx).unwrap();
             app.manage(WebSocketShutdown { _sender: shutdown_tx });

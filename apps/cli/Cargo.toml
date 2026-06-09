@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "deepharness"
+name = "dh"
 path = "src/main.rs"
 
 [dependencies]
@@ -20,6 +20,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+rusqlite = { workspace = true, features = ["bundled"] }
 clap.workspace = true
 uuid.workspace = true
 
