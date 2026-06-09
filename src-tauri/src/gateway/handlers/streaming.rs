@@ -183,7 +183,9 @@ pub async fn stream_opencode_output(
                 }
                 "thinking" => {
                     log::info!("[streaming SSE] #{} sending agent.thinking with content", event_count);
-                    let content = event.payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let content = event.payload.get("content").and_then(|v| v.as_str())
+                        .or_else(|| event.payload.get("text").and_then(|v| v.as_str()))
+                        .unwrap_or("");
                     let send_result = send_event(
                         &session_manager_for_sse,
                         &conversation_id_for_sse,
@@ -223,11 +225,17 @@ pub async fn stream_opencode_output(
                                 }
                                 Some("step-start") => {
                                     log::info!("[streaming SSE] #{} sending agent.thinking", event_count);
+                                    let step_text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                    let step_id = part.get("id").and_then(|v| v.as_str()).unwrap_or("");
                                     let send_result = send_event(
                                         &session_manager_for_sse,
                                         &conversation_id_for_sse,
                                         "agent.thinking",
-                                        part.clone(),
+                                        serde_json::json!({
+                                            "content": step_text,
+                                            "id": step_id,
+                                            "type": "step-start",
+                                        }),
                                     )
                                     .await;
                                     log::info!("[streaming SSE] #{} sent agent.thinking result={:?}", event_count, send_result);
@@ -441,11 +449,17 @@ async fn stream_fallback(
                     let part_type = part.get("type").and_then(|v| v.as_str());
                     match part_type {
                         Some("step-start") => {
+                            let step_text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            let step_id = part.get("id").and_then(|v| v.as_str()).unwrap_or("");
                             let _ = send_event(
                                 &session_manager,
                                 &conversation_id,
                                 "agent.thinking",
-                                part.clone(),
+                                serde_json::json!({
+                                    "content": step_text,
+                                    "id": step_id,
+                                    "type": "step-start",
+                                }),
                             )
                             .await;
                         }

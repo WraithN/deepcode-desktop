@@ -89,7 +89,7 @@ export function useWebSocketListeners() {
         return;
       }
       const p = params as Record<string, unknown>;
-      const content = (p.content as string) || '';
+      const content = (p.content as string) || (p.text as string) || '';
       const partId = (p.id as string) || '';
       if (partId && seenThinkingPartIds.has(partId)) {
         return;
