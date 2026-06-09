@@ -7,8 +7,8 @@
 - [x] gatewayd: OpenAI/Anthropic 兼容 HTTP API
 - [x] gatewayd: Admin API + Health Check
 - [x] gatewayd: 异步审计日志（SQLite）
-- [x] CLI: `deepharness exec <agent>` 包装器
-- [x] CLI: `deepharness gatewayd start/stop/status`
+- [x] CLI: `dh exec <agent>` 包装器
+- [x] CLI: `dh gatewayd start/stop/status/logs`
 - [x] 跨平台数据目录和 lock file 管理
 
 ### Phase 2: RTK Token Killer
