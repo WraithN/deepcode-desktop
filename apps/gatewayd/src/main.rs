@@ -214,11 +214,212 @@ impl GatewayRouter {
     }
 }
 
+// RTK Token Killer (inlined)
+struct RtkConfig {
+    enabled: bool,
+    max_context_messages: usize,
+    summary_threshold: usize,
+    compress_whitespace: bool,
+    deduplicate_system: bool,
+}
+
+impl Default for RtkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_context_messages: 20,
+            summary_threshold: 10,
+            compress_whitespace: true,
+            deduplicate_system: true,
+        }
+    }
+}
+
+struct RtkEngine {
+    config: RtkConfig,
+}
+
+impl RtkEngine {
+    fn new(config: RtkConfig) -> Self {
+        Self { config }
+    }
+
+    fn default_engine() -> Self {
+        Self::new(RtkConfig::default())
+    }
+
+    fn optimize(&self, req: &mut UnifiedRequest) {
+        if !self.config.enabled {
+            return;
+        }
+
+        if self.config.deduplicate_system {
+            self.deduplicate_system_prompts(req);
+        }
+
+        if req.messages.len() > self.config.summary_threshold {
+            self.apply_sliding_window(req);
+        }
+
+        if self.config.compress_whitespace {
+            self.compress_prompts(req);
+        }
+
+        info!(
+            "RTK optimized request: {} messages -> {} messages",
+            req.messages.len(),
+            req.messages.len()
+        );
+    }
+
+    fn deduplicate_system_prompts(&self, req: &mut UnifiedRequest) {
+        let mut seen_system = false;
+        req.messages.retain(|m| {
+            if matches!(m.role, Role::System) {
+                if seen_system {
+                    return false;
+                }
+                seen_system = true;
+            }
+            true
+        });
+    }
+
+    fn apply_sliding_window(&self, req: &mut UnifiedRequest) {
+        let total = req.messages.len();
+        if total <= self.config.max_context_messages {
+            return;
+        }
+
+        let keep_recent = self.config.max_context_messages / 2;
+        let summarize_count = total - keep_recent;
+
+        let mut summarized = Vec::new();
+        let mut summary_parts = Vec::new();
+
+        for (i, msg) in req.messages.iter().take(summarize_count).enumerate() {
+            let prefix = match msg.role {
+                Role::System => "SYS",
+                Role::User => "USR",
+                Role::Assistant => "AST",
+                Role::Tool => "TL",
+            };
+            summary_parts.push(format!("[{}:{}] {}", i, prefix, &msg.content[..msg.content.len().min(80)]));
+        }
+
+        if !summary_parts.is_empty() {
+            summarized.push(Message {
+                role: Role::System,
+                content: format!(
+                    "Previous conversation summary ({} messages condensed): {}",
+                    summarize_count,
+                    summary_parts.join("; ")
+                ),
+            });
+        }
+
+        summarized.extend(req.messages.drain(summarize_count..));
+        req.messages = summarized;
+
+        info!(
+            "RTK sliding window: {} -> {} messages (summarized {})",
+            total, req.messages.len(), summarize_count
+        );
+    }
+
+    fn compress_prompts(&self, req: &mut UnifiedRequest) {
+        for msg in &mut req.messages {
+            let original_len = msg.content.len();
+            msg.content = msg.content
+                .lines()
+                .map(|line| line.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n");
+            msg.content = msg.content.replace("\n\n\n", "\n\n");
+            if msg.content.len() < original_len {
+                info!(
+                    "RTK compressed message: {} -> {} bytes",
+                    original_len, msg.content.len()
+                );
+            }
+        }
+    }
+}
+
+fn unified_to_openai_json(req: &UnifiedRequest) -> Value {
+    let messages: Vec<Value> = req.messages.iter().map(|m| {
+        serde_json::json!({
+            "role": match m.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            },
+            "content": m.content
+        })
+    }).collect();
+
+    let mut body = serde_json::json!({
+        "model": req.model,
+        "messages": messages,
+        "stream": req.stream,
+    });
+
+    if let Some(temp) = req.temperature {
+        body["temperature"] = serde_json::json!(temp);
+    }
+    if let Some(max_tokens) = req.max_tokens {
+        body["max_tokens"] = serde_json::json!(max_tokens);
+    }
+
+    body
+}
+
+fn unified_to_anthropic_json(req: &UnifiedRequest) -> Value {
+    let messages: Vec<Value> = req.messages.iter().filter_map(|m| {
+        match m.role {
+            Role::System => None,
+            _ => Some(serde_json::json!({
+                "role": match m.role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    _ => "user",
+                },
+                "content": m.content
+            })),
+        }
+    }).collect();
+
+    let system_prompt = req.messages.iter()
+        .filter(|m| matches!(m.role, Role::System))
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut body = serde_json::json!({
+        "model": req.model,
+        "messages": messages,
+    });
+
+    if !system_prompt.is_empty() {
+        body["system"] = serde_json::json!(system_prompt);
+    }
+    if let Some(max_tokens) = req.max_tokens {
+        body["max_tokens"] = serde_json::json!(max_tokens);
+    }
+    if let Some(temp) = req.temperature {
+        body["temperature"] = serde_json::json!(temp);
+    }
+
+    body
+}
+
 // Server state (inlined)
 #[derive(Clone)]
 struct ApiState {
     router: Arc<GatewayRouter>,
     audit: Arc<AuditLogger>,
+    rtk: Arc<RtkEngine>,
 }
 
 async fn openai_chat_completions(
@@ -236,7 +437,21 @@ async fn openai_chat_completions(
         }
     };
 
-    let unified = openai_to_unified(body_json.clone());
+    let mut unified = openai_to_unified(body_json.clone());
+    let original_size = serde_json::to_string(&body_json).unwrap_or_default().len();
+    state.rtk.optimize(&mut unified);
+    let optimized_json = unified_to_openai_json(&unified);
+    let optimized_body = serde_json::to_string(&optimized_json).unwrap_or_default();
+    let optimized_size = optimized_body.len();
+
+    info!(
+        "RTK optimized OpenAI request: {} -> {} bytes ({}% reduction)",
+        original_size,
+        optimized_size,
+        if original_size > 0 {
+            ((original_size - optimized_size) * 100 / original_size) as i32
+        } else { 0 }
+    );
 
     let mut entry = AuditLogEntry::new(
         unified.session_id.clone(),
@@ -245,10 +460,10 @@ async fn openai_chat_completions(
         "openai".to_string(),
         unified.model.clone(),
     );
-    entry.payload_size_bytes = body.len();
+    entry.payload_size_bytes = optimized_size;
     state.audit.log(entry);
 
-    match state.router.forward_openai(body_str.to_string()).await {
+    match state.router.forward_openai(optimized_body).await {
         Ok(response) => {
             info!("Successfully forwarded request to OpenAI");
             response
@@ -275,7 +490,21 @@ async fn anthropic_messages(
         }
     };
 
-    let unified = anthropic_to_unified(body_json.clone());
+    let mut unified = anthropic_to_unified(body_json.clone());
+    let original_size = serde_json::to_string(&body_json).unwrap_or_default().len();
+    state.rtk.optimize(&mut unified);
+    let optimized_json = unified_to_anthropic_json(&unified);
+    let optimized_body = serde_json::to_string(&optimized_json).unwrap_or_default();
+    let optimized_size = optimized_body.len();
+
+    info!(
+        "RTK optimized Anthropic request: {} -> {} bytes ({}% reduction)",
+        original_size,
+        optimized_size,
+        if original_size > 0 {
+            ((original_size - optimized_size) * 100 / original_size) as i32
+        } else { 0 }
+    );
 
     let mut entry = AuditLogEntry::new(
         unified.session_id.clone(),
@@ -284,10 +513,10 @@ async fn anthropic_messages(
         "anthropic".to_string(),
         unified.model.clone(),
     );
-    entry.payload_size_bytes = body.len();
+    entry.payload_size_bytes = optimized_size;
     state.audit.log(entry);
 
-    match state.router.forward_anthropic(body_str.to_string()).await {
+    match state.router.forward_anthropic(optimized_body).await {
         Ok(response) => {
             info!("Successfully forwarded request to Anthropic");
             response
@@ -353,6 +582,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     let api_state = ApiState {
         router: gateway_router,
         audit: Arc::new(audit_logger),
+        rtk: Arc::new(RtkEngine::default_engine()),
     };
 
     let api_router = Router::new()
