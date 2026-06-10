@@ -7,7 +7,7 @@ use axum::{
     Router,
 };
 use clap::Parser;
-use dh_core::{AuditLogEntry, Direction, Message, Provider, Role, UnifiedRequest};
+use dh_core::{estimate_tokens, AuditLogEntry, Direction, Message, Provider, Role, UnifiedRequest};
 use dh_db::DbManager;
 use reqwest::Client;
 use rusqlite::params;
@@ -77,6 +77,77 @@ impl AuditStorage {
         )?;
         Ok(())
     }
+}
+
+/// 从 JSON 响应体中提取 usage
+fn extract_usage_from_json(body: &[u8]) -> Option<dh_core::TokenUsage> {
+    let json: Value = serde_json::from_slice(body).ok()?;
+    let usage = json.get("usage")?;
+    Some(dh_core::TokenUsage {
+        prompt_tokens: usage.get("prompt_tokens")?.as_u64()? as u32,
+        completion_tokens: usage.get("completion_tokens")?.as_u64()? as u32,
+        total_tokens: usage.get("total_tokens")?.as_u64()? as u32,
+    })
+}
+
+/// 从 SSE 流文本中提取最后一个 usage chunk
+fn extract_usage_from_sse(text: &str) -> Option<dh_core::TokenUsage> {
+    let mut last_usage: Option<dh_core::TokenUsage> = None;
+    for line in text.lines() {
+        if let Some(data) = line.strip_prefix("data: ") {
+            if let Some(usage) = extract_usage_from_json(data.as_bytes()) {
+                last_usage = Some(usage);
+            }
+        }
+    }
+    last_usage
+}
+
+/// 创建 Response 审计日志并发送
+fn log_response_audit(
+    audit: &AuditLogger,
+    session_id: String,
+    request_id: String,
+    provider: String,
+    model: String,
+    bytes: &[u8],
+    request_body: &str,
+) {
+    let usage = extract_usage_from_json(bytes)
+        .or_else(|| {
+            let text = String::from_utf8_lossy(bytes);
+            extract_usage_from_sse(&text)
+        });
+
+    let usage = match usage {
+        Some(u) => u,
+        None => {
+            let response_text = String::from_utf8_lossy(bytes);
+            dh_core::TokenUsage {
+                prompt_tokens: estimate_tokens(request_body, &model),
+                completion_tokens: estimate_tokens(&response_text, &model),
+                total_tokens: 0,
+            }
+        }
+    };
+
+    let mut entry = AuditLogEntry::new(
+        session_id,
+        request_id,
+        Direction::Response,
+        provider,
+        model,
+    );
+    entry.token_usage = Some(usage);
+    entry.payload_size_bytes = bytes.len();
+    entry.metadata = serde_json::json!({
+        "token_source": if extract_usage_from_json(bytes).is_some() || extract_usage_from_sse(&String::from_utf8_lossy(bytes)).is_some() {
+            "provider"
+        } else {
+            "estimated"
+        }
+    });
+    audit.log(entry);
 }
 
 async fn run_storage_worker(
@@ -557,10 +628,29 @@ async fn openai_chat_completions(
     state.audit.log(entry);
 
     let provider = resolve_provider(&unified.model);
-    match state.router.forward_openai(provider, optimized_body).await {
+    match state.router.forward_openai(provider, optimized_body.clone()).await {
         Ok(response) => {
             info!("Successfully forwarded request to {}", provider);
-            response
+            let (parts, body) = response.into_parts();
+            match axum::body::to_bytes(body, usize::MAX).await {
+                Ok(bytes) => {
+                    log_response_audit(
+                        state.audit.as_ref(),
+                        session_id.clone(),
+                        unified.id.clone(),
+                        provider.to_string(),
+                        unified.model.clone(),
+                        &bytes,
+                        &optimized_body,
+                    );
+                    let body = axum::body::Body::from(bytes);
+                    axum::response::Response::from_parts(parts, body)
+                }
+                Err(e) => {
+                    error!("Failed to read response body: {}", e);
+                    (StatusCode::BAD_GATEWAY, "Gateway error: failed to read response").into_response()
+                }
+            }
         }
         Err(e) => {
             error!("Failed to forward request to {}: {}", provider, e);
@@ -615,10 +705,29 @@ async fn anthropic_messages(
     state.audit.log(entry);
 
     let provider = resolve_provider(&unified.model);
-    match state.router.forward_anthropic(optimized_body).await {
+    match state.router.forward_anthropic(optimized_body.clone()).await {
         Ok(response) => {
             info!("Successfully forwarded request to {}", provider);
-            response
+            let (parts, body) = response.into_parts();
+            match axum::body::to_bytes(body, usize::MAX).await {
+                Ok(bytes) => {
+                    log_response_audit(
+                        state.audit.as_ref(),
+                        session_id.clone(),
+                        unified.id.clone(),
+                        provider.to_string(),
+                        unified.model.clone(),
+                        &bytes,
+                        &optimized_body,
+                    );
+                    let body = axum::body::Body::from(bytes);
+                    axum::response::Response::from_parts(parts, body)
+                }
+                Err(e) => {
+                    error!("Failed to read response body: {}", e);
+                    (StatusCode::BAD_GATEWAY, "Gateway error: failed to read response").into_response()
+                }
+            }
         }
         Err(e) => {
             error!("Failed to forward request to {}: {}", provider, e);
