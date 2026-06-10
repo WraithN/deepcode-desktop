@@ -192,12 +192,16 @@ impl GatewayRouter {
             .await?;
 
         let status = resp.status();
+        let content_type = resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
         let bytes = resp.bytes().await?;
 
-        let response = Response::builder()
-            .status(status)
-            .header("Content-Type", "application/json")
-            .body(Body::from(bytes))?;
+        let mut builder = Response::builder().status(status);
+        builder = builder.header("Content-Type", content_type);
+        let response = builder.body(Body::from(bytes))?;
 
         Ok(response)
     }
@@ -218,12 +222,16 @@ impl GatewayRouter {
             .await?;
 
         let status = resp.status();
+        let content_type = resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
         let bytes = resp.bytes().await?;
 
-        let response = Response::builder()
-            .status(status)
-            .header("Content-Type", "application/json")
-            .body(Body::from(bytes))?;
+        let mut builder = Response::builder().status(status);
+        builder = builder.header("Content-Type", content_type);
+        let response = builder.body(Body::from(bytes))?;
 
         Ok(response)
     }
