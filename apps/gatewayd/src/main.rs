@@ -627,6 +627,27 @@ async fn health_check() -> Json<Value> {
     }))
 }
 
+async fn reporter_status_handler(
+    State(state): State<ApiState>,
+) -> Json<Value> {
+    let cursor = match dh_db::DbManager::open(&state.db_path) {
+        Ok(db) => db.get_reporter_cursor().unwrap_or(0),
+        Err(_) => 0,
+    };
+    let (pending, dead) = match dh_db::DbManager::open(&state.db_path) {
+        Ok(db) => db.get_queue_stats().unwrap_or((0, 0)),
+        Err(_) => (0, 0),
+    };
+
+    axum::Json(serde_json::json!({
+        "enabled": std::env::var("DH_REPORTER_ENABLED").is_ok(),
+        "endpoint": std::env::var("DH_REPORTER_ENDPOINT").ok(),
+        "last_sync_rowid": cursor,
+        "queue_pending": pending,
+        "queue_dead": dead,
+    }))
+}
+
 // CLI args
 #[derive(Parser, Debug)]
 #[command(name = "gatewayd")]
@@ -704,7 +725,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
 
     let mut admin_router = Router::new()
         .route("/health", get(health_check))
-        .route("/context", post(set_context));
+        .route("/context", post(set_context))
+        .route("/admin/reporter/status", get(reporter_status_handler));
 
     if mcp_registry.is_some() {
         admin_router = admin_router
