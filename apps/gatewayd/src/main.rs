@@ -18,6 +18,9 @@ use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 
+mod mcp_aggregator;
+mod reporter;
+
 // Audit module (inlined to avoid rustc 1.95 ICE with directory modules)
 struct AuditLogger {
     sender: mpsc::UnboundedSender<AuditLogEntry>,
@@ -51,9 +54,9 @@ impl AuditStorage {
             r#"
             INSERT INTO audit_logs (
                 id, session_id, request_id, direction, provider, model,
-                payload_size_bytes, prompt_tokens, completion_tokens, total_tokens,
+                agent_type, payload, payload_size_bytes, prompt_tokens, completion_tokens, total_tokens,
                 timestamp, metadata
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             "#,
             params![
                 &entry.id,
@@ -62,6 +65,8 @@ impl AuditStorage {
                 format!("{:?}", entry.direction).to_lowercase(),
                 &entry.provider,
                 &entry.model,
+                entry.agent_type.as_deref(),
+                entry.payload.as_deref(),
                 entry.payload_size_bytes as i64,
                 entry.token_usage.as_ref().map(|u| u.prompt_tokens as i64),
                 entry.token_usage.as_ref().map(|u| u.completion_tokens as i64),
@@ -149,6 +154,7 @@ struct GatewayRouter {
     client: Client,
     openai_api_key: Option<String>,
     anthropic_api_key: Option<String>,
+    deepseek_api_key: Option<String>,
 }
 
 impl GatewayRouter {
@@ -157,17 +163,28 @@ impl GatewayRouter {
             client: Client::new(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+            deepseek_api_key: std::env::var("DEEPSEEK_API_KEY").ok(),
         }
     }
 
-    async fn forward_openai(&self, body: String) -> Result<Response, anyhow::Error> {
-        let api_key = self.openai_api_key.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY not set"))?;
+    async fn forward_openai(&self, provider: &str, body: String) -> Result<Response, anyhow::Error> {
+        let (url, api_key) = match provider {
+            "deepseek" => {
+                let key = self.deepseek_api_key.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("DEEPSEEK_API_KEY not set"))?;
+                ("https://api.deepseek.com/v1/chat/completions", key)
+            }
+            _ => {
+                let key = self.openai_api_key.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY not set"))?;
+                ("https://api.openai.com/v1/chat/completions", key)
+            }
+        };
 
-        info!("Forwarding request to OpenAI API");
+        info!("Forwarding {} request to {}", provider, url);
 
         let resp = self.client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
             .body(body)
@@ -175,14 +192,13 @@ impl GatewayRouter {
             .await?;
 
         let status = resp.status();
-        let headers = resp.headers().clone();
         let bytes = resp.bytes().await?;
 
-        let mut response = Response::builder()
+        let response = Response::builder()
             .status(status)
+            .header("Content-Type", "application/json")
             .body(Body::from(bytes))?;
 
-        *response.headers_mut() = headers;
         Ok(response)
     }
 
@@ -202,14 +218,13 @@ impl GatewayRouter {
             .await?;
 
         let status = resp.status();
-        let headers = resp.headers().clone();
         let bytes = resp.bytes().await?;
 
-        let mut response = Response::builder()
+        let response = Response::builder()
             .status(status)
+            .header("Content-Type", "application/json")
             .body(Body::from(bytes))?;
 
-        *response.headers_mut() = headers;
         Ok(response)
     }
 }
@@ -420,6 +435,72 @@ struct ApiState {
     router: Arc<GatewayRouter>,
     audit: Arc<AuditLogger>,
     rtk: Arc<RtkEngine>,
+    agent_type: Arc<std::sync::Mutex<Option<String>>>,
+    db_path: std::path::PathBuf,
+    mcp_registry: Option<Arc<tokio::sync::Mutex<mcp_aggregator::McpRegistry>>>,
+}
+
+fn resolve_provider(model: &str) -> &'static str {
+    if model.starts_with("deepseek") {
+        "deepseek"
+    } else if model.starts_with("gpt") || model.starts_with("text-") {
+        "openai"
+    } else if model.starts_with("claude") {
+        "anthropic"
+    } else {
+        "unknown"
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ContextPayload {
+    agent_type: String,
+    session_id: String,
+    workspace: Option<String>,
+    model: Option<String>,
+}
+
+fn open_db(path: &std::path::Path) -> anyhow::Result<rusqlite::Connection> {
+    rusqlite::Connection::open(path).map_err(Into::into)
+}
+
+fn upsert_session(
+    db_path: &std::path::Path,
+    session_id: &str,
+    agent_type: &str,
+    model: &str,
+    workspace: Option<&str>,
+) -> anyhow::Result<()> {
+    let conn = open_db(db_path)?;
+    let workspace = workspace.unwrap_or("");
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO sessions (id, agent_type, model, workspace, started_at, last_active_at, status)          VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active')          ON CONFLICT(id) DO UPDATE SET          agent_type = excluded.agent_type,          model = excluded.model,          workspace = excluded.workspace,          last_active_at = excluded.last_active_at",
+        rusqlite::params![session_id, agent_type, model, workspace, now],
+    )?;
+    Ok(())
+}
+
+fn touch_session(db_path: &std::path::Path, session_id: &str, model: &str) -> anyhow::Result<()> {
+    let conn = open_db(db_path)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE sessions SET last_active_at = ?1, model = ?2 WHERE id = ?3",
+        rusqlite::params![now, model, session_id],
+    )?;
+    Ok(())
+}
+
+async fn set_context(
+    State(state): State<ApiState>,
+    Json(payload): Json<ContextPayload>,
+) -> Json<Value> {
+    let mut guard = state.agent_type.lock().unwrap();
+    *guard = Some(payload.agent_type.clone());
+    let model = payload.model.as_deref().unwrap_or("unknown");
+    let _ = upsert_session(&state.db_path, &payload.session_id, &payload.agent_type, model, payload.workspace.as_deref());
+    info!("Context updated: agent_type = {}, session = {}", payload.agent_type, payload.session_id);
+    Json(serde_json::json!({"status": "ok", "agent_type": payload.agent_type, "session_id": payload.session_id}))
 }
 
 async fn openai_chat_completions(
@@ -453,23 +534,28 @@ async fn openai_chat_completions(
         } else { 0 }
     );
 
+    let session_id = unified.session_id.clone();
     let mut entry = AuditLogEntry::new(
-        unified.session_id.clone(),
+        session_id.clone(),
         unified.id.clone(),
         Direction::Request,
-        "openai".to_string(),
+        resolve_provider(&unified.model).to_string(),
         unified.model.clone(),
     );
     entry.payload_size_bytes = optimized_size;
+    entry.payload = Some(optimized_body.clone());
+    entry.agent_type = state.agent_type.lock().unwrap().clone();
+    let _ = touch_session(&state.db_path, &session_id, &unified.model);
     state.audit.log(entry);
 
-    match state.router.forward_openai(optimized_body).await {
+    let provider = resolve_provider(&unified.model);
+    match state.router.forward_openai(provider, optimized_body).await {
         Ok(response) => {
-            info!("Successfully forwarded request to OpenAI");
+            info!("Successfully forwarded request to {}", provider);
             response
         }
         Err(e) => {
-            error!("Failed to forward request: {}", e);
+            error!("Failed to forward request to {}: {}", provider, e);
             (StatusCode::BAD_GATEWAY, format!("Gateway error: {}", e)).into_response()
         }
     }
@@ -506,23 +592,28 @@ async fn anthropic_messages(
         } else { 0 }
     );
 
+    let session_id = unified.session_id.clone();
     let mut entry = AuditLogEntry::new(
-        unified.session_id.clone(),
+        session_id.clone(),
         unified.id.clone(),
         Direction::Request,
-        "anthropic".to_string(),
+        resolve_provider(&unified.model).to_string(),
         unified.model.clone(),
     );
     entry.payload_size_bytes = optimized_size;
+    entry.payload = Some(optimized_body.clone());
+    entry.agent_type = state.agent_type.lock().unwrap().clone();
+    let _ = touch_session(&state.db_path, &session_id, &unified.model);
     state.audit.log(entry);
 
+    let provider = resolve_provider(&unified.model);
     match state.router.forward_anthropic(optimized_body).await {
         Ok(response) => {
-            info!("Successfully forwarded request to Anthropic");
+            info!("Successfully forwarded request to {}", provider);
             response
         }
         Err(e) => {
-            error!("Failed to forward request: {}", e);
+            error!("Failed to forward request to {}: {}", provider, e);
             (StatusCode::BAD_GATEWAY, format!("Gateway error: {}", e)).into_response()
         }
     }
@@ -572,17 +663,37 @@ async fn run(args: Args) -> anyhow::Result<()> {
     let data_dir = dh_platform::fs::ensure_data_dir()?;
     let db_path = data_dir.join("gatewayd.db");
     let db = init_db(&db_path)?;
+    let reporter_db = Arc::new(std::sync::Mutex::new(init_db(&db_path)?));
 
     let (audit_logger, audit_receiver) = AuditLogger::new();
     let audit_storage = AuditStorage::new(db);
     tokio::spawn(run_storage_worker(audit_receiver, audit_storage));
 
+    let reporter_config = reporter::config::ReporterConfig::from_env();
+    let reporter_handle = reporter::start(reporter_db, reporter_config);
+
     let gateway_router = Arc::new(GatewayRouter::new());
+
+    let mcp_registry = match mcp_aggregator::McpRegistry::load_from_db(&db_path).await {
+        Ok(registry) => {
+            if registry.is_empty() {
+                info!("No MCP servers configured");
+            }
+            Some(Arc::new(tokio::sync::Mutex::new(registry)))
+        }
+        Err(e) => {
+            warn!("Failed to load MCP registry: {}", e);
+            None
+        }
+    };
 
     let api_state = ApiState {
         router: gateway_router,
         audit: Arc::new(audit_logger),
         rtk: Arc::new(RtkEngine::default_engine()),
+        agent_type: Arc::new(std::sync::Mutex::new(None)),
+        db_path: db_path.clone(),
+        mcp_registry: mcp_registry.clone(),
     };
 
     let api_router = Router::new()
@@ -591,9 +702,18 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(api_state.clone());
 
-    let admin_router = Router::new()
+    let mut admin_router = Router::new()
         .route("/health", get(health_check))
-        .with_state(api_state.clone());
+        .route("/context", post(set_context));
+
+    if mcp_registry.is_some() {
+        admin_router = admin_router
+            .route("/mcp/servers", get(mcp_aggregator::list_mcp_servers))
+            .route("/mcp/tools", get(mcp_aggregator::list_mcp_tools))
+            .route("/mcp/tools/{name}/call", post(mcp_aggregator::call_mcp_tool));
+    }
+
+    let admin_router = admin_router.with_state(api_state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let admin_addr = SocketAddr::from(([127, 0, 0, 1], args.admin_port));
@@ -618,6 +738,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
     axum::serve(listener, api_router).await?;
 
     let _ = dh_platform::fs::remove_lock_file();
+
+    if let Some(handle) = reporter_handle {
+        handle.shutdown().await;
+    }
 
     Ok(())
 }
