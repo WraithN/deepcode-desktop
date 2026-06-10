@@ -24,8 +24,8 @@ pub struct ReporterHandle {
 
 impl ReporterHandle {
     pub async fn shutdown(self) {
-        let _ = self.poller_shutdown.send(());
-        let _ = self.retry_shutdown.send(());
+        let _ = self.poller_shutdown.send(()).await;
+        let _ = self.retry_shutdown.send(()).await;
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 }
