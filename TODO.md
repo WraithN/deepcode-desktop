@@ -36,11 +36,12 @@
 - [ ] 审批超时回退策略
 
 ### Phase 4: MCP 聚合层
-- [ ] MCP Server 配置管理
-- [ ] MCP Client 池（启动/健康检查/重连）
-- [ ] 工具列表聚合（namespace）
-- [ ] Tool Call 拦截器（检测远程请求）
-- [ ] 审批通过后转发到子 MCP server
+- [x] MCP Server 配置管理（SQLite `mcp_servers` 表 + CLI `dh mcp add/remove`）
+- [x] MCP Client 池（启动时初始化，运行时 `is_alive` 检测）
+- [x] 工具列表聚合（`namespace:tool_name` 前缀，如 `filesystem:read_file`）
+- [x] Tool Call 拦截器（检测 URL，记录 audit_logs，不阻塞）
+- [x] Admin API（`/mcp/servers`, `/mcp/tools`, `/mcp/tools/{name}/call`）
+- [x] CLI 命令（`dh mcp list/add/remove/call`）
 
 ### Phase 5: Config Hub + 云端同步
 - [ ] 配置层级（session > agent > project > global）

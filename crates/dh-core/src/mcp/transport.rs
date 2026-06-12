@@ -7,17 +7,20 @@ use tokio::sync::mpsc;
 pub struct StdioTransport {
     stdin: ChildStdin,
     stdout_tx: mpsc::UnboundedSender<String>,
-    _child: Child,
+    child: Child,
 }
 
 impl StdioTransport {
-    pub async fn spawn(command: &str, args: &[String], workspace: &str) -> Result<(Self, mpsc::UnboundedReceiver<String>), McpError> {
+    pub async fn spawn(command: &str, args: &[String], env: &std::collections::HashMap<String, String>, workspace: &str) -> Result<(Self, mpsc::UnboundedReceiver<String>), McpError> {
         let mut cmd = Command::new(command);
         cmd.args(args)
             .current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for (key, val) in env {
+            cmd.env(key, val);
+        }
         
         let mut child = cmd.spawn().map_err(|e| McpError::ProcessError(e.to_string()))?;
         
@@ -54,7 +57,7 @@ impl StdioTransport {
         Ok((Self {
             stdin,
             stdout_tx,
-            _child: child,
+            child,
         }, stdout_rx))
     }
     
@@ -67,6 +70,14 @@ impl StdioTransport {
         Ok(())
     }
     
+    pub fn is_alive(&mut self) -> bool {
+        match self.child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(_)) => false,
+            Err(_) => false,
+        }
+    }
+
     pub fn subscribe(&self) -> mpsc::UnboundedSender<String> {
         self.stdout_tx.clone()
     }

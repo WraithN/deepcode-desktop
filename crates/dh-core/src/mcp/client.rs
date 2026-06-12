@@ -16,8 +16,8 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    pub async fn spawn(command: &str, args: &[String], workspace: &str) -> Result<Self, McpError> {
-        let (transport, mut stdout_rx) = StdioTransport::spawn(command, args, workspace).await?;
+    pub async fn spawn(command: &str, args: &[String], env: &std::collections::HashMap<String, String>, workspace: &str) -> Result<Self, McpError> {
+        let (transport, mut stdout_rx) = StdioTransport::spawn(command, args, env, workspace).await?;
         let transport = Arc::new(tokio::sync::Mutex::new(transport));
         let pending: Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -105,6 +105,32 @@ impl McpClient {
         }
     }
 
+    pub async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
+        if !*self.initialized.lock().unwrap() {
+            return Err(McpError::NotInitialized);
+        }
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(self.request_id.fetch_add(1, Ordering::SeqCst))),
+            method: "tools/list".to_string(),
+            params: json!({}),
+        };
+
+        let response = self.send_request(request).await?;
+
+        match response.result {
+            super::codec::JsonRpcResult::Success { result } => {
+                let list_result: super::types::ListToolsResult = serde_json::from_value(result)
+                    .map_err(|e| McpError::ProtocolError(e.to_string()))?;
+                Ok(list_result.tools)
+            }
+            super::codec::JsonRpcResult::Error { error } => {
+                Err(McpError::ProtocolError(error.message))
+            }
+        }
+    }
+
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<ToolResult, McpError> {
         if !*self.initialized.lock().unwrap() {
             return Err(McpError::NotInitialized);
@@ -175,6 +201,11 @@ impl McpClient {
 
         let mut transport = self.transport.lock().await;
         transport.send(json).await
+    }
+
+    pub async fn is_alive(&self) -> bool {
+        let mut transport = self.transport.lock().await;
+        transport.is_alive()
     }
 
     pub async fn shutdown(&self) -> Result<(), McpError> {

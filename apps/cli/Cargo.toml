@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 dh-platform = { path = "../../crates/dh-platform" }
+dh-db = { path = "../../crates/dh-db" }
 
 tokio.workspace = true
 serde.workspace = true
@@ -23,6 +24,7 @@ tracing-subscriber.workspace = true
 rusqlite = { workspace = true, features = ["bundled"] }
 clap.workspace = true
 uuid.workspace = true
+dirs.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

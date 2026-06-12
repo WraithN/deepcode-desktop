@@ -1,5 +1,5 @@
 use std::process::{Command, Stdio};
-use tracing::{error, info};
+use tracing::info;
 
 pub struct ProcessManager;
 

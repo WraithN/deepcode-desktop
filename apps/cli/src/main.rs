@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand};
-use tracing::info;
 
 mod commands;
 mod wrapper;
@@ -15,12 +14,20 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Manage configuration and cloud sync
+    #[command(subcommand)]
+    Config(commands::config::ConfigCommands),
+
     /// Execute a coding agent with DeepHarness gateway integration
     Exec(commands::exec::ExecArgs),
 
     /// Manage the gatewayd daemon
     #[command(subcommand)]
     Gatewayd(commands::gatewayd::GatewaydCommands),
+
+    /// Manage MCP servers and tools
+    #[command(subcommand)]
+    Mcp(commands::mcp::McpCommands),
 }
 
 fn main() {
@@ -31,11 +38,17 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(async {
         match cli.command {
+            Commands::Config(cmd) => {
+                commands::config::run(cmd).await
+            }
             Commands::Exec(args) => {
                 commands::exec::run(args).await
             }
             Commands::Gatewayd(cmd) => {
                 commands::gatewayd::run(cmd).await
+            }
+            Commands::Mcp(cmd) => {
+                commands::mcp::run(cmd).await
             }
         }
     });

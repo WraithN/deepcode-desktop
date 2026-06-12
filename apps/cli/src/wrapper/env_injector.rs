@@ -10,7 +10,9 @@ pub fn build_env_map(api_port: u16, proxy_port: u16) -> HashMap<String, String> 
     env.insert("NO_PROXY".to_string(), "localhost,127.0.0.1,::1".to_string());
 
     env.insert("DEEPHARNESS_GATEWAYD_PORT".to_string(), api_port.to_string());
-    env.insert("DEEPHARNESS_SESSION_ID".to_string(), uuid::Uuid::new_v4().to_string());
+    if let Ok(session_id) = std::env::var("DEEPHARNESS_SESSION_ID") {
+        env.insert("DEEPHARNESS_SESSION_ID".to_string(), session_id);
+    }
 
     env
 }

@@ -45,9 +45,13 @@ pub struct RequestMetadata {
 
 impl UnifiedRequest {
     pub fn new(provider: Provider, model: String) -> Self {
+        let session_id = std::env::var("DEEPHARNESS_SESSION_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         Self {
             id: Uuid::new_v4().to_string(),
-            session_id: Uuid::new_v4().to_string(),
+            session_id,
             provider,
             model,
             messages: Vec::new(),

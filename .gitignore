@@ -31,6 +31,7 @@ history/*.json
 .skills
 tasks
 .opencode
+.worktrees
 
 # Tauri
 src-tauri/target

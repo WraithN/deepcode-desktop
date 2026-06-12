@@ -31,9 +31,23 @@ impl DbManager {
 
     fn migrate(&mut self) -> Result<(), DbError> {
         for migration in crate::schema::ALL_MIGRATIONS {
-            self.conn.execute_batch(migration).map_err(|e| {
-                DbError::Migration(format!("Failed to run migration: {e}"))
-            })?;
+            if migration.contains("ALTER TABLE") && migration.contains("ADD COLUMN") {
+                // Conditional migration: skip if column already exists
+                if let Err(e) = self.conn.execute_batch(migration) {
+                    let err_msg = e.to_string().to_lowercase();
+                    if !err_msg.contains("duplicate column name")
+                        && !err_msg.contains("already exists")
+                    {
+                        return Err(DbError::Migration(format!(
+                            "Failed to run migration: {e}"
+                        )));
+                    }
+                }
+            } else {
+                self.conn.execute_batch(migration).map_err(|e| {
+                    DbError::Migration(format!("Failed to run migration: {e}"))
+                })?;
+            }
         }
         Ok(())
     }
