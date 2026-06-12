@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 pub mod commands;
+pub mod event_sink;
 pub mod gateway;
 pub mod models;
 pub mod service;

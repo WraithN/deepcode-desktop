@@ -7,7 +7,6 @@ pub fn map_to_agent_event(raw: OpencodeRawEvent) -> Option<AgentEvent> {
         OpencodeRawEvent::TextDelta { content } => Some(AgentEvent::TextDelta { content }),
         OpencodeRawEvent::ToolUse { name, args, part } => {
             if let Some(part) = part {
-                // opencode CLI 实际格式
                 let tool_name = part.tool.unwrap_or_else(|| "unknown".to_string());
                 let output = part.state.and_then(|s| s.output).unwrap_or_default();
                 Some(AgentEvent::ToolResult {
@@ -16,7 +15,6 @@ pub fn map_to_agent_event(raw: OpencodeRawEvent) -> Option<AgentEvent> {
                     failed: false,
                 })
             } else if let Some(name) = name {
-                // 传统格式
                 Some(AgentEvent::ToolUse {
                     tool_name: name,
                     args: args.unwrap_or_default(),
@@ -37,7 +35,6 @@ pub fn map_to_agent_event(raw: OpencodeRawEvent) -> Option<AgentEvent> {
         OpencodeRawEvent::AskUser { questions } => Some(AgentEvent::AskUser { questions }),
         OpencodeRawEvent::Error { message } => Some(AgentEvent::Error { message }),
         OpencodeRawEvent::Done => Some(AgentEvent::Done),
-        // opencode CLI 实际格式映射
         OpencodeRawEvent::StepStart { .. } => {
             Some(AgentEvent::Thinking { content: String::new() })
         }

@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use clap::Parser;
@@ -18,6 +18,10 @@ use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 
+mod agents {
+    #![allow(dead_code)]
+    include!("agents_impl.rs");
+}
 mod mcp_aggregator;
 mod reporter;
 
@@ -508,6 +512,14 @@ fn unified_to_anthropic_json(req: &UnifiedRequest) -> Value {
     body
 }
 
+/// Event broadcast by agent instances through the gatewayd event sink.
+#[derive(Clone, Debug, serde::Serialize)]
+struct AgentEvent {
+    event_type: String,
+    instance_id: Option<String>,
+    payload: serde_json::Value,
+}
+
 // Server state (inlined)
 #[derive(Clone)]
 struct ApiState {
@@ -517,6 +529,8 @@ struct ApiState {
     agent_type: Arc<std::sync::Mutex<Option<String>>>,
     db_path: std::path::PathBuf,
     mcp_registry: Option<Arc<tokio::sync::Mutex<mcp_aggregator::McpRegistry>>>,
+    agent_service: Option<Arc<agents::AgentService>>,
+    event_broadcaster: tokio::sync::broadcast::Sender<AgentEvent>,
 }
 
 fn resolve_provider(model: &str) -> &'static str {
@@ -767,7 +781,7 @@ async fn reporter_status_handler(
 
 // CLI args
 #[derive(Parser, Debug)]
-#[command(name = "gatewayd")]
+#[command(name = "dh-gatewayd")]
 #[command(about = "DeepHarness LLM Gateway Daemon")]
 struct Args {
     #[arg(long, default_value = "2345")]
@@ -778,6 +792,13 @@ struct Args {
 
     #[arg(long)]
     daemon: bool,
+
+    #[arg(long = "agent-type")]
+    agent_types: Vec<String>,
+
+    /// Attach an agent plugin on startup (e.g. opencode)
+    #[arg(long)]
+    attach: Vec<String>,
 }
 
 fn init_db<P: AsRef<std::path::Path>>(path: P) -> Result<DbManager, anyhow::Error> {
@@ -788,6 +809,9 @@ fn init_db<P: AsRef<std::path::Path>>(path: P) -> Result<DbManager, anyhow::Erro
 fn main() {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
+    if !args.agent_types.is_empty() {
+        info!("Auto-start agents: {:?}", args.agent_types);
+    }
     info!("Starting gatewayd on port {}, admin on port {}", args.port, args.admin_port);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -812,6 +836,42 @@ async fn run(args: Args) -> anyhow::Result<()> {
 
     let gateway_router = Arc::new(GatewayRouter::new());
 
+    // Broadcast channel for agent events consumed by REPL / status clients.
+    let (event_broadcaster, _event_receiver) = tokio::sync::broadcast::channel::<AgentEvent>(1024);
+
+    // Initialize agent runtime (AgentService + OpencodePlugin)
+    let agent_service = match agents::init_agent_service(event_broadcaster.clone()) {
+        Ok(service) => {
+            info!("AgentService initialized");
+            Some(Arc::new(service))
+        }
+        Err(e) => {
+            warn!("Failed to initialize AgentService: {}", e);
+            None
+        }
+    };
+
+    // Auto-attach agents requested via --attach or --agent-type
+    let attach_types: Vec<String> = args.attach.iter().chain(args.agent_types.iter()).cloned().collect();
+    if !attach_types.is_empty() {
+        if let Some(ref service) = agent_service {
+            for plugin_type in &attach_types {
+                let req = agent_core::models::CreateInstanceRequest {
+                    plugin_key: plugin_type.clone(),
+                    name: format!("{}-instance", plugin_type),
+                    workspace: std::env::current_dir()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                };
+                match service.create_instance(req).await {
+                    Ok(info) => info!("Attached agent: {} (id={})", plugin_type, info.id),
+                    Err(e) => warn!("Failed to attach agent {}: {}", plugin_type, e),
+                }
+            }
+        }
+    }
+
     let mcp_registry = match mcp_aggregator::McpRegistry::load_from_db(&db_path).await {
         Ok(registry) => {
             if registry.is_empty() {
@@ -832,6 +892,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
         agent_type: Arc::new(std::sync::Mutex::new(None)),
         db_path: db_path.clone(),
         mcp_registry: mcp_registry.clone(),
+        agent_service: agent_service.clone(),
+        event_broadcaster: event_broadcaster.clone(),
     };
 
     let api_router = Router::new()
@@ -850,6 +912,17 @@ async fn run(args: Args) -> anyhow::Result<()> {
             .route("/mcp/servers", get(mcp_aggregator::list_mcp_servers))
             .route("/mcp/tools", get(mcp_aggregator::list_mcp_tools))
             .route("/mcp/tools/{name}/call", post(mcp_aggregator::call_mcp_tool));
+    }
+
+    // Agent runtime routes
+    if agent_service.is_some() {
+        admin_router = admin_router
+            .route("/agents", post(agents::create_agent_handler))
+            .route("/agents", get(agents::list_agents_handler))
+            .route("/agents/{id}", get(agents::get_agent_handler))
+            .route("/agents/{id}/message", post(agents::send_message_handler))
+            .route("/agents/{id}", delete(agents::stop_agent_handler))
+            .route("/agents/events", get(agents::events_handler));
     }
 
     let admin_router = admin_router.with_state(api_state.clone());

@@ -26,5 +26,8 @@ clap.workspace = true
 uuid.workspace = true
 dirs.workspace = true
 
+futures-util = "0.3"
+tokio-tungstenite = "0.29"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

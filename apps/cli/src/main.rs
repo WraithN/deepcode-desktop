@@ -14,6 +14,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Chat with an agent in interactive REPL mode
+    Chat(commands::chat::ChatArgs),
+
     /// Manage configuration and cloud sync
     #[command(subcommand)]
     Config(commands::config::ConfigCommands),
@@ -22,8 +25,8 @@ enum Commands {
     Exec(commands::exec::ExecArgs),
 
     /// Manage the gatewayd daemon
-    #[command(subcommand)]
-    Gatewayd(commands::gatewayd::GatewaydCommands),
+    #[command(name = "gwd")]
+    Gwd(commands::gatewayd::GwdArgs),
 
     /// Manage MCP servers and tools
     #[command(subcommand)]
@@ -44,8 +47,11 @@ fn main() {
             Commands::Exec(args) => {
                 commands::exec::run(args).await
             }
-            Commands::Gatewayd(cmd) => {
-                commands::gatewayd::run(cmd).await
+            Commands::Chat(args) => {
+                commands::chat::run(args).await
+            }
+            Commands::Gwd(args) => {
+                commands::gatewayd::run(args).await
             }
             Commands::Mcp(cmd) => {
                 commands::mcp::run(cmd).await

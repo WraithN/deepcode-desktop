@@ -4,7 +4,6 @@ use serde_json::Value;
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OpencodeRawEvent {
-    // 传统格式（保留兼容）
     Thinking { content: String },
     TextDelta { content: String },
     ToolUse {
@@ -12,7 +11,6 @@ pub enum OpencodeRawEvent {
         name: Option<String>,
         #[serde(default)]
         args: Option<Value>,
-        // opencode CLI 实际输出格式
         #[serde(default)]
         part: Option<OpencodePart>,
     },
@@ -21,7 +19,6 @@ pub enum OpencodeRawEvent {
     AskUser { questions: Vec<String> },
     Error { message: String },
     Done,
-    // opencode CLI 实际输出格式
     StepStart { part: OpencodePart },
     StepFinish { part: OpencodePart },
     Text { part: OpencodePart },
@@ -126,6 +123,6 @@ mod tests {
     #[test]
     fn test_parse_invalid() {
         assert!(parse_opencode_json_line("not json").is_none());
-        assert!(parse_opencode_json_line("{}").is_none()); // missing type field
+        assert!(parse_opencode_json_line("{}").is_none());
     }
 }

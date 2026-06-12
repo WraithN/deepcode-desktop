@@ -2,11 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use rusqlite::Connection;
-use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{Manager, State, Listener};
+use tauri::Manager;
 use agent_db::{AgentDbManager, agent_db_create_conversation, agent_db_load_conversations, agent_db_create_message, agent_db_load_messages, agent_db_delete_agent};
 
 mod agent_db;
@@ -14,21 +13,11 @@ mod commands;
 mod setup;
 
 use dh_desktop::{DbState, RouterState, WebSocketShutdown};
-use dh_desktop::service::opencode_service::OpencodeService;
 use crate::setup::db::{db_path, init_db};
 use crate::setup::window::show_main_window;
 use crate::commands::db::*;
 use crate::commands::workspace::{get_current_dir, list_workspace_tree, read_workspace_file};
 use crate::commands::git::{git_status_workspace, git_changed_files};
-
-#[tauri::command]
-async fn agent_send_message_direct(
-    opencode_service: State<'_, Arc<OpencodeService>>,
-    message: String,
-    session_id: Option<String>,
-) -> Result<Value, String> {
-    opencode_service.run_message(&message, session_id.as_deref()).await
-}
 
 fn start_ws_server(
     mut ws_server: dh_desktop::gateway::server::WebSocketServer,
@@ -69,53 +58,42 @@ fn main() {
             app.manage(AgentDbManager::new());
             log::info!("[main.rs] Database initialized");
 
-            // 初始化 SessionLogger
-            let app_handle = app.handle().clone();
+            // 初始化 SessionManager（提前创建以便 EventSink 使用）
+            let session_manager = Arc::new(dh_desktop::gateway::session_manager::SessionManager::new());
+            log::info!("[main.rs] SessionManager initialized");
+
+            // 初始化 WebSocket EventSink
+            let ws_event_sink = Arc::new(dh_desktop::event_sink::WebSocketEventSink::new(session_manager.clone()));
+
+            // 初始化 SessionLogger（通过 EventSink 解耦 Tauri）
             let logger_db_path = db_path.clone();
             let logger_conn = Connection::open(&logger_db_path).expect("打开日志数据库失败");
-            let logger = std::sync::Arc::new(agent_core::logger::SessionLogger::new(app_handle, logger_conn));
+            let log_file_path = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("session.log");
+            let logger = std::sync::Arc::new(agent_core::logger::SessionLogger::new(
+                ws_event_sink.clone(),
+                logger_conn,
+                Some(log_file_path),
+            ));
             app.manage(logger.clone());
             log::info!("[main.rs] SessionLogger initialized");
 
             // 初始化 AgentService 并注册 opencode plugin
-            let app_handle = app.handle().clone();
-            let mut agent_service = Arc::new(dh_desktop::service::agent_service::AgentService::new(logger.clone()));
+            let mut agent_service = Arc::new(dh_desktop::service::agent_service::AgentService::new(logger.clone(), ws_event_sink.clone()));
             Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(
-                app_handle,
                 logger.clone(),
             )));
             app.manage(agent_service.clone());
             log::info!("[main.rs] AgentService initialized");
 
-            // 初始化服务和 SessionManager
+            // 初始化 DbService
             let db_conn = Connection::open(&db_path).expect("打开数据库失败");
             let db_service = Arc::new(dh_desktop::service::db_service::DbService::new(Arc::new(Mutex::new(db_conn))));
-            let opencode_service = Arc::new(dh_desktop::service::opencode_service::OpencodeService::new().unwrap_or_else(|e| {
-                log::warn!("[main.rs] Failed to initialize OpencodeService: {}, using fallback", e);
-                dh_desktop::service::opencode_service::OpencodeService::new_fallback()
-            }));
-            app.manage(opencode_service.clone());
-
-            let (event_tx, _event_rx) = tokio::sync::broadcast::channel::<dh_desktop::service::opencode_service::SseEvent>(1000);
-            {
-                let svc = opencode_service.as_ref();
-                svc.set_event_sender(event_tx);
-            }
-
-            // Start SSE listener in background
-            let svc_for_sse = opencode_service.clone();
-            tauri::async_runtime::spawn(async move {
-                svc_for_sse.start_event_listener().await;
-            });
-
-            let session_manager = Arc::new(dh_desktop::gateway::session_manager::SessionManager::new());
             log::info!("[main.rs] Services initialized");
 
             // 初始化 WebSocket server
             let router = Arc::new(dh_desktop::gateway::router::GatewayRouter::new(
                 agent_service,
                 db_service,
-                opencode_service,
                 session_manager,
             ));
             let ws_server = dh_desktop::gateway::server::WebSocketServer::new(router.clone());
@@ -130,35 +108,8 @@ fn main() {
             // 将 Router 存入 Tauri 状态
             app.manage(RouterState(router.clone()));
 
-            // 监听 Tauri session:log 事件，转发为 WebSocket session.log 通知
-            let router_for_events = router.clone();
-            app.listen("session:log", move |event| {
-                let payload = event.payload();
-                if let Ok(mut entry) = serde_json::from_str::<serde_json::Value>(&payload) {
-                    // 将 snake_case 字段名转为 camelCase（前端 logStore 使用 camelCase）
-                    if let Some(v) = entry.get("conversation_id").cloned() {
-                        entry["conversationId"] = v;
-                    }
-                    if let Some(v) = entry.get("instance_id").cloned() {
-                        entry["instanceId"] = v;
-                    }
-                    let conversation_id = entry.get("conversationId").and_then(|v| v.as_str()).unwrap_or("");
-                    if !conversation_id.is_empty() {
-                        let notification = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "method": "session.log",
-                            "params": entry
-                        });
-                        let router = router_for_events.clone();
-                        let cid = conversation_id.to_string();
-                        let msg = tokio_tungstenite::tungstenite::Message::Text(notification.to_string());
-                        tauri::async_runtime::spawn(async move {
-                            let _ = router.session_manager().send_to_session(&cid, msg).await;
-                        });
-                    }
-                }
-            });
-
+            // SessionLogger now emits directly via WebSocketEventSink,
+            // so we no longer need the Tauri -> WebSocket bridge here.
             log::info!("[main.rs] Tauri setup completed successfully");
             Ok(())
         })
@@ -188,7 +139,7 @@ fn main() {
             read_workspace_file,
             git_status_workspace,
             git_changed_files,
-            agent_send_message_direct,
+
             commands::session_log::session_log_load,
             commands::system::get_websocket_url,
             commands::system::get_webview_html,

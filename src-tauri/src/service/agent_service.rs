@@ -2,6 +2,7 @@
 
 use crate::models::agent::{CreateInstanceRequest, InstanceInfo, PluginInfo};
 use agent_core::error::{InstanceError, PluginError};
+use agent_core::event_sink::DynEventSink;
 use agent_core::instance::InstanceConfig;
 use agent_core::logger::SessionLogger;
 use std::sync::Arc;
@@ -10,15 +11,17 @@ pub struct AgentService {
     plugins: super::plugin_registry::PluginRegistry,
     instances: Arc<tokio::sync::Mutex<super::instance_registry::InstanceRegistry>>,
     logger: Arc<SessionLogger>,
+    event_sink: DynEventSink,
 }
 
 impl AgentService {
-    pub fn new(logger: Arc<SessionLogger>) -> Self {
+    pub fn new(logger: Arc<SessionLogger>, event_sink: DynEventSink) -> Self {
         let plugins = super::plugin_registry::PluginRegistry::new();
         Self {
             plugins,
             instances: Arc::new(tokio::sync::Mutex::new(super::instance_registry::InstanceRegistry::new())),
             logger,
+            event_sink,
         }
     }
 
@@ -55,19 +58,20 @@ impl AgentService {
             session_id: None,
         };
 
-        let instance = plugin.create_instance(config)?;
+        let instance = plugin.create_instance(config, self.event_sink.clone())?;
         let info = InstanceInfo {
             id: instance.id().to_string(),
             plugin_key: req.plugin_key.clone(),
             name: req.name.clone(),
             workspace: req.workspace.clone(),
             status: instance.status(),
+            endpoint: instance.endpoint(),
         };
 
         self.instances
             .lock()
             .await
-            .insert(id, Arc::new(tokio::sync::Mutex::new(instance)));
+            .insert(id, Arc::from(instance));
 
         Ok(info)
     }
@@ -78,7 +82,7 @@ impl AgentService {
         conversation_id: &str,
         message: &str,
     ) -> Result<(), InstanceError> {
-        let instance_arc = self
+        let instance = self
             .instances
             .lock()
             .await
@@ -88,51 +92,65 @@ impl AgentService {
         let message = message.to_string();
         let conversation_id = conversation_id.to_string();
         tokio::spawn(async move {
-            let instance = instance_arc.lock().await;
             let _ = instance.send_message(&conversation_id, &message).await;
         });
 
         Ok(())
     }
 
-    pub async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError> {
-        let instance_arc = self
+    pub async fn respond_to_instance(
+        &self,
+        instance_id: &str,
+        session_id: &str,
+        message: &str,
+    ) -> Result<(), InstanceError> {
+        let instance = self
             .instances
             .lock()
             .await
             .get(instance_id)
             .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
 
-        let instance = instance_arc.lock().await;
+        instance.respond(session_id, message).await
+    }
+
+    pub async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError> {
+        let instance = self
+            .instances
+            .lock()
+            .await
+            .get(instance_id)
+            .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
+
         instance.stop().await
     }
 
     pub async fn get_instance(&self, instance_id: &str) -> Option<InstanceInfo> {
         let registry = self.instances.lock().await;
         let instance = registry.get(instance_id)?;
-        let guard = instance.lock().await;
         Some(InstanceInfo {
-            id: guard.id().to_string(),
-            plugin_key: guard.plugin_key().to_string(),
-            name: guard.id().to_string(),
+            id: instance.id().to_string(),
+            plugin_key: instance.plugin_key().to_string(),
+            name: instance.id().to_string(),
             workspace: "".to_string(),
-            status: guard.status(),
+            status: instance.status(),
+            endpoint: instance.endpoint(),
         })
     }
 
     pub async fn list_instances(&self) -> Vec<InstanceInfo> {
         let registry = self.instances.lock().await;
-        let mut result = Vec::new();
-        for (id, instance) in registry.list() {
-            let guard = instance.lock().await;
-            result.push(InstanceInfo {
+        registry
+            .list()
+            .into_iter()
+            .map(|(id, instance)| InstanceInfo {
                 id: id.clone(),
-                plugin_key: guard.plugin_key().to_string(),
-                name: guard.id().to_string(),
+                plugin_key: instance.plugin_key().to_string(),
+                name: instance.id().to_string(),
                 workspace: "".to_string(),
-                status: guard.status(),
-            });
-        }
-        result
+                status: instance.status(),
+                endpoint: instance.endpoint(),
+            })
+            .collect()
     }
 }

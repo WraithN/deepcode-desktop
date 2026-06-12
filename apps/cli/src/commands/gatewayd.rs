@@ -1,5 +1,15 @@
-use clap::Subcommand;
+use clap::{Parser, Subcommand};
 use tracing::{error, info};
+
+#[derive(Parser, Debug)]
+pub struct GwdArgs {
+    /// Attach an agent plugin to a running gatewayd (e.g. opencode)
+    #[arg(long, global = true)]
+    pub attach: Vec<String>,
+
+    #[command(subcommand)]
+    pub command: Option<GatewaydCommands>,
+}
 
 #[derive(Subcommand, Debug)]
 pub enum GatewaydCommands {
@@ -7,6 +17,8 @@ pub enum GatewaydCommands {
     Start {
         #[arg(long)]
         daemon: bool,
+        /// Agent types to auto-start (e.g. opencode, claudecode, codex)
+        agent_types: Vec<String>,
     },
     /// Stop the gatewayd daemon
     Stop,
@@ -46,35 +58,51 @@ pub enum GatewaydCommands {
     },
 }
 
-pub async fn run(command: GatewaydCommands) -> Result<(), anyhow::Error> {
-    match command {
-        GatewaydCommands::Start { daemon } => {
+pub async fn run(args: GwdArgs) -> Result<(), anyhow::Error> {
+    // Handle --attach without any subcommand (attach to running gatewayd)
+    if args.command.is_none() && !args.attach.is_empty() {
+        return attach_agents(&args.attach).await;
+    }
+
+    let cmd = match args.command {
+        Some(c) => c,
+        None => anyhow::bail!("No subcommand provided. Use --help for usage."),
+    };
+
+    if let GatewaydCommands::Start { daemon, agent_types } = &cmd {
             info!("Starting gatewayd...");
 
             if check_running().await {
-                println!("gatewayd is already running");
+                println!("dh-gatewayd is already running");
                 return Ok(());
             }
 
-            let mut cmd = std::process::Command::new("gatewayd");
-            if daemon {
+            let mut cmd = std::process::Command::new("dh-gatewayd");
+            if *daemon {
                 cmd.arg("--daemon");
+            }
+            for agent_type in agent_types {
+                cmd.arg("--agent-type").arg(agent_type);
+            }
+            for plugin_type in &args.attach {
+                cmd.arg("--attach").arg(plugin_type);
             }
 
             let mut child = cmd.spawn()?;
-            info!("gatewayd started with PID: {}", child.id());
+            info!("dh-gatewayd started with PID: {}", child.id());
 
             if !daemon {
                 let status = child.wait()?;
                 if !status.success() {
-                    error!("gatewayd exited with status: {:?}", status.code());
+                    error!("dh-gatewayd exited with status: {:?}", status.code());
                 }
             }
 
-            println!("gatewayd started");
+            println!("dh-gatewayd started");
         }
-        GatewaydCommands::Stop => {
-            info!("Stopping gatewayd...");
+
+    if let GatewaydCommands::Stop = &cmd {
+            info!("Stopping dh-gatewayd...");
 
             match dh_platform::fs::read_lock_file()? {
                 Some(pid) => {
@@ -93,33 +121,73 @@ pub async fn run(command: GatewaydCommands) -> Result<(), anyhow::Error> {
                     }
 
                     dh_platform::fs::remove_lock_file()?;
-                    println!("gatewayd stopped (PID: {})", pid);
+                    println!("dh-gatewayd stopped (PID: {})", pid);
                 }
                 None => {
-                    println!("gatewayd is not running");
+                    println!("dh-gatewayd is not running");
                 }
             }
         }
-        GatewaydCommands::Status => {
-            if check_running().await {
-                let client = reqwest::Client::new();
-                for port in [2346u16, 2347, 2348, 2349, 2350] {
-                    let url = format!("http://127.0.0.1:{}/health", port);
-                    if let Ok(resp) = client.get(&url).timeout(std::time::Duration::from_secs(1)).send().await {
-                        if resp.status().is_success() {
-                            let body: serde_json::Value = resp.json().await?;
-                            println!("gatewayd is running");
-                            println!("  Admin port: {}", port);
-                            println!("  Version: {}", body.get("version").and_then(|v| v.as_str()).unwrap_or("unknown"));
-                            break;
+
+    if let GatewaydCommands::Status = &cmd {
+            match dh_platform::fs::read_lock_file()? {
+                Some(pid) if is_process_alive(pid) => {
+                    let client = reqwest::Client::new();
+                    let mut found = false;
+                    for port in [2346u16, 2347, 2348, 2349, 2350] {
+                        let url = format!("http://127.0.0.1:{}/health", port);
+                        if let Ok(resp) = client.get(&url).timeout(std::time::Duration::from_secs(1)).send().await {
+                            if resp.status().is_success() {
+                                let body: serde_json::Value = resp.json().await?;
+                                println!("dh-gatewayd is running (PID: {})", pid);
+                                println!("  Admin port: {}", port);
+                                println!("  Version: {}", body.get("version").and_then(|v| v.as_str()).unwrap_or("unknown"));
+
+                                // Show attached agents
+                                let agents_url = format!("http://127.0.0.1:{}/agents", port);
+                                if let Ok(agents_resp) = client.get(&agents_url).timeout(std::time::Duration::from_secs(2)).send().await {
+                                    if agents_resp.status().is_success() {
+                                        let agents: Vec<serde_json::Value> = agents_resp.json().await.unwrap_or_default();
+                                        if agents.is_empty() {
+                                            println!("  Agents: none");
+                                        } else {
+                                            println!("  Agents:");
+                                            for agent in agents {
+                                                let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                                let plugin = agent.get("plugin_key").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                                let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+                                                let status = format_agent_status(agent.get("status"));
+                                                println!("    - {} ({}) [{}]", name, plugin, status);
+                                                if let Some(endpoint) = agent.get("endpoint").and_then(|v| v.as_str()) {
+                                                    if !endpoint.is_empty() {
+                                                        println!("      endpoint: {}", endpoint);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                found = true;
+                                break;
+                            }
                         }
                     }
+                    if !found {
+                        println!("dh-gatewayd lock file exists (PID: {}) but process is not responding on any known port", pid);
+                        println!("  Tip: run `dh gwd stop` to clean up stale lock file");
+                    }
                 }
-            } else {
-                println!("gatewayd is not running");
+                Some(_) => {
+                    println!("dh-gatewayd lock file exists but the process is dead");
+                    println!("  Tip: run `dh gwd stop` to clean up stale lock file");
+                }
+                None => {
+                    println!("dh-gatewayd is not running");
+                }
             }
         }
-        GatewaydCommands::Logs { limit, session_id } => {
+
+    if let GatewaydCommands::Logs { limit, session_id } = &cmd {
             let conn = open_db()?;
 
             let sql = match &session_id {
@@ -168,7 +236,8 @@ pub async fn run(command: GatewaydCommands) -> Result<(), anyhow::Error> {
                 );
             }
         }
-        GatewaydCommands::Session { session_id } => {
+
+    if let GatewaydCommands::Session { session_id } = &cmd {
             let conn = open_db()?;
 
             let resolved_id = resolve_session_index(&conn, &session_id)?;
@@ -201,7 +270,8 @@ pub async fn run(command: GatewaydCommands) -> Result<(), anyhow::Error> {
 
             print_session_details(session_meta.as_ref(), &audit_rows);
         }
-        GatewaydCommands::Request { request_id } => {
+
+    if let GatewaydCommands::Request { request_id } = &cmd {
             let conn = open_db()?;
 
             let resolved_id = resolve_request_index(&conn, &request_id)?;
@@ -231,7 +301,8 @@ pub async fn run(command: GatewaydCommands) -> Result<(), anyhow::Error> {
 
             print_request_details(&rows);
         }
-        GatewaydCommands::Stats { session_id, since, provider, model, json } => {
+
+    if let GatewaydCommands::Stats { session_id, since, provider, model, json } = &cmd {
             let conn = open_db()?;
             let mut sql = String::from(
                 "SELECT 
@@ -276,7 +347,7 @@ pub async fn run(command: GatewaydCommands) -> Result<(), anyhow::Error> {
                 ))
             })?;
 
-            if json {
+            if *json {
                 println!("{}", serde_json::json!({
                     "upstream_tokens": prompt,
                     "downstream_tokens": completion,
@@ -333,9 +404,79 @@ pub async fn run(command: GatewaydCommands) -> Result<(), anyhow::Error> {
                 }
             }
         }
-    }
 
     Ok(())
+}
+
+async fn attach_agents(plugins: &[String]) -> Result<(), anyhow::Error> {
+    let client = reqwest::Client::new();
+    let admin_port = find_admin_port(&client).await?;
+    let base_url = format!("http://127.0.0.1:{}", admin_port);
+
+    for plugin_type in plugins {
+        let url = format!("{}/agents", base_url);
+        let workspace = std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let payload = serde_json::json!({
+            "plugin_type": plugin_type,
+            "name": format!("{}-attached", plugin_type),
+            "workspace": workspace,
+        });
+
+        match client
+            .post(&url)
+            .json(&payload)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await?;
+                if let Some(id) = body.get("instance_id").and_then(|v| v.as_str()) {
+                    println!("Attached agent: {} (id={})", plugin_type, id);
+                } else {
+                    println!("Attached agent: {}", plugin_type);
+                }
+            }
+            Ok(resp) => {
+                eprintln!("Failed to attach agent {}: {}", plugin_type, resp.text().await?);
+            }
+            Err(e) => {
+                eprintln!("Failed to attach agent {}: {}", plugin_type, e);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn find_admin_port(client: &reqwest::Client) -> Result<u16, anyhow::Error> {
+    for port in [2346u16, 2347, 2348, 2349, 2350] {
+        let url = format!("http://127.0.0.1:{}/health", port);
+        if let Ok(resp) = client.get(&url).timeout(std::time::Duration::from_secs(1)).send().await {
+            if resp.status().is_success() {
+                return Ok(port);
+            }
+        }
+    }
+    anyhow::bail!("dh-gatewayd is not running on any known admin port")
+}
+
+fn format_agent_status(status: Option<&serde_json::Value>) -> String {
+    match status {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Object(map)) => {
+            if map.contains_key("running") {
+                "running".to_string()
+            } else if let Some(serde_json::Value::String(msg)) = map.get("crashed") {
+                format!("crashed: {}", msg)
+            } else {
+                "unknown".to_string()
+            }
+        }
+        _ => "unknown".to_string(),
+    }
 }
 
 fn open_db() -> Result<rusqlite::Connection, anyhow::Error> {
@@ -549,5 +690,33 @@ fn resolve_request_index(conn: &rusqlite::Connection, input: &str) -> Result<Opt
 }
 
 async fn check_running() -> bool {
-    dh_platform::fs::read_lock_file().ok().flatten().is_some()
+    match dh_platform::fs::read_lock_file() {
+        Ok(Some(pid)) => is_process_alive(pid),
+        _ => false,
+    }
+}
+
+/// Verify whether a process with the given PID is alive.
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__errno_location() == libc::EPERM }
+}
+
+#[cfg(windows)]
+fn is_process_alive(pid: u32) -> bool {
+    use std::os::windows::io::RawHandle;
+    unsafe {
+        let handle = windows_sys::Win32::System::Threading::OpenProcess(
+            windows_sys::Win32::System::Threading::PROCESS_QUERY_INFORMATION,
+            0,
+            pid,
+        );
+        if handle == 0 {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = windows_sys::Win32::System::Threading::GetExitCodeProcess(handle as _, &mut code);
+        windows_sys::Win32::Foundation::CloseHandle(handle as _);
+        ok != 0 && code == windows_sys::Win32::System::Threading::STILL_ACTIVE
+    }
 }

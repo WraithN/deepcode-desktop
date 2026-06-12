@@ -1,4 +1,4 @@
-use agent_core::instance::AgentInstance;
+use crate::instance::AgentInstance;
 use std::collections::HashMap;
 use std::sync::Arc;
 

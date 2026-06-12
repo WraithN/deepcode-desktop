@@ -21,6 +21,7 @@ pub enum InstanceError {
     #[error("Process error: {0}")]
     ProcessError(String),
     #[error("MCP error: {0}")]
+    #[deprecated(since = "0.2.0", note = "MCP stack is being removed; use ProcessError instead")]
     McpError(String),
 }
 

@@ -6,7 +6,7 @@ use super::handlers::session::handle_session_request;
 use super::session_manager::SessionManager;
 use crate::service::agent_service::AgentService;
 use crate::service::db_service::DbService;
-use crate::service::opencode_service::OpencodeService;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -16,7 +16,7 @@ pub struct GatewayRouter {
     connections: Arc<RwLock<HashMap<String, ConnectionHandle>>>,
     agent_service: Arc<AgentService>,
     db_service: Arc<DbService>,
-    opencode_service: Arc<OpencodeService>,
+
     session_manager: Arc<SessionManager>,
 }
 
@@ -24,14 +24,12 @@ impl GatewayRouter {
     pub fn new(
         agent_service: Arc<AgentService>,
         db_service: Arc<DbService>,
-        opencode_service: Arc<OpencodeService>,
         session_manager: Arc<SessionManager>,
     ) -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             agent_service,
             db_service,
-            opencode_service,
             session_manager,
         }
     }
@@ -50,7 +48,6 @@ impl GatewayRouter {
         if req.method.starts_with("agent.") {
             handle_agent_request(
                 self.agent_service.clone(),
-                self.opencode_service.clone(),
                 self.session_manager.clone(),
                 req,
             ).await
@@ -85,9 +82,7 @@ impl GatewayRouter {
         self.session_manager.clone()
     }
 
-    pub fn opencode_service(&self) -> Arc<OpencodeService> {
-        self.opencode_service.clone()
-    }
+
 
     pub fn agent_service(&self) -> Arc<AgentService> {
         self.agent_service.clone()

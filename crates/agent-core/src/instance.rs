@@ -25,9 +25,21 @@ pub trait AgentInstance: Send + Sync {
     fn status(&self) -> InstanceStatus;
     fn plugin_key(&self) -> &'static str;
 
+    /// Optional endpoint URL for this instance (e.g. opencode serve URL).
+    fn endpoint(&self) -> Option<String> {
+        None
+    }
+
     fn send_message(
         &self,
         conversation_id: &str,
+        message: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
+
+    /// Send a response to an interaction (question/permission/todo).
+    fn respond(
+        &self,
+        session_id: &str,
         message: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
 

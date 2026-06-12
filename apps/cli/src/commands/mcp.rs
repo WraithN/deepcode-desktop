@@ -70,7 +70,7 @@ pub async fn run(command: McpCommands) -> Result<(), anyhow::Error> {
 
             println!("Added MCP server: {}", name);
             println!("  Command: {} {:?}", cmd, args);
-            println!("  Restart gatewayd to apply changes.");
+            println!("  Restart dh-gatewayd to apply changes.");
         }
         McpCommands::Remove { name } => {
             let conn = open_db()?;
@@ -83,7 +83,7 @@ pub async fn run(command: McpCommands) -> Result<(), anyhow::Error> {
                 println!("No MCP server found: {}", name);
             } else {
                 println!("Removed MCP server: {}", name);
-                println!("  Restart gatewayd to apply changes.");
+                println!("  Restart dh-gatewayd to apply changes.");
             }
         }
         McpCommands::Call { tool, args } => {
@@ -113,7 +113,7 @@ pub async fn run(command: McpCommands) -> Result<(), anyhow::Error> {
                     Err(_) => continue,
                 }
             }
-            anyhow::bail!("gatewayd is not running or MCP endpoint unavailable");
+            anyhow::bail!("dh-gatewayd is not running or MCP endpoint unavailable");
         }
     }
 
@@ -173,7 +173,7 @@ async fn list_via_api() -> Result<(), anyhow::Error> {
             Err(_) => continue,
         }
     }
-    anyhow::bail!("gatewayd API not available")
+    anyhow::bail!("dh-gatewayd API not available")
 }
 
 fn list_via_db() -> Result<(), anyhow::Error> {
@@ -217,7 +217,7 @@ fn list_via_db() -> Result<(), anyhow::Error> {
         );
     }
 
-    println!("\nNote: gatewayd is not running. Status shows 'unknown'.");
+    println!("\nNote: dh-gatewayd is not running. Status shows 'unknown'.");
     Ok(())
 }
 

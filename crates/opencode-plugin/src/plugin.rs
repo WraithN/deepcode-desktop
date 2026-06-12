@@ -1,18 +1,17 @@
 use agent_core::error::PluginError;
+use agent_core::event_sink::DynEventSink;
 use agent_core::instance::{AgentInstance, InstanceConfig};
 use agent_core::logger::SessionLogger;
 use agent_core::plugin::AgentPlugin;
 use std::sync::Arc;
-use tauri::AppHandle;
 
 pub struct OpencodePlugin {
-    app_handle: AppHandle,
     logger: Arc<SessionLogger>,
 }
 
 impl OpencodePlugin {
-    pub fn new(app_handle: AppHandle, logger: Arc<SessionLogger>) -> Self {
-        Self { app_handle, logger }
+    pub fn new(logger: Arc<SessionLogger>) -> Self {
+        Self { logger }
     }
 }
 
@@ -33,13 +32,17 @@ impl AgentPlugin for OpencodePlugin {
             .unwrap_or(false)
     }
 
-    fn create_instance(&self, config: InstanceConfig) -> Result<Box<dyn AgentInstance>, PluginError> {
+    fn create_instance(
+        &self,
+        config: InstanceConfig,
+        event_sink: DynEventSink,
+    ) -> Result<Box<dyn AgentInstance>, PluginError> {
         if !self.is_installed() {
             return Err(PluginError::NotInstalled("opencode".to_string()));
         }
         Ok(Box::new(crate::instance::OpencodeInstance::new(
             config,
-            self.app_handle.clone(),
+            event_sink,
             self.logger.clone(),
         )))
     }

@@ -168,13 +168,13 @@ async fn start_gatewayd() -> Result<(), anyhow::Error> {
         info!("Injected OPENAI_API_KEY from opencode config");
     }
 
-    let mut cmd = std::process::Command::new("gatewayd");
+    let mut cmd = std::process::Command::new("dh-gatewayd");
     cmd.arg("--daemon");
 
     if let Ok(exe_path) = std::env::current_exe() {
         let possible_paths = [
-            exe_path.parent().map(|p| p.join("gatewayd")),
-            exe_path.parent().and_then(|p| p.parent()).map(|p| p.join("gatewayd")),
+            exe_path.parent().map(|p| p.join("dh-gatewayd")),
+            exe_path.parent().and_then(|p| p.parent()).map(|p| p.join("dh-gatewayd")),
         ];
         for path in possible_paths.iter().flatten() {
             if path.exists() {

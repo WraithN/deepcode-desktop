@@ -1,4 +1,4 @@
-use agent_core::instance::InstanceStatus;
+use crate::instance::InstanceStatus;
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
@@ -15,8 +15,6 @@ pub struct InstanceInfo {
     pub name: String,
     pub workspace: String,
     pub status: InstanceStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]

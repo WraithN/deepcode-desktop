@@ -1,18 +1,20 @@
 [package]
-name = "gatewayd"
+name = "dh-gatewayd"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "gatewayd"
+name = "dh-gatewayd"
 path = "src/main.rs"
 
 [dependencies]
 dh-core = { path = "../../crates/dh-core" }
 dh-platform = { path = "../../crates/dh-platform" }
 dh-db = { path = "../../crates/dh-db" }
+agent-core = { path = "../../crates/agent-core" }
+opencode-plugin = { path = "../../crates/opencode-plugin" }
 
 tokio.workspace = true
 axum.workspace = true
@@ -32,3 +34,4 @@ rusqlite.workspace = true
 sha2.workspace = true
 hex.workspace = true
 hostname.workspace = true
+futures-util = "0.3"

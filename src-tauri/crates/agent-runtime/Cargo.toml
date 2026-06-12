@@ -1,8 +1,0 @@
-[package]
-name = "agent-runtime"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-tokio = { version = "1", features = ["rt", "sync", "process", "io-util", "time"] }
-agent-core = { path = "../agent-core" }

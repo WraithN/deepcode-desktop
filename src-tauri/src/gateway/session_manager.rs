@@ -76,6 +76,16 @@ impl SessionManager {
         conns.get(conversation_id).map_or(false, |h| !h.is_empty())
     }
 
+    /// 向所有会话的所有连接广播消息
+    pub async fn broadcast(&self, msg: Message) {
+        let conns = self.connections.read().await;
+        for handles in conns.values() {
+            for handle in handles {
+                let _ = handle.sender.send(msg.clone());
+            }
+        }
+    }
+
     /// 获取活跃会话数量
     pub async fn active_session_count(&self) -> usize {
         let conns = self.connections.read().await;
