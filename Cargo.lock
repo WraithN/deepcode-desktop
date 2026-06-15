@@ -7,8 +7,11 @@ name = "agent-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "chrono",
+ "futures-util",
  "log",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
