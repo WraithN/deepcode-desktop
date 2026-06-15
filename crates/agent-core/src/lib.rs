@@ -5,6 +5,7 @@ pub mod instance;
 pub mod logger;
 pub mod mcp;
 pub mod plugin;
+pub mod process;
 
 pub mod models {
     use crate::instance::InstanceStatus;
