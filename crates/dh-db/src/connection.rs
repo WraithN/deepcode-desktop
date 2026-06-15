@@ -18,19 +18,35 @@ impl DbManager {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
         let conn = Connection::open(path)?;
         let mut manager = Self { conn };
-        manager.migrate()?;
+        manager.migrate(crate::schema::ALL_MIGRATIONS)?;
         Ok(manager)
     }
 
     pub fn open_in_memory() -> Result<Self, DbError> {
         let conn = Connection::open_in_memory()?;
         let mut manager = Self { conn };
-        manager.migrate()?;
+        manager.migrate(crate::schema::ALL_MIGRATIONS)?;
         Ok(manager)
     }
 
-    fn migrate(&mut self) -> Result<(), DbError> {
-        for migration in crate::schema::ALL_MIGRATIONS {
+    /// Open a connection for the desktop Tauri application (`app.db`).
+    pub fn open_desktop<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
+        let conn = Connection::open(path)?;
+        let mut manager = Self { conn };
+        manager.migrate(crate::schema::DESKTOP_MIGRATIONS)?;
+        Ok(manager)
+    }
+
+    /// Open a connection for an agent instance's private database.
+    pub fn open_agent<P: AsRef<Path>>(path: P) -> Result<Self, DbError> {
+        let conn = Connection::open(path)?;
+        let mut manager = Self { conn };
+        manager.migrate(crate::schema::AGENT_MIGRATIONS)?;
+        Ok(manager)
+    }
+
+    fn migrate(&mut self, migrations: &[&str]) -> Result<(), DbError> {
+        for migration in migrations {
             if migration.contains("ALTER TABLE") && migration.contains("ADD COLUMN") {
                 // Conditional migration: skip if column already exists
                 if let Err(e) = self.conn.execute_batch(migration) {
@@ -58,5 +74,9 @@ impl DbManager {
 
     pub fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
+    }
+
+    pub fn into_inner(self) -> Connection {
+        self.conn
     }
 }

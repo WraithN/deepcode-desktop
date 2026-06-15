@@ -1,7 +1,6 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rusqlite::Connection;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -13,7 +12,7 @@ mod commands;
 mod setup;
 
 use dh_desktop::{DbState, RouterState, WebSocketShutdown};
-use crate::setup::db::{db_path, init_db};
+use crate::setup::db::db_path;
 use crate::setup::window::show_main_window;
 use crate::commands::db::*;
 use crate::commands::workspace::{get_current_dir, list_workspace_tree, read_workspace_file};
@@ -52,9 +51,9 @@ fn main() {
             let db_path = db_path(app);
             log::info!("[main.rs] Database path: {:?}", db_path);
 
-            let conn = Connection::open(&db_path).expect("打开数据库失败");
-            init_db(&conn).expect("初始化数据库失败");
-            app.manage(DbState(Mutex::new(conn)));
+            let db_manager = dh_db::DbManager::open_desktop(&db_path).expect("打开数据库失败");
+            let shared_conn = Arc::new(Mutex::new(db_manager.into_inner()));
+            app.manage(DbState(Arc::clone(&shared_conn)));
             app.manage(AgentDbManager::new());
             log::info!("[main.rs] Database initialized");
 
@@ -67,7 +66,9 @@ fn main() {
 
             // 初始化 SessionLogger（通过 EventSink 解耦 Tauri）
             let logger_db_path = db_path.clone();
-            let logger_conn = Connection::open(&logger_db_path).expect("打开日志数据库失败");
+            let logger_conn = dh_db::DbManager::open_desktop(&logger_db_path)
+                .expect("打开日志数据库失败")
+                .into_inner();
             let log_file_path = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("session.log");
             let logger = std::sync::Arc::new(agent_core::logger::SessionLogger::new(
                 ws_event_sink.clone(),
@@ -85,9 +86,8 @@ fn main() {
             app.manage(agent_service.clone());
             log::info!("[main.rs] AgentService initialized");
 
-            // 初始化 DbService
-            let db_conn = Connection::open(&db_path).expect("打开数据库失败");
-            let db_service = Arc::new(dh_desktop::service::db_service::DbService::new(Arc::new(Mutex::new(db_conn))));
+            // 初始化 DbService（复用同一个数据库连接）
+            let db_service = Arc::new(dh_desktop::service::db_service::DbService::new(Arc::clone(&shared_conn)));
             log::info!("[main.rs] Services initialized");
 
             // 初始化 WebSocket server

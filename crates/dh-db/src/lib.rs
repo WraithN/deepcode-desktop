@@ -1,4 +1,5 @@
 pub mod connection;
+pub mod desktop;
 pub mod schema;
 
 pub use connection::{DbError, DbManager};
