@@ -83,6 +83,9 @@ fn main() {
             Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(
                 logger.clone(),
             )));
+            Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(claude_plugin::plugin::ClaudePlugin::new(
+                logger.clone(),
+            )));
             app.manage(agent_service.clone());
             log::info!("[main.rs] AgentService initialized");
 
