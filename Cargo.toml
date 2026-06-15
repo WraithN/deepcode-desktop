@@ -5,6 +5,7 @@ members = [
     "crates/dh-db",
     "crates/agent-core",
     "crates/opencode-plugin",
+    "crates/claude-plugin",
     "apps/gatewayd",
     "apps/cli",
 ]
