@@ -1,3 +1,4 @@
+pub mod constants;
 pub mod instance;
 pub mod parser;
 pub mod plugin;

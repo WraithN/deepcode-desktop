@@ -430,6 +430,7 @@ dependencies = [
  "agent-core",
  "async-trait",
  "log",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",
