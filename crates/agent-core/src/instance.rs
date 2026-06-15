@@ -18,6 +18,21 @@ pub struct InstanceConfig {
     pub name: String,
     pub workspace: String,
     pub session_id: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+}
+
+impl InstanceConfig {
+    pub fn new(id: String, name: String, workspace: String) -> Self {
+        Self {
+            id,
+            name,
+            workspace,
+            session_id: None,
+            model: None,
+            permission_mode: None,
+        }
+    }
 }
 
 pub trait AgentInstance: Send + Sync {
@@ -50,6 +65,9 @@ pub trait AgentInstance: Send + Sync {
 mod tests {
     use super::*;
 
+    const TEST_MODEL: &str = "sonnet";
+    const TEST_PERMISSION_MODE: &str = "bypassPermissions";
+
     #[test]
     fn test_instance_status_serde() {
         let s = serde_json::to_string(&InstanceStatus::Stopped).unwrap();
@@ -67,8 +85,11 @@ mod tests {
             name: "test".into(),
             workspace: "/tmp".into(),
             session_id: Some("s-1".into()),
+            model: Some(TEST_MODEL.into()),
+            permission_mode: Some(TEST_PERMISSION_MODE.into()),
         };
         assert_eq!(cfg.id, "i-1");
-        assert_eq!(cfg.session_id.as_deref(), Some("s-1"));
+        assert_eq!(cfg.model.as_deref(), Some(TEST_MODEL));
+        assert_eq!(cfg.permission_mode.as_deref(), Some(TEST_PERMISSION_MODE));
     }
 }

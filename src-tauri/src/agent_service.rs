@@ -46,12 +46,7 @@ impl AgentService {
             .ok_or(PluginError::NotFound(req.plugin_key.clone()))?;
 
         let id = format!("{}-{}", req.plugin_key, uuid::Uuid::new_v4());
-        let config = InstanceConfig {
-            id: id.clone(),
-            name: req.name.clone(),
-            workspace: req.workspace.clone(),
-            session_id: None,
-        };
+        let config = InstanceConfig::new(id.clone(), req.name.clone(), req.workspace.clone());
 
         let instance = plugin.create_instance(config)?;
         let info = InstanceInfo {
