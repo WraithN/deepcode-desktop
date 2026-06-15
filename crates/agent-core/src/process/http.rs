@@ -28,6 +28,8 @@ const CHANNEL_CAPACITY: usize = 1000;
 const RETRY_DELAY_SECS: u64 = 3;
 /// Prefix for log messages emitted by this module.
 const LOG_PREFIX: &str = "[HttpTransport]";
+/// Error message returned when `receive()` is called before SSE is connected.
+const ERR_SSE_NOT_CONNECTED: &str = "SSE not connected";
 
 pub struct HttpTransport {
     base_url: String,
@@ -36,14 +38,39 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     /// Creates a new HTTP transport for the given agent base URL.
-    #[allow(dead_code)]
-    // Intentionally reserved as a future extension point; will be wired into
-    // the agent factory once Task 7 integration begins.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
             client: reqwest::Client::new(),
         }
+    }
+
+    /// Creates a new HTTP transport using the provided HTTP client.
+    pub fn with_client(base_url: impl Into<String>, client: reqwest::Client) -> Self {
+        Self {
+            base_url: base_url.into(),
+            client,
+        }
+    }
+
+    /// Starts the transport and connects the SSE stream.
+    ///
+    /// Returns a [`TransportHandle`] that keeps the background SSE listener
+    /// alive. Callers should hold onto the handle until the agent instance is
+    /// stopped.
+    pub async fn connect_sse(
+        &self,
+        instance_id: String,
+        sender: mpsc::Sender<Value>,
+    ) -> Result<Box<dyn TransportHandle>, TransportError> {
+        let mut handle = HttpHandle {
+            base_url: self.base_url.clone(),
+            client: self.client.clone(),
+            receiver: None,
+            sse_task: None,
+        };
+        handle.connect_sse(instance_id, sender);
+        Ok(Box::new(handle))
     }
 }
 
@@ -85,7 +112,7 @@ impl TransportHandle for HttpHandle {
         if let Some(ref mut rx) = self.receiver {
             rx.recv().await.ok_or(TransportError::Closed)
         } else {
-            Err(TransportError::ReceiveFailed("SSE not connected".into()))
+            Err(TransportError::ReceiveFailed(ERR_SSE_NOT_CONNECTED.into()))
         }
     }
 
@@ -100,9 +127,6 @@ impl TransportHandle for HttpHandle {
 
 impl HttpHandle {
     /// Starts a background SSE listener for the given instance.
-    #[allow(dead_code)]
-    // Intentionally reserved as a future extension point; consumers will call
-    // this after creating an HTTP session once Task 7 integration begins.
     pub fn connect_sse(&mut self, _instance_id: String, sender: mpsc::Sender<Value>) {
         let url = build_sse_url(&self.base_url);
         let client = self.client.clone();
