@@ -5,6 +5,7 @@ use std::fmt;
 #[derive(Debug)]
 pub enum TransportError {
     ProcessStart(String),
+    ProcessExit(String),
     SendFailed(String),
     ReceiveFailed(String),
     Closed,
@@ -14,6 +15,7 @@ impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TransportError::ProcessStart(msg) => write!(f, "process start failed: {msg}"),
+            TransportError::ProcessExit(msg) => write!(f, "process exit failed: {msg}"),
             TransportError::SendFailed(msg) => write!(f, "send failed: {msg}"),
             TransportError::ReceiveFailed(msg) => write!(f, "receive failed: {msg}"),
             TransportError::Closed => write!(f, "transport closed"),
