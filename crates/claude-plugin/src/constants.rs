@@ -26,11 +26,6 @@ pub(crate) const KEY_CONTENT: &str = "content";
 pub(crate) const KEY_TEXT: &str = "text";
 pub(crate) const KEY_SESSION_ID: &str = "session_id";
 
-// Event-sink routing keys.
-pub(crate) const METHOD_STATUS_CHANGED: &str = "agent:status_changed";
-pub(crate) const KEY_INSTANCE_ID: &str = "instance_id";
-pub(crate) const KEY_STATUS: &str = "status";
-
 // Init / runtime tuning.
 pub(crate) const SUBTYPE_INIT: &str = "init";
 pub(crate) const INIT_TIMEOUT_SECS: u64 = 30;
@@ -45,6 +40,3 @@ pub(crate) const ERR_START_FAILED: &str = "failed to start claude process";
 // Lifecycle log messages.
 pub(crate) const LOG_STARTED: &str = "claude process started";
 pub(crate) const LOG_STOPPED: &str = "claude process stopped";
-
-// PID placeholder because we do not track the real OS pid.
-pub(crate) const UNKNOWN_PID: u32 = 0;

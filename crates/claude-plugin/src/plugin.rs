@@ -2,7 +2,7 @@ use agent_core::error::PluginError;
 use agent_core::event_sink::DynEventSink;
 use agent_core::instance::{AgentInstance, InstanceConfig};
 use agent_core::logger::SessionLogger;
-use agent_core::plugin::AgentPlugin;
+use agent_core::plugin::{is_command_installed, AgentPlugin};
 use std::sync::Arc;
 
 use crate::constants::{PLUGIN_KEY, PLUGIN_NAME, PROGRAM_CLAUDE, VERSION_FLAG};
@@ -27,11 +27,7 @@ impl AgentPlugin for ClaudePlugin {
     }
 
     fn is_installed(&self) -> bool {
-        std::process::Command::new(PROGRAM_CLAUDE)
-            .arg(VERSION_FLAG)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        is_command_installed(PROGRAM_CLAUDE, VERSION_FLAG)
     }
 
     fn create_instance(

@@ -75,11 +75,7 @@ pub struct ClaudeThinkingDelta {
 
 /// Parses a single non-empty JSON line into a raw Claude event.
 pub fn parse_claude_line(line: &str) -> Option<ClaudeRawEvent> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    serde_json::from_str(trimmed).ok()
+    agent_core::process::parse_json_line(line)
 }
 
 /// Parses an already-decoded `serde_json::Value` into a raw Claude event.

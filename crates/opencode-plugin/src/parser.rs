@@ -41,11 +41,7 @@ pub struct OpencodeToolState {
 }
 
 pub fn parse_opencode_json_line(line: &str) -> Option<OpencodeRawEvent> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    serde_json::from_str::<OpencodeRawEvent>(trimmed).ok()
+    agent_core::process::parse_json_line(line)
 }
 
 #[cfg(test)]

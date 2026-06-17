@@ -36,6 +36,14 @@ const ERR_SSE_CONNECT_PREFIX: &str = "SSE connect failed: ";
 const PORT_RANGE_START: u16 = 3001;
 const PORT_RANGE_END: u16 = 3050;
 
+fn join_url(base: &str, path: &str) -> String {
+    format!("{}{}", base, path)
+}
+
+fn prefixed<E: std::fmt::Display>(prefix: &str, value: E) -> String {
+    format!("{}{}", prefix, value)
+}
+
 /// HTTP client for the OpenCode `serve` endpoints.
 pub struct OpenCodeClient {
     client: reqwest::Client,
@@ -63,13 +71,13 @@ impl OpenCodeClient {
 
     /// Performs a health check against `/health`.
     pub async fn health_check(&self) -> bool {
-        let url = format!("{}{}", self.base_url, HEALTH_PATH);
+        let url = join_url(&self.base_url, HEALTH_PATH);
         self.client.get(&url).send().await.is_ok()
     }
 
     /// Creates a new OpenCode session and returns its id.
     pub async fn create_session(&self) -> Result<String, InstanceError> {
-        let url = format!("{}{}", self.base_url, SESSION_PATH);
+        let url = join_url(&self.base_url, SESSION_PATH);
         let resp = self
             .client
             .post(&url)
@@ -77,12 +85,12 @@ impl OpenCodeClient {
             .json(&json!({}))
             .send()
             .await
-            .map_err(|e| InstanceError::SendFailed(format!("{}{}", ERR_CREATE_SESSION_PREFIX, e)))?;
+            .map_err(|e| InstanceError::SendFailed(prefixed(ERR_CREATE_SESSION_PREFIX, e)))?;
 
         let body: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| InstanceError::SendFailed(format!("parse {}", e)))?;
+            .map_err(|e| InstanceError::SendFailed(format!("parse {e}")))?;
 
         body.get(KEY_ID)
             .and_then(|v| v.as_str())
@@ -109,11 +117,11 @@ impl OpenCodeClient {
             }))
             .send()
             .await
-            .map_err(|e| InstanceError::SendFailed(format!("{}{}", ERR_SEND_MESSAGE_PREFIX, e)))?;
+            .map_err(|e| InstanceError::SendFailed(prefixed(ERR_SEND_MESSAGE_PREFIX, e)))?;
 
         resp.json()
             .await
-            .map_err(|e| InstanceError::SendFailed(format!("parse {}", e)))
+            .map_err(|e| InstanceError::SendFailed(format!("parse {e}")))
     }
 }
 
@@ -128,13 +136,13 @@ pub fn start_opencode_process(port: u16) -> Result<Child, InstanceError> {
         .stderr(std::process::Stdio::piped());
 
     cmd.spawn()
-        .map_err(|e| InstanceError::ProcessError(format!("{}{}", ERR_START_OPCODE_SERVE_PREFIX, e)))
+        .map_err(|e| InstanceError::ProcessError(prefixed(ERR_START_OPCODE_SERVE_PREFIX, e)))
 }
 
 /// Finds an available TCP port in the default OpenCode range.
 pub fn find_available_port() -> Result<u16, String> {
     for port in PORT_RANGE_START..=PORT_RANGE_END {
-        if std::net::TcpListener::bind(format!("{}{}", LOCALHOST_BIND_PREFIX, port)).is_ok() {
+        if std::net::TcpListener::bind(join_url(LOCALHOST_BIND_PREFIX, &port.to_string())).is_ok() {
             return Ok(port);
         }
     }
@@ -154,5 +162,5 @@ pub async fn connect_opencode_sse(
     HttpTransport::with_client(base_url, client)
         .connect_sse(instance_id.to_string(), sender)
         .await
-        .map_err(|e| InstanceError::ProcessError(format!("{}{}", ERR_SSE_CONNECT_PREFIX, e)))
+        .map_err(|e| InstanceError::ProcessError(prefixed(ERR_SSE_CONNECT_PREFIX, e)))
 }

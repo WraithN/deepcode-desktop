@@ -12,6 +12,9 @@ pub enum InstanceStatus {
     Crashed(String),
 }
 
+/// Placeholder PID used when the real OS process id is not tracked.
+pub const UNKNOWN_PID: u32 = 0;
+
 #[derive(Clone, Debug)]
 pub struct InstanceConfig {
     pub id: String,

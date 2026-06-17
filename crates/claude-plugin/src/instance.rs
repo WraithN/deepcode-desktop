@@ -1,13 +1,13 @@
 use agent_core::error::InstanceError;
 use agent_core::event_sink::DynEventSink;
-use agent_core::instance::{AgentInstance, InstanceConfig, InstanceStatus};
+use agent_core::instance::{AgentInstance, InstanceConfig, InstanceStatus, UNKNOWN_PID};
 use agent_core::logger::{LogLevel, SessionLogger};
 use agent_core::process::event::ProcessEvent;
-use agent_core::process::mapper::EventMapper;
+use agent_core::process::mapper::{emit_status_changed, EventMapper};
 use agent_core::process::stdio::StdioTransport;
 use agent_core::process::transport::{Transport, TransportError, TransportHandle};
+use agent_core::session_map::ConversationSessionMap;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,10 +26,7 @@ pub struct ClaudeInstance {
     transport: Arc<TokioMutex<Option<Box<dyn TransportHandle>>>>,
     status: Arc<Mutex<InstanceStatus>>,
     started: Arc<AtomicBool>,
-    /// conversation_id -> claude_session_id
-    sessions: Arc<Mutex<HashMap<String, String>>>,
-    /// claude_session_id -> conversation_id
-    session_to_conversation: Arc<Mutex<HashMap<String, String>>>,
+    session_map: ConversationSessionMap,
     active_session_id: Arc<Mutex<Option<String>>>,
     startup_lock: Arc<TokioMutex<()>>,
     out_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
@@ -47,8 +44,7 @@ impl Clone for ClaudeInstance {
             transport: self.transport.clone(),
             status: self.status.clone(),
             started: self.started.clone(),
-            sessions: self.sessions.clone(),
-            session_to_conversation: self.session_to_conversation.clone(),
+            session_map: self.session_map.clone(),
             active_session_id: self.active_session_id.clone(),
             startup_lock: self.startup_lock.clone(),
             out_tx: Mutex::new(self.out_tx.lock().unwrap().clone()),
@@ -70,8 +66,7 @@ impl ClaudeInstance {
             transport: Arc::new(TokioMutex::new(None)),
             status: Arc::new(Mutex::new(InstanceStatus::Stopped)),
             started: Arc::new(AtomicBool::new(false)),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            session_to_conversation: Arc::new(Mutex::new(HashMap::new())),
+            session_map: ConversationSessionMap::new(),
             active_session_id: Arc::new(Mutex::new(None)),
             startup_lock: Arc::new(TokioMutex::new(())),
             out_tx: Mutex::new(Some(out_tx)),
@@ -106,22 +101,8 @@ impl ClaudeInstance {
         self.transport.lock().await
     }
 
-    fn sessions_guard(&self) -> MutexGuard<'_, HashMap<String, String>> {
-        self.sessions.lock().unwrap()
-    }
-
-    fn session_to_conversation_guard(&self) -> MutexGuard<'_, HashMap<String, String>> {
-        self.session_to_conversation.lock().unwrap()
-    }
-
     fn emit_status(&self, status: InstanceStatus) {
-        self.event_sink.emit(
-            METHOD_STATUS_CHANGED,
-            json!({
-                KEY_INSTANCE_ID: self.config.id,
-                KEY_STATUS: status,
-            }),
-        );
+        emit_status_changed(&self.event_sink, &self.config.id, status);
     }
 
     fn set_status(&self, status: InstanceStatus) {
@@ -200,21 +181,10 @@ impl ClaudeInstance {
     /// If no mapping exists yet, fall back to the active session and record the
     /// bidirectional mapping for future messages.
     fn resolve_session_for_conversation(&self, conversation_id: &str) -> Result<String, InstanceError> {
-        if let Some(session_id) = self.sessions_guard().get(conversation_id) {
-            return Ok(session_id.clone());
-        }
-
-        let session_id = self
-            .active_session()
-            .clone()
-            .ok_or_else(|| InstanceError::NotRunning(ERR_NO_ACTIVE_SESSION.into()))?;
-
-        self.sessions_guard()
-            .insert(conversation_id.to_string(), session_id.clone());
-        self.session_to_conversation_guard()
-            .insert(session_id.clone(), conversation_id.to_string());
-
-        Ok(session_id)
+        let active = self.active_session().clone();
+        self.session_map
+            .resolve_or_fallback(conversation_id, active.as_deref())
+            .ok_or_else(|| InstanceError::NotRunning(ERR_NO_ACTIVE_SESSION.into()))
     }
 
     fn build_user_message_payload(message: &str) -> Value {
@@ -338,7 +308,7 @@ impl ClaudeInstance {
 
         let active_session_id = self.active_session().clone();
         let conversation_id = active_session_id
-            .and_then(|sid| self.session_to_conversation_guard().get(&sid).cloned())
+            .and_then(|sid| self.session_map.conversation_for_session(&sid))
             .unwrap_or_default();
 
         let mapper = EventMapper::new(self.config.id.clone(), conversation_id);
@@ -530,12 +500,12 @@ mod tests {
             .unwrap();
         assert_eq!(sid, "s-1");
         assert_eq!(
-            instance.sessions_guard().get(TEST_CONVERSATION_ID),
-            Some(&"s-1".to_string())
+            instance.session_map.session_for_conversation(TEST_CONVERSATION_ID),
+            Some("s-1".to_string())
         );
         assert_eq!(
-            instance.session_to_conversation_guard().get("s-1"),
-            Some(&TEST_CONVERSATION_ID.to_string())
+            instance.session_map.conversation_for_session("s-1"),
+            Some(TEST_CONVERSATION_ID.to_string())
         );
     }
 

@@ -1,7 +1,10 @@
 use crate::event_sink::DynEventSink;
+use crate::instance::InstanceStatus;
 use crate::process::event::ProcessEvent;
 use serde_json::{json, Map, Value};
 
+/// Method name emitted when an agent instance's status changes.
+pub const METHOD_STATUS_CHANGED: &str = "agent:status_changed";
 const METHOD_TOKEN: &str = "agent.token";
 const METHOD_THINKING: &str = "agent.thinking";
 const METHOD_PERMISSION: &str = "agent.permission";
@@ -18,6 +21,7 @@ const THINKING_TYPE_STEP_START: &str = "step-start";
 const THINKING_ID_PREFIX: &str = "thinking-";
 
 const KEY_INSTANCE_ID: &str = "instance_id";
+pub const STATUS_KEY_INSTANCE_ID: &str = "instance_id";
 const KEY_CONVERSATION_ID: &str = "conversation_id";
 const KEY_SESSION_ID: &str = "sessionID";
 const KEY_INTERACTION: &str = "interaction";
@@ -30,9 +34,21 @@ const KEY_ACTION: &str = "action";
 const KEY_QUESTIONS: &str = "questions";
 const KEY_TODOS: &str = "todos";
 const KEY_MESSAGE: &str = "message";
+pub const STATUS_KEY_STATUS: &str = "status";
 
 #[cfg(test)]
 const KEY_COMPLETED: &str = "completed";
+
+/// Emits an `agent:status_changed` notification for the given instance.
+pub fn emit_status_changed(sink: &DynEventSink, instance_id: &str, status: InstanceStatus) {
+    sink.emit(
+        METHOD_STATUS_CHANGED,
+        json!({
+            STATUS_KEY_INSTANCE_ID: instance_id,
+            STATUS_KEY_STATUS: status,
+        }),
+    );
+}
 
 /// Maps raw [`ProcessEvent`]s from an agent process into frontend-facing
 /// JSON-RPC payloads and forwards them through an [`EventSink`].

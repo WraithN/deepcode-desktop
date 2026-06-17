@@ -2,6 +2,15 @@ use crate::error::PluginError;
 use crate::event_sink::DynEventSink;
 use crate::instance::{AgentInstance, InstanceConfig};
 
+/// Checks whether a CLI program is installed by running it with a version flag.
+pub fn is_command_installed(program: &str, version_flag: &str) -> bool {
+    std::process::Command::new(program)
+        .arg(version_flag)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 pub trait AgentPlugin: Send + Sync {
     fn key(&self) -> &'static str;
     fn name(&self) -> &'static str;

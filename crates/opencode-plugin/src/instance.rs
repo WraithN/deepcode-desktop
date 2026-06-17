@@ -1,11 +1,11 @@
 use agent_core::error::InstanceError;
 use agent_core::event_sink::DynEventSink;
-use agent_core::instance::{AgentInstance, InstanceConfig, InstanceStatus};
+use agent_core::instance::{AgentInstance, InstanceConfig, InstanceStatus, UNKNOWN_PID};
 use agent_core::logger::{LogLevel, SessionLogger};
-use agent_core::process::mapper::EventMapper;
+use agent_core::process::mapper::{emit_status_changed, EventMapper};
 use agent_core::process::transport::TransportHandle;
+use agent_core::session_map::ConversationSessionMap;
 use serde_json::json;
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,9 +22,7 @@ const STARTUP_WAIT_MS: u64 = 500;
 const READY_POLL_COUNT: u32 = 20;
 const READY_POLL_MS: u64 = 200;
 const SSE_CHANNEL_CAPACITY: usize = 1000;
-const RUNNING_PID: u32 = 0;
 
-const METHOD_STATUS_CHANGED: &str = "agent:status_changed";
 const METHOD_QUESTION: &str = "agent.question";
 const METHOD_PERMISSION: &str = "agent.permission";
 const METHOD_TODO_WRITE: &str = "agent.todowrite";
@@ -35,7 +33,6 @@ const KEY_SESSION_ID: &str = "sessionID";
 const KEY_INTERACTION: &str = "interaction";
 const KEY_PARTS: &str = "parts";
 const KEY_INFO: &str = "info";
-const KEY_STATUS: &str = "status";
 
 const PLUGIN_KEY: &str = "opencode";
 
@@ -52,10 +49,7 @@ pub struct OpencodeInstance {
     serve_process: Arc<TokioMutex<Option<tokio::process::Child>>>,
     status: Arc<Mutex<InstanceStatus>>,
     started: Arc<AtomicBool>,
-    /// conversation_id -> opencode_session_id
-    sessions: Arc<Mutex<HashMap<String, String>>>,
-    /// opencode_session_id -> conversation_id
-    session_to_conversation: Arc<Mutex<HashMap<String, String>>>,
+    session_map: ConversationSessionMap,
     transport_handle: Arc<TokioMutex<Option<Box<dyn TransportHandle>>>>,
 }
 
@@ -69,20 +63,13 @@ impl OpencodeInstance {
             serve_process: Arc::new(TokioMutex::new(None)),
             status: Arc::new(Mutex::new(InstanceStatus::Stopped)),
             started: Arc::new(AtomicBool::new(false)),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            session_to_conversation: Arc::new(Mutex::new(HashMap::new())),
+            session_map: ConversationSessionMap::new(),
             transport_handle: Arc::new(TokioMutex::new(None)),
         }
     }
 
     fn emit_status(&self, status: InstanceStatus) {
-        self.event_sink.emit(
-            METHOD_STATUS_CHANGED,
-            json!({
-                KEY_INSTANCE_ID: self.config.id,
-                KEY_STATUS: status,
-            }),
-        );
+        emit_status_changed(&self.event_sink, &self.config.id, status);
     }
 
     fn base_url(&self) -> Option<String> {
@@ -131,8 +118,8 @@ impl OpencodeInstance {
 
         *self.base_url.lock().unwrap() = Some(base_url.clone());
         *self.serve_process.lock().await = Some(child);
-        *self.status.lock().unwrap() = InstanceStatus::Running { pid: RUNNING_PID };
-        self.emit_status(InstanceStatus::Running { pid: RUNNING_PID });
+        *self.status.lock().unwrap() = InstanceStatus::Running { pid: UNKNOWN_PID };
+        self.emit_status(InstanceStatus::Running { pid: UNKNOWN_PID });
 
         self.logger.log(
             &self.config.id,
@@ -150,16 +137,13 @@ impl OpencodeInstance {
 
         let event_sink = self.event_sink.clone();
         let instance_id = self.config.id.clone();
-        let session_to_conversation = self.session_to_conversation.clone();
+        let session_map = self.session_map.clone();
         tokio::spawn(async move {
             while let Some(payload) = rx.recv().await {
                 if let Some(event) = crate::mapper::map_opencode_sse(&payload) {
                     let session_id = crate::mapper::extract_session_id(&payload).unwrap_or_default();
-                    let conversation_id = session_to_conversation
-                        .lock()
-                        .unwrap()
-                        .get(&session_id)
-                        .cloned()
+                    let conversation_id = session_map
+                        .conversation_for_session(&session_id)
                         .unwrap_or_default();
                     let mapper = EventMapper::new(instance_id.clone(), conversation_id);
                     mapper.map(event, &event_sink);
@@ -191,18 +175,11 @@ impl OpencodeInstance {
     }
 
     fn find_session_for_conversation(&self, conversation_id: &str) -> Option<String> {
-        let guard = self.sessions.lock().unwrap();
-        guard.get(conversation_id).cloned()
+        self.session_map.session_for_conversation(conversation_id)
     }
 
     fn store_session(&self, conversation_id: &str, session_id: &str) {
-        let mut guard = self.sessions.lock().unwrap();
-        guard.insert(conversation_id.to_string(), session_id.to_string());
-    }
-
-    fn map_session_to_conversation(&self, session_id: &str, conversation_id: &str) {
-        let mut guard = self.session_to_conversation.lock().unwrap();
-        guard.insert(session_id.to_string(), conversation_id.to_string());
+        self.session_map.insert(conversation_id, session_id);
     }
 
     fn emit_interaction(
@@ -294,7 +271,7 @@ impl AgentInstance for OpencodeInstance {
 
             self.detect_and_emit_interaction(&result, &conversation_id, &session_id);
 
-            self.map_session_to_conversation(&session_id, &conversation_id);
+            self.session_map.insert(&conversation_id, &session_id);
             Ok(())
         })
     }
