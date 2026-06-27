@@ -1,6 +1,7 @@
 import LoginPage from './pages/LoginPage';
 import SelectAgentPage from './pages/SelectAgentPage';
 import WorkspacePage from './pages/WorkspacePage';
+import DashboardPage from './pages/DashboardPage';
 import type { ReactNode } from 'react';
 
 console.log("[routes.tsx] Loading route modules...");
@@ -30,6 +31,11 @@ export const routes: RouteConfig[] = [
     name: '工作区',
     path: '/workspace',
     element: <WorkspacePage />,
+  },
+  {
+    name: '数据大盘',
+    path: '/dashboard',
+    element: <DashboardPage />,
   },
   {
     name: '首页',

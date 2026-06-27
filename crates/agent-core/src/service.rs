@@ -128,7 +128,7 @@ impl AgentService {
             .get(&req.plugin_key)
             .ok_or(PluginError::NotFound(req.plugin_key.clone()))?;
 
-        let id = format!("{}-{}", req.plugin_key, uuid::Uuid::new_v4());
+        let id = req.plugin_key.clone();
         let config = InstanceConfig::new(id.clone(), req.name.clone(), req.workspace.clone());
 
         let instance = plugin.create_instance(config, self.event_sink.clone())?;

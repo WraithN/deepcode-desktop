@@ -1,0 +1,8 @@
+target/
+node_modules/
+*.log
+.DS_Store
+.git/
+.github/
+.vscode/
+.idea/

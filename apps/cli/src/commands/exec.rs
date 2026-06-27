@@ -152,7 +152,7 @@ fn read_opencode_api_key(provider: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-async fn start_gatewayd() -> Result<(), anyhow::Error> {
+pub(crate) async fn start_gatewayd() -> Result<(), anyhow::Error> {
     info!("Starting gatewayd...");
 
     // Inject session ID and API keys from opencode config into gatewayd environment

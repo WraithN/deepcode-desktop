@@ -89,16 +89,16 @@ pub async fn run(args: GwdArgs) -> Result<(), anyhow::Error> {
             }
 
             let mut child = cmd.spawn()?;
-            info!("dh-gatewayd started with PID: {}", child.id());
+            let pid = child.id();
+            println!("dh-gatewayd started (PID: {})", pid);
 
             if !daemon {
+                println!("Press Ctrl+C to stop the daemon");
                 let status = child.wait()?;
                 if !status.success() {
                     error!("dh-gatewayd exited with status: {:?}", status.code());
                 }
             }
-
-            println!("dh-gatewayd started");
         }
 
     if let GatewaydCommands::Stop = &cmd {
@@ -134,24 +134,32 @@ pub async fn run(args: GwdArgs) -> Result<(), anyhow::Error> {
                 Some(pid) if is_process_alive(pid) => {
                     let client = reqwest::Client::new();
                     let mut found = false;
-                    for port in [2346u16, 2347, 2348, 2349, 2350] {
-                        let url = format!("http://127.0.0.1:{}/health", port);
-                        if let Ok(resp) = client.get(&url).timeout(std::time::Duration::from_secs(1)).send().await {
+                    for admin_port in [2346u16, 2347, 2348, 2349, 2350] {
+                        let health_url = format!("http://127.0.0.1:{}/health", admin_port);
+                        if let Ok(resp) = client.get(&health_url).timeout(std::time::Duration::from_secs(1)).send().await {
                             if resp.status().is_success() {
                                 let body: serde_json::Value = resp.json().await?;
+                                let api_port = admin_port - 1;
                                 println!("dh-gatewayd is running (PID: {})", pid);
-                                println!("  Admin port: {}", port);
+                                println!("  Admin port: {}", admin_port);
+                                println!("  API port: {}", api_port);
                                 println!("  Version: {}", body.get("version").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                                println!();
+                                println!("  Endpoints:");
+                                println!("    WebSocket: ws://127.0.0.1:{}/agents/events", admin_port);
+                                println!("    OpenAI: http://127.0.0.1:{}/v1/chat/completions", api_port);
+                                println!("    Anthropic: http://127.0.0.1:{}/v1/messages", api_port);
+                                println!();
 
                                 // Show attached agents
-                                let agents_url = format!("http://127.0.0.1:{}/agents", port);
+                                let agents_url = format!("http://127.0.0.1:{}/agents", admin_port);
                                 if let Ok(agents_resp) = client.get(&agents_url).timeout(std::time::Duration::from_secs(2)).send().await {
                                     if agents_resp.status().is_success() {
                                         let agents: Vec<serde_json::Value> = agents_resp.json().await.unwrap_or_default();
                                         if agents.is_empty() {
                                             println!("  Agents: none");
                                         } else {
-                                            println!("  Agents:");
+                                            println!("  Agents ({}):", agents.len());
                                             for agent in agents {
                                                 let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
                                                 let plugin = agent.get("plugin_key").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -173,13 +181,13 @@ pub async fn run(args: GwdArgs) -> Result<(), anyhow::Error> {
                         }
                     }
                     if !found {
-                        println!("dh-gatewayd lock file exists (PID: {}) but process is not responding on any known port", pid);
-                        println!("  Tip: run `dh gwd stop` to clean up stale lock file");
+                        let _ = dh_platform::fs::remove_lock_file();
+                        println!("dh-gatewayd is not running (stale lock file cleaned up)");
                     }
                 }
                 Some(_) => {
-                    println!("dh-gatewayd lock file exists but the process is dead");
-                    println!("  Tip: run `dh gwd stop` to clean up stale lock file");
+                    let _ = dh_platform::fs::remove_lock_file();
+                    println!("dh-gatewayd is not running (stale lock file cleaned up)");
                 }
                 None => {
                     println!("dh-gatewayd is not running");

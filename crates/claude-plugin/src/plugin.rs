@@ -39,7 +39,6 @@ impl AgentPlugin for ClaudePlugin {
             return Err(PluginError::NotInstalled(PROGRAM_CLAUDE.to_string()));
         }
         let instance = crate::instance::ClaudeInstance::new(config, event_sink, self.logger.clone());
-        instance.start_in_background();
         Ok(Box::new(instance))
     }
 }

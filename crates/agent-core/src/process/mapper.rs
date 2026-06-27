@@ -17,7 +17,6 @@ const INTERACTION_TYPE_PERMISSION: &str = "permission";
 const INTERACTION_TYPE_QUESTION: &str = "question";
 const INTERACTION_TYPE_TODO_WRITE: &str = "todowrite";
 
-const THINKING_TYPE_STEP_START: &str = "step-start";
 const THINKING_ID_PREFIX: &str = "thinking-";
 
 const KEY_INSTANCE_ID: &str = "instance_id";
@@ -140,7 +139,31 @@ impl EventMapper {
                     json!({
                         KEY_CONTENT: content,
                         KEY_ID: format!("{THINKING_ID_PREFIX}{}", self.instance_id),
-                        KEY_TYPE: THINKING_TYPE_STEP_START,
+                        KEY_TYPE: "thinking",
+                    }),
+                );
+            }
+            ProcessEvent::ToolUse { name, input } => {
+                self.emit_with_base(
+                    sink,
+                    METHOD_THINKING,
+                    json!({
+                        KEY_CONTENT: format!("{} {}", name, input),
+                        KEY_ID: format!("{THINKING_ID_PREFIX}{}", self.instance_id),
+                        KEY_TYPE: "tool_use",
+                    }),
+                );
+            }
+            ProcessEvent::ToolResult { name, result, failed } => {
+                self.emit_with_base(
+                    sink,
+                    METHOD_THINKING,
+                    json!({
+                        KEY_CONTENT: result,
+                        KEY_ID: format!("{THINKING_ID_PREFIX}{}", self.instance_id),
+                        KEY_TYPE: "tool_result",
+                        KEY_TOOL_NAME: name,
+                        "failed": failed,
                     }),
                 );
             }
@@ -244,7 +267,7 @@ mod tests {
         assert_eq!(events[0].0, METHOD_THINKING);
         assert_eq!(events[0].1[KEY_CONTENT], "...");
         assert_eq!(events[0].1[KEY_ID], "thinking-i-1");
-        assert_eq!(events[0].1[KEY_TYPE], THINKING_TYPE_STEP_START);
+        assert_eq!(events[0].1[KEY_TYPE], "thinking");
     }
 
     #[test]

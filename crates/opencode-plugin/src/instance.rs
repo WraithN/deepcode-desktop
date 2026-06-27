@@ -201,6 +201,21 @@ impl OpencodeInstance {
         );
     }
 
+    async fn reset_and_restart(&self) -> Result<(), InstanceError> {
+        if let Some(mut child) = self.serve_process.lock().await.take() {
+            let _ = child.start_kill();
+        }
+        if let Some(mut handle) = self.transport_handle.lock().await.take() {
+            let _ = handle.close().await;
+        }
+        self.session_map.clear();
+        *self.base_url.lock().unwrap() = None;
+        *self.status.lock().unwrap() = InstanceStatus::Stopped;
+        self.started.store(false, Ordering::SeqCst);
+        self.emit_status(InstanceStatus::Stopped);
+        self.ensure_started().await
+    }
+
     fn detect_and_emit_interaction(
         &self,
         result: &serde_json::Value,
@@ -258,7 +273,7 @@ impl AgentInstance for OpencodeInstance {
         Box::pin(async move {
             self.ensure_started().await?;
 
-            let session_id = match self.find_session_for_conversation(&conversation_id) {
+            let mut session_id = match self.find_session_for_conversation(&conversation_id) {
                 Some(sid) => sid,
                 None => {
                     let sid = self.create_opencode_session().await?;
@@ -267,7 +282,16 @@ impl AgentInstance for OpencodeInstance {
                 }
             };
 
-            let result = self.send_message_http(&session_id, &message).await?;
+            let result = match self.send_message_http(&session_id, &message).await {
+                Ok(r) => r,
+                Err(e) => {
+                    log::warn!("send_message_http failed, resetting and retrying: {e}");
+                    self.reset_and_restart().await?;
+                    session_id = self.create_opencode_session().await?;
+                    self.store_session(&conversation_id, &session_id);
+                    self.send_message_http(&session_id, &message).await?
+                }
+            };
 
             self.detect_and_emit_interaction(&result, &conversation_id, &session_id);
 
@@ -285,8 +309,15 @@ impl AgentInstance for OpencodeInstance {
         let message = message.to_string();
         Box::pin(async move {
             self.ensure_started().await?;
-            self.send_message_http(&session_id, &message).await?;
-            Ok(())
+            match self.send_message_http(&session_id, &message).await {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    log::warn!("respond send_message_http failed, resetting and retrying: {e}");
+                    self.reset_and_restart().await?;
+                    self.send_message_http(&session_id, &message).await?;
+                    Ok(())
+                }
+            }
         })
     }
 

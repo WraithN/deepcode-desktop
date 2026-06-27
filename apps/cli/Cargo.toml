@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 dh-platform = { path = "../../crates/dh-platform" }
 dh-db = { path = "../../crates/dh-db" }
+dh-config = { path = "../../crates/dh-config" }
+dh-config-adapter = { path = "../../crates/dh-config-adapter" }
 
 tokio.workspace = true
 serde.workspace = true
@@ -25,6 +27,7 @@ rusqlite = { workspace = true, features = ["bundled"] }
 clap.workspace = true
 uuid.workspace = true
 dirs.workspace = true
+toml.workspace = true
 
 futures-util = "0.3"
 tokio-tungstenite = "0.29"

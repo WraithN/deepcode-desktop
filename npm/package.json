@@ -1,0 +1,37 @@
+{
+  "name": "deepharness",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "DeepHarness CLI - Connect to AI coding agents with Claude Code, OpenCode, and more",
+  "bin": {
+    "dh": "./bin/dh.js"
+  },
+  "scripts": {},
+  "keywords": [
+    "ai",
+    "coding",
+    "agent",
+    "claude",
+    "opencode",
+    "chat",
+    "cli",
+    "gateway",
+    "websocket"
+  ],
+  "author": "DeepHarness Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/deepharness/deepharness-ent-desktop"
+  },
+  "bugs": {
+    "url": "https://github.com/deepharness/deepharness-ent-desktop/issues"
+  },
+  "homepage": "https://github.com/deepharness/deepharness-ent-desktop",
+  "publishConfig": {
+    "access": "public"
+  }
+}

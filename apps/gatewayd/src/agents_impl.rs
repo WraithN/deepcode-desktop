@@ -51,7 +51,8 @@ pub fn init_agent_service(
     let log_file = data_dir.join("agent.log");
     let logger = Arc::new(SessionLogger::new(event_sink.clone(), conn, Some(log_file)));
     let mut agent_service = AgentService::new(logger.clone(), event_sink.clone());
-    agent_service.register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(logger)));
+    agent_service.register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(logger.clone())));
+    agent_service.register_plugin(Box::new(claude_plugin::plugin::ClaudePlugin::new(logger)));
     Ok(agent_service)
 }
 

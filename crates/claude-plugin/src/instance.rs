@@ -32,7 +32,6 @@ pub struct ClaudeInstance {
     out_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
     out_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Value>>>,
     shutdown: Arc<AtomicBool>,
-    startup_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl Clone for ClaudeInstance {
@@ -50,7 +49,6 @@ impl Clone for ClaudeInstance {
             out_tx: Mutex::new(self.out_tx.lock().unwrap().clone()),
             out_rx: Mutex::new(None),
             shutdown: self.shutdown.clone(),
-            startup_handle: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -72,25 +70,12 @@ impl ClaudeInstance {
             out_tx: Mutex::new(Some(out_tx)),
             out_rx: Mutex::new(Some(out_rx)),
             shutdown: Arc::new(AtomicBool::new(false)),
-            startup_handle: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// Start the Claude process eagerly. This is invoked automatically when the
-    /// plugin creates an instance, but may also be called manually.
+    /// Start the Claude process lazily before the first user message.
     pub async fn start(&self) -> Result<(), InstanceError> {
         self.ensure_started().await
-    }
-
-    /// Spawn a background task that eagerly starts this instance and log any error.
-    pub fn start_in_background(&self) {
-        let instance = self.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(e) = instance.start().await {
-                log::error!("{}: failed to start claude instance {}: {}", LOG_SOURCE, instance.id(), e);
-            }
-        });
-        *self.startup_handle.lock().unwrap() = Some(handle);
     }
 
     fn active_session(&self) -> MutexGuard<'_, Option<String>> {
@@ -129,8 +114,6 @@ impl ClaudeInstance {
             args.push(format!("{}{}", MODEL_PREFIX, model));
         }
 
-        args.push(format!("{}{}", WORKTREE_PREFIX, self.config.workspace));
-
         if let Some(session_id) = &self.config.session_id {
             args.push(format!("{}{}", RESUME_PREFIX, session_id));
         }
@@ -138,7 +121,7 @@ impl ClaudeInstance {
         StdioTransport::new(PROGRAM_CLAUDE, args, self.config.workspace.clone())
     }
 
-    /// Start the Claude process, read the init event, and mark the instance running.
+    /// Start the Claude process and mark the instance running.
     async fn ensure_started(&self) -> Result<(), InstanceError> {
         let _guard = self.startup_lock.lock().await;
 
@@ -150,13 +133,11 @@ impl ClaudeInstance {
         self.set_status(InstanceStatus::Starting);
 
         let transport = self.build_transport();
-        let mut handle = transport
+        let handle = transport
             .start()
             .await
             .map_err(|e| InstanceError::ProcessError(format!("{}: {}", ERR_START_FAILED, e)))?;
 
-        let session_id = read_init_session_id(&mut handle).await?;
-        *self.active_session() = Some(session_id);
         *self.transport_guard().await = Some(handle);
         self.started.store(true, Ordering::SeqCst);
         self.set_status(InstanceStatus::Running { pid: UNKNOWN_PID });
@@ -177,23 +158,15 @@ impl ClaudeInstance {
         Ok(())
     }
 
-    /// Looks up the Claude session id mapped to `conversation_id`.
-    /// If no mapping exists yet, fall back to the active session and record the
-    /// bidirectional mapping for future messages.
-    fn resolve_session_for_conversation(&self, conversation_id: &str) -> Result<String, InstanceError> {
-        let active = self.active_session().clone();
-        self.session_map
-            .resolve_or_fallback(conversation_id, active.as_deref())
-            .ok_or_else(|| InstanceError::NotRunning(ERR_NO_ACTIVE_SESSION.into()))
-    }
-
     fn build_user_message_payload(message: &str) -> Value {
         json!({
-            KEY_TYPE: PAYLOAD_TYPE_MESSAGE,
-            KEY_ROLE: ROLE_USER,
-            KEY_CONTENT: [
-                { KEY_TYPE: CONTENT_TYPE_TEXT, KEY_TEXT: message }
-            ]
+            KEY_TYPE: ROLE_USER,
+            KEY_MESSAGE: {
+                KEY_ROLE: ROLE_USER,
+                KEY_CONTENT: [
+                    { KEY_TYPE: CONTENT_TYPE_TEXT, KEY_TEXT: message }
+                ]
+            }
         })
     }
 
@@ -338,8 +311,8 @@ impl AgentInstance for ClaudeInstance {
         let message = message.to_string();
 
         Box::pin(async move {
+            self.session_map.insert(&conversation_id, &conversation_id);
             self.ensure_started().await?;
-            let _session_id = self.resolve_session_for_conversation(&conversation_id)?;
             self.do_send(Self::build_user_message_payload(&message))
         })
     }
@@ -378,52 +351,6 @@ impl AgentInstance for ClaudeInstance {
             Ok(())
         })
     }
-}
-
-/// Waits for Claude's `system/init` event and extracts the session id.
-/// Returns an error if the init event does not arrive within `INIT_TIMEOUT_SECS`.
-async fn read_init_session_id(
-    handle: &mut Box<dyn TransportHandle>,
-) -> Result<String, InstanceError> {
-    let result = timeout(Duration::from_secs(INIT_TIMEOUT_SECS), async {
-        loop {
-            match try_read_next_init_session_id(handle).await? {
-                Some(session_id) => return Ok::<String, InstanceError>(session_id),
-                None => continue,
-            }
-        }
-    })
-    .await;
-
-    match result {
-        Ok(Ok(session_id)) => Ok(session_id),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(InstanceError::ProcessError(ERR_INIT_TIMEOUT.into())),
-    }
-}
-
-/// Reads one event from Claude. Returns `Ok(Some(session_id))` when a
-/// `system/init` event carrying a session id is seen, `Ok(None)` for any other
-/// event, and `Err` on transport failure.
-async fn try_read_next_init_session_id(
-    handle: &mut Box<dyn TransportHandle>,
-) -> Result<Option<String>, InstanceError> {
-    let value = handle
-        .receive()
-        .await
-        .map_err(|e| InstanceError::ProcessError(e.to_string()))?;
-
-    let Some(event) = parse_claude_value(&value) else {
-        return Ok(None);
-    };
-    let ClaudeRawEvent::System { subtype, extra } = event else {
-        return Ok(None);
-    };
-    if subtype != SUBTYPE_INIT {
-        return Ok(None);
-    }
-
-    Ok(extra.get(KEY_SESSION_ID).and_then(|v| v.as_str()).map(String::from))
 }
 
 fn extract_session_id(raw: &ClaudeRawEvent) -> Option<String> {
@@ -481,24 +408,20 @@ mod tests {
     #[test]
     fn test_build_user_message_payload() {
         let payload = ClaudeInstance::build_user_message_payload("hello");
-        assert_eq!(payload[KEY_TYPE], PAYLOAD_TYPE_MESSAGE);
-        assert_eq!(payload[KEY_ROLE], ROLE_USER);
-        assert_eq!(payload[KEY_CONTENT][0][KEY_TYPE], CONTENT_TYPE_TEXT);
-        assert_eq!(payload[KEY_CONTENT][0][KEY_TEXT], "hello");
+        assert_eq!(payload[KEY_TYPE], ROLE_USER);
+        assert_eq!(payload[KEY_MESSAGE][KEY_ROLE], ROLE_USER);
+        assert_eq!(payload[KEY_MESSAGE][KEY_CONTENT][0][KEY_TYPE], CONTENT_TYPE_TEXT);
+        assert_eq!(payload[KEY_MESSAGE][KEY_CONTENT][0][KEY_TEXT], "hello");
     }
 
     #[test]
-    fn test_resolve_session_for_conversation() {
+    fn test_session_map_insert() {
         let logger = dummy_logger();
         let sink: DynEventSink = Arc::new(MockSink::default());
         let instance = ClaudeInstance::new(dummy_config(), sink, logger);
 
-        *instance.active_session() = Some("s-1".into());
+        instance.session_map.insert(TEST_CONVERSATION_ID, "s-1");
 
-        let sid = instance
-            .resolve_session_for_conversation(TEST_CONVERSATION_ID)
-            .unwrap();
-        assert_eq!(sid, "s-1");
         assert_eq!(
             instance.session_map.session_for_conversation(TEST_CONVERSATION_ID),
             Some("s-1".to_string())

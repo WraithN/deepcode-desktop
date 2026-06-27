@@ -2,8 +2,18 @@ use clap::Args;
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::io::Write;
+use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tracing::{error, info};
+
+const ADMIN_PORTS: [u16; 5] = [2346, 2347, 2348, 2349, 2350];
+const HEALTH_TIMEOUT_SECS: u64 = 1;
+const STARTUP_WAIT_ATTEMPTS: usize = 40;
+const STARTUP_WAIT_DELAY_MS: u64 = 250;
+const WS_SETTLE_DELAY_MS: u64 = 300;
+const AGENT_RESPONSE_TIMEOUT_SECS: u64 = 300;
+const AGENTS_REQUEST_TIMEOUT_SECS: u64 = 5;
+const CREATE_AGENT_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Args, Debug)]
 pub struct ChatArgs {
@@ -21,7 +31,7 @@ pub async fn run(args: ChatArgs) -> Result<(), anyhow::Error> {
     }
 
     let client = reqwest::Client::new();
-    let admin_port = find_admin_port(&client).await?;
+    let admin_port = ensure_gatewayd_running(&client).await?;
     let base_url = format!("http://127.0.0.1:{}", admin_port);
     let ws_url = format!("ws://127.0.0.1:{}/agents/events", admin_port);
 
@@ -32,7 +42,7 @@ pub async fn run(args: ChatArgs) -> Result<(), anyhow::Error> {
 
     // Establish WebSocket connection to receive agent events.
     let (ws_stream, _) = connect_async(format!("{}?instance_id={}", ws_url, instance_id)).await?;
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(WS_SETTLE_DELAY_MS)).await;
 
     let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel::<Result<Message, tokio_tungstenite::tungstenite::Error>>();
     tokio::spawn(async move {
@@ -95,48 +105,84 @@ pub async fn run(args: ChatArgs) -> Result<(), anyhow::Error> {
             }
         }
 
-        // Drain WebSocket events for up to 10 seconds after sending.
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
-        loop {
-            let timeout = tokio::time::sleep_until(deadline);
-            tokio::pin!(timeout);
-            match tokio::select! {
-                msg = ws_rx.recv() => msg,
-                _ = timeout => None,
-            } {
-                Some(Ok(Message::Text(text))) => {
-                    if let Ok(event) = serde_json::from_str::<Value>(&text) {
-                        print_event(&event, &mut output_state);
-                    }
-                }
-                Some(Ok(Message::Close(_))) => {
-                    eprintln!("\n[agent disconnected]");
-                    break;
-                }
-                Some(Err(e)) => {
-                    eprintln!("[ws] error: {}", e);
-                    break;
-                }
-                Some(Ok(_)) => {}
-                None => break,
-            }
-        }
+        wait_for_agent_response(&mut ws_rx, &mut output_state).await;
     }
 
     println!("Goodbye.");
     Ok(())
 }
 
-async fn find_admin_port(client: &reqwest::Client) -> Result<u16, anyhow::Error> {
-    for port in [2346u16, 2347, 2348, 2349, 2350] {
-        let url = format!("http://127.0.0.1:{}/health", port);
-        if let Ok(resp) = client.get(&url).timeout(std::time::Duration::from_secs(1)).send().await {
-            if resp.status().is_success() {
-                return Ok(port);
+async fn wait_for_agent_response(
+    ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Result<Message, tokio_tungstenite::tungstenite::Error>>,
+    output_state: &mut ReplOutputState,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(AGENT_RESPONSE_TIMEOUT_SECS);
+    loop {
+        let timeout = tokio::time::sleep_until(deadline);
+        tokio::pin!(timeout);
+        match tokio::select! {
+            msg = ws_rx.recv() => msg,
+            _ = timeout => None,
+        } {
+            Some(Ok(Message::Text(text))) => {
+                if let Ok(event) = serde_json::from_str::<Value>(&text) {
+                    if print_event(&event, output_state) {
+                        break;
+                    }
+                }
             }
+            Some(Ok(Message::Close(_))) => {
+                eprintln!("\n[agent disconnected]");
+                break;
+            }
+            Some(Err(e)) => {
+                eprintln!("[ws] error: {}", e);
+                break;
+            }
+            Some(Ok(_)) => {}
+            None => break,
+        }
+    }
+}
+
+async fn ensure_gatewayd_running(client: &reqwest::Client) -> Result<u16, anyhow::Error> {
+    if let Ok(port) = find_admin_port(client).await {
+        return Ok(port);
+    }
+
+    println!("dh-gatewayd is not running; starting it now...");
+    crate::commands::exec::start_gatewayd().await?;
+    wait_for_admin_port(client).await
+}
+
+async fn wait_for_admin_port(client: &reqwest::Client) -> Result<u16, anyhow::Error> {
+    for _ in 0..STARTUP_WAIT_ATTEMPTS {
+        if let Ok(port) = find_admin_port(client).await {
+            return Ok(port);
+        }
+        tokio::time::sleep(Duration::from_millis(STARTUP_WAIT_DELAY_MS)).await;
+    }
+
+    anyhow::bail!("dh-gatewayd did not become ready after startup")
+}
+
+async fn find_admin_port(client: &reqwest::Client) -> Result<u16, anyhow::Error> {
+    for port in ADMIN_PORTS {
+        let url = format!("http://127.0.0.1:{}/health", port);
+        if is_healthy(client, &url).await {
+            return Ok(port);
         }
     }
     anyhow::bail!("dh-gatewayd is not running on any known admin port")
+}
+
+async fn is_healthy(client: &reqwest::Client, url: &str) -> bool {
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(HEALTH_TIMEOUT_SECS))
+        .send()
+        .await;
+    response.map(|resp| resp.status().is_success()).unwrap_or(false)
 }
 
 async fn find_or_create_instance(
@@ -147,7 +193,7 @@ async fn find_or_create_instance(
     let list_url = format!("{}/agents", base_url);
     let resp = client
         .get(&list_url)
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(Duration::from_secs(AGENTS_REQUEST_TIMEOUT_SECS))
         .send()
         .await?;
 
@@ -181,7 +227,7 @@ async fn find_or_create_instance(
     let resp = client
         .post(&create_url)
         .json(&payload)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(Duration::from_secs(CREATE_AGENT_TIMEOUT_SECS))
         .send()
         .await?;
 
@@ -200,7 +246,7 @@ struct ReplOutputState {
     ai_started: bool,
 }
 
-fn print_event(event: &Value, state: &mut ReplOutputState) {
+fn print_event(event: &Value, state: &mut ReplOutputState) -> bool {
     let event_type = event
         .get("event_type")
         .and_then(|v| v.as_str())
@@ -232,7 +278,22 @@ fn print_event(event: &Value, state: &mut ReplOutputState) {
                         println!();
                         state.ai_started = false;
                     }
-                    println!("[thinking]>>>> {}", text);
+                    let think_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let prefix = match think_type {
+                        "tool_use" => "===> tool_use => ".to_string(),
+                        "tool_result" => {
+                            let name = payload.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
+                            let failed = payload.get("failed").and_then(|v| v.as_bool()).unwrap_or(false);
+                            if failed {
+                                format!("===> tool_result [FAILED] {} => ", name)
+                            } else {
+                                format!("===> tool_result {} => ", name)
+                            }
+                        }
+                        _ => "===> ai thinking => ".to_string(),
+                    };
+                    println!("{} {}", prefix, text);
+                    let _ = std::io::stdout().flush();
                 }
             }
         }
@@ -253,6 +314,7 @@ fn print_event(event: &Value, state: &mut ReplOutputState) {
                 println!();
                 state.ai_started = false;
             }
+            return true;
         }
         "agent.question" | "agent.permission" | "agent.todowrite" => {
             if state.ai_started {
@@ -263,4 +325,5 @@ fn print_event(event: &Value, state: &mut ReplOutputState) {
         }
         _ => {}
     }
+    false
 }

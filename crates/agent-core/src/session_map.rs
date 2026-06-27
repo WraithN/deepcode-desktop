@@ -44,6 +44,12 @@ impl ConversationSessionMap {
             .cloned()
     }
 
+    /// Clears all mappings.
+    pub fn clear(&self) {
+        self.conversation_to_session.lock().unwrap().clear();
+        self.session_to_conversation.lock().unwrap().clear();
+    }
+
     /// Looks up the session for `conversation_id`.
     ///
     /// If no mapping exists and `fallback_session` is provided, the fallback is

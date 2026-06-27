@@ -1,6 +1,8 @@
 use clap::Subcommand;
 use tracing::{error, info};
 
+use crate::commands::config_layer::{self, ConfigLayerCommands};
+
 #[derive(Subcommand, Debug)]
 pub enum ConfigCommands {
     /// Set a configuration value
@@ -20,6 +22,10 @@ pub enum ConfigCommands {
     /// Refresh data from cloud
     #[command(subcommand)]
     Refresh(RefreshCommands),
+    /// Show, validate, or apply the unified configuration layer
+    /// (skills / models / mcp / rules).
+    #[command(flatten)]
+    Layer(ConfigLayerCommands),
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,6 +122,9 @@ pub async fn run(command: ConfigCommands) -> Result<(), anyhow::Error> {
                 refresh_from_cloud(KEY_SKILLS_DATA, "/api/skills", "skills").await?;
             }
         },
+        ConfigCommands::Layer(cmd) => {
+            config_layer::run(cmd).await?;
+        }
     }
 
     Ok(())
