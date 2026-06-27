@@ -292,7 +292,7 @@ dh-gatewayd --daemon --agent-type opencode
 | `POST /context` | Admin | 由 `dh exec` 注入 `agent_type / session_id / workspace / model` |
 | `POST /sessions` | Admin | 创建 AG-UI session，返回 `sessionId`（同时作为 AG-UI `threadId`） |
 | `POST /sessions/{sessionId}/agents` | Admin | 在指定 session 下创建 opencode / claude-code 实例 |
-| `GET /sessions/{sessionId}/events` | Admin | WebSocket 实时事件流，双向收发 AG-UI 事件 |
+| `WS /sessions/{sessionId}/events` | Admin | WebSocket 实时事件流，双向收发 AG-UI 事件 |
 | `POST /sessions/{sessionId}/runs` | Admin | HTTP POST + SSE，启动一次 run 并流式返回 AG-UI 事件 |
 | `GET /mcp/servers`、`GET /mcp/tools`、`POST /mcp/tools/{name}/call` | Admin | MCP 聚合器（仅在配置了 MCP server 时启用） |
 | `GET /admin/reporter/status` | Admin | 远程上报器状态 |

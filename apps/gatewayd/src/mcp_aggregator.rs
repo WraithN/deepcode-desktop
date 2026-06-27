@@ -5,7 +5,7 @@ use axum::{
 };
 use dh_core::mcp::client::McpClient;
 use dh_core::mcp::types::{Tool, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -56,9 +56,8 @@ impl McpRegistry {
         // Check if aggregator is enabled
         let enabled: bool = {
             let mut stmt = conn.prepare("SELECT value FROM configs WHERE key = ?1")?;
-            let mut rows = stmt.query_map([MCP_AGGREGATOR_ENABLED_KEY], |row| {
-                row.get::<_, String>(0)
-            })?;
+            let mut rows =
+                stmt.query_map([MCP_AGGREGATOR_ENABLED_KEY], |row| row.get::<_, String>(0))?;
             match rows.next() {
                 Some(Ok(v)) => v.parse().unwrap_or(true),
                 _ => true,
@@ -72,7 +71,7 @@ impl McpRegistry {
 
         // Load enabled servers
         let mut stmt = conn.prepare(
-            "SELECT name, command, args, env, enabled FROM mcp_servers WHERE enabled = 1"
+            "SELECT name, command, args, env, enabled FROM mcp_servers WHERE enabled = 1",
         )?;
         let rows = stmt.query_map([], |row| {
             let args_json: String = row.get(2)?;
@@ -94,10 +93,13 @@ impl McpRegistry {
             match Self::spawn_client(&config).await {
                 Ok(client) => {
                     info!("MCP server '{}' initialized", name);
-                    registry.clients.insert(name.clone(), McpClientEntry {
-                        config,
-                        client: Arc::new(client),
-                    });
+                    registry.clients.insert(
+                        name.clone(),
+                        McpClientEntry {
+                            config,
+                            client: Arc::new(client),
+                        },
+                    );
                 }
                 Err(e) => {
                     error!("Failed to initialize MCP server '{}': {}", name, e);
@@ -113,7 +115,8 @@ impl McpRegistry {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
-        let client = McpClient::spawn(&config.command, &config.args, &config.env, &workspace).await?;
+        let client =
+            McpClient::spawn(&config.command, &config.args, &config.env, &workspace).await?;
         client.initialize().await?;
         Ok(client)
     }
@@ -141,15 +144,22 @@ impl McpRegistry {
 
     /// Call a tool by its namespaced name (e.g., "filesystem:read_file")
     pub async fn call_tool(&self, full_name: &str, arguments: Value) -> anyhow::Result<ToolResult> {
-        let (namespace, tool_name) = full_name
-            .split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("Invalid tool name '{}': missing namespace separator", full_name))?;
+        let (namespace, tool_name) = full_name.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid tool name '{}': missing namespace separator",
+                full_name
+            )
+        })?;
 
-        let entry = self.clients
+        let entry = self
+            .clients
             .get(namespace)
             .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not found", namespace))?;
 
-        entry.client.call_tool(tool_name, arguments).await
+        entry
+            .client
+            .call_tool(tool_name, arguments)
+            .await
             .map_err(|e| anyhow::anyhow!("MCP tool call failed: {}", e))
     }
 
@@ -214,9 +224,7 @@ impl McpInterceptor {
     }
 
     fn looks_like_url(s: &str) -> bool {
-        s.starts_with("http://")
-            || s.starts_with("https://")
-            || s.starts_with("ftp://")
+        s.starts_with("http://") || s.starts_with("https://") || s.starts_with("ftp://")
     }
 }
 
@@ -224,10 +232,11 @@ impl McpInterceptor {
 
 use super::ApiState;
 
-pub async fn list_mcp_servers(
-    State(state): State<ApiState>,
-) -> Result<Json<Value>, StatusCode> {
-    let registry = state.mcp_registry.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+pub async fn list_mcp_servers(State(state): State<ApiState>) -> Result<Json<Value>, StatusCode> {
+    let registry = state
+        .mcp_registry
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let registry = registry.lock().await;
     let mut servers = Vec::new();
 
@@ -242,10 +251,11 @@ pub async fn list_mcp_servers(
     Ok(Json(json!({ "servers": servers })))
 }
 
-pub async fn list_mcp_tools(
-    State(state): State<ApiState>,
-) -> Result<Json<Value>, StatusCode> {
-    let registry = state.mcp_registry.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+pub async fn list_mcp_tools(State(state): State<ApiState>) -> Result<Json<Value>, StatusCode> {
+    let registry = state
+        .mcp_registry
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let registry = registry.lock().await;
     let tools = registry.aggregate_tools().await;
     Ok(Json(json!({ "tools": tools })))
@@ -260,7 +270,10 @@ pub async fn call_mcp_tool(
 
     // Interceptor: detect remote requests
     if let Some(detected) = McpInterceptor::inspect(&arguments) {
-        info!("MCP tool '{}' detected remote URLs: {:?}", name, detected.urls);
+        info!(
+            "MCP tool '{}' detected remote URLs: {:?}",
+            name, detected.urls
+        );
         // Log to audit (non-blocking, fire-and-forget)
         let mut entry = dh_core::AuditLogEntry::new(
             "mcp".to_string(),
@@ -276,7 +289,10 @@ pub async fn call_mcp_tool(
         state.audit.log(entry);
     }
 
-    let registry = state.mcp_registry.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let registry = state
+        .mcp_registry
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let registry = registry.lock().await;
     match registry.call_tool(&name, arguments).await {
         Ok(result) => Ok(Json(json!({ "result": result }))),

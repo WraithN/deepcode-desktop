@@ -56,10 +56,7 @@ fn test_transform_attributes() {
     let log = transform_audit_log(&row, false);
 
     let attrs = log["attributes"].as_array().unwrap();
-    let keys: Vec<_> = attrs
-        .iter()
-        .map(|a| a["key"].as_str().unwrap())
-        .collect();
+    let keys: Vec<_> = attrs.iter().map(|a| a["key"].as_str().unwrap()).collect();
 
     assert!(keys.contains(&"audit.log_id"));
     assert!(keys.contains(&"llm.model"));

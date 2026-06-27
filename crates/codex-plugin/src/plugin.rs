@@ -2,7 +2,7 @@ use agent_core::error::PluginError;
 use agent_core::event_sink::DynEventSink;
 use agent_core::instance::{AgentInstance, InstanceConfig};
 use agent_core::logger::SessionLogger;
-use agent_core::plugin::{is_command_installed, AgentPlugin};
+use agent_core::plugin::{AgentPlugin, is_command_installed};
 use std::sync::Arc;
 
 use crate::constants::{PLUGIN_KEY, PLUGIN_NAME, PROGRAM_CODEX, VERSION_FLAG};
@@ -39,6 +39,7 @@ impl AgentPlugin for CodexPlugin {
             return Err(PluginError::NotInstalled(PROGRAM_CODEX.to_string()));
         }
         let instance = crate::instance::CodexInstance::new(config, event_sink, self.logger.clone());
+        instance.start_in_background();
         Ok(Box::new(instance))
     }
 }
