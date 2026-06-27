@@ -6,6 +6,7 @@ members = [
     "crates/agent-core",
     "crates/opencode-plugin",
     "crates/claude-plugin",
+    "crates/codex-plugin",
     "apps/gatewayd",
     "apps/cli",
 ]

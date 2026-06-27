@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::{interval, sleep, Duration};
+use tokio::time::{Duration, interval, sleep};
 
 use super::config::ReporterConfig;
 use super::exporter::{AuditLogExporter, ExportError};
@@ -19,7 +19,11 @@ impl Poller {
         config: ReporterConfig,
         exporter: AuditLogExporter,
     ) -> Self {
-        Self { db, config, exporter }
+        Self {
+            db,
+            config,
+            exporter,
+        }
     }
 
     pub async fn run(&self, mut shutdown: mpsc::Receiver<()>) {

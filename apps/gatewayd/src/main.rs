@@ -1,13 +1,13 @@
 use axum::{
+    Router,
     body::{Body, Bytes},
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post},
-    Router,
+    routing::{get, post},
 };
 use clap::Parser;
-use dh_core::{estimate_tokens, AuditLogEntry, Direction, Message, Provider, Role, UnifiedRequest};
+use dh_core::{AuditLogEntry, Direction, Message, Provider, Role, UnifiedRequest, estimate_tokens};
 use dh_db::DbManager;
 use reqwest::Client;
 use rusqlite::params;
@@ -22,8 +22,12 @@ mod agents {
     #![allow(dead_code)]
     include!("agents_impl.rs");
 }
+mod agui;
+mod agui_sink;
+mod handlers;
 mod mcp_aggregator;
 mod reporter;
+mod session;
 
 // Audit module (inlined to avoid rustc 1.95 ICE with directory modules)
 struct AuditLogger {
@@ -117,11 +121,10 @@ fn log_response_audit(
     bytes: &[u8],
     request_body: &str,
 ) {
-    let usage = extract_usage_from_json(bytes)
-        .or_else(|| {
-            let text = String::from_utf8_lossy(bytes);
-            extract_usage_from_sse(&text)
-        });
+    let usage = extract_usage_from_json(bytes).or_else(|| {
+        let text = String::from_utf8_lossy(bytes);
+        extract_usage_from_sse(&text)
+    });
 
     let usage = match usage {
         Some(u) => u,
@@ -135,13 +138,8 @@ fn log_response_audit(
         }
     };
 
-    let mut entry = AuditLogEntry::new(
-        session_id,
-        request_id,
-        Direction::Response,
-        provider,
-        model,
-    );
+    let mut entry =
+        AuditLogEntry::new(session_id, request_id, Direction::Response, provider, model);
     entry.token_usage = Some(usage);
     entry.payload_size_bytes = bytes.len();
     entry.metadata = serde_json::json!({
@@ -171,25 +169,40 @@ async fn run_storage_worker(
 fn openai_to_unified(body: Value) -> UnifiedRequest {
     let mut req = UnifiedRequest::new(
         Provider::OpenAi,
-        body.get("model").and_then(|v| v.as_str()).unwrap_or("gpt-4o").to_string(),
+        body.get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("gpt-4o")
+            .to_string(),
     );
 
     if let Some(messages) = body.get("messages").and_then(|v| v.as_array()) {
-        req.messages = messages.iter().filter_map(|m| {
-            let role = m.get("role")?.as_str()?;
-            let content = m.get("content")?.as_str()?;
-            let role = match role {
-                "system" => Role::System,
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                _ => Role::User,
-            };
-            Some(Message { role, content: content.to_string() })
-        }).collect();
+        req.messages = messages
+            .iter()
+            .filter_map(|m| {
+                let role = m.get("role")?.as_str()?;
+                let content = m.get("content")?.as_str()?;
+                let role = match role {
+                    "system" => Role::System,
+                    "user" => Role::User,
+                    "assistant" => Role::Assistant,
+                    _ => Role::User,
+                };
+                Some(Message {
+                    role,
+                    content: content.to_string(),
+                })
+            })
+            .collect();
     }
 
-    req.temperature = body.get("temperature").and_then(|v| v.as_f64()).map(|v| v as f32);
-    req.max_tokens = body.get("max_tokens").and_then(|v| v.as_u64()).map(|v| v as u32);
+    req.temperature = body
+        .get("temperature")
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
+    req.max_tokens = body
+        .get("max_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
     req.stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(true);
 
     req
@@ -198,28 +211,43 @@ fn openai_to_unified(body: Value) -> UnifiedRequest {
 fn anthropic_to_unified(body: Value) -> UnifiedRequest {
     let mut req = UnifiedRequest::new(
         Provider::Anthropic,
-        body.get("model").and_then(|v| v.as_str()).unwrap_or("claude-sonnet-4").to_string(),
+        body.get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude-sonnet-4")
+            .to_string(),
     );
 
     if let Some(messages) = body.get("messages").and_then(|v| v.as_array()) {
-        req.messages = messages.iter().filter_map(|m| {
-            let role = m.get("role")?.as_str()?;
-            let content = m.get("content")?.as_str()?;
-            let role = match role {
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                _ => Role::User,
-            };
-            Some(Message { role, content: content.to_string() })
-        }).collect();
+        req.messages = messages
+            .iter()
+            .filter_map(|m| {
+                let role = m.get("role")?.as_str()?;
+                let content = m.get("content")?.as_str()?;
+                let role = match role {
+                    "user" => Role::User,
+                    "assistant" => Role::Assistant,
+                    _ => Role::User,
+                };
+                Some(Message {
+                    role,
+                    content: content.to_string(),
+                })
+            })
+            .collect();
     }
 
     if let Some(system) = body.get("system").and_then(|v| v.as_str()) {
         req.prepend_system_message(system.to_string());
     }
 
-    req.max_tokens = body.get("max_tokens").and_then(|v| v.as_u64()).map(|v| v as u32);
-    req.temperature = body.get("temperature").and_then(|v| v.as_f64()).map(|v| v as f32);
+    req.max_tokens = body
+        .get("max_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    req.temperature = body
+        .get("temperature")
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
 
     req
 }
@@ -242,15 +270,23 @@ impl GatewayRouter {
         }
     }
 
-    async fn forward_openai(&self, provider: &str, body: String) -> Result<Response, anyhow::Error> {
+    async fn forward_openai(
+        &self,
+        provider: &str,
+        body: String,
+    ) -> Result<Response, anyhow::Error> {
         let (url, api_key) = match provider {
             "deepseek" => {
-                let key = self.deepseek_api_key.as_ref()
+                let key = self
+                    .deepseek_api_key
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("DEEPSEEK_API_KEY not set"))?;
                 ("https://api.deepseek.com/v1/chat/completions", key)
             }
             _ => {
-                let key = self.openai_api_key.as_ref()
+                let key = self
+                    .openai_api_key
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY not set"))?;
                 ("https://api.openai.com/v1/chat/completions", key)
             }
@@ -258,7 +294,8 @@ impl GatewayRouter {
 
         info!("Forwarding {} request to {}", provider, url);
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
@@ -267,7 +304,8 @@ impl GatewayRouter {
             .await?;
 
         let status = resp.status();
-        let content_type = resp.headers()
+        let content_type = resp
+            .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("application/json")
@@ -282,12 +320,15 @@ impl GatewayRouter {
     }
 
     async fn forward_anthropic(&self, body: String) -> Result<Response, anyhow::Error> {
-        let api_key = self.anthropic_api_key.as_ref()
+        let api_key = self
+            .anthropic_api_key
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
 
         info!("Forwarding request to Anthropic API");
 
-        let resp = self.client
+        let resp = self
+            .client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
@@ -297,7 +338,8 @@ impl GatewayRouter {
             .await?;
 
         let status = resp.status();
-        let content_type = resp.headers()
+        let content_type = resp
+            .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("application/json")
@@ -402,7 +444,12 @@ impl RtkEngine {
                 Role::Assistant => "AST",
                 Role::Tool => "TL",
             };
-            summary_parts.push(format!("[{}:{}] {}", i, prefix, &msg.content[..msg.content.len().min(80)]));
+            summary_parts.push(format!(
+                "[{}:{}] {}",
+                i,
+                prefix,
+                &msg.content[..msg.content.len().min(80)]
+            ));
         }
 
         if !summary_parts.is_empty() {
@@ -421,14 +468,17 @@ impl RtkEngine {
 
         info!(
             "RTK sliding window: {} -> {} messages (summarized {})",
-            total, req.messages.len(), summarize_count
+            total,
+            req.messages.len(),
+            summarize_count
         );
     }
 
     fn compress_prompts(&self, req: &mut UnifiedRequest) {
         for msg in &mut req.messages {
             let original_len = msg.content.len();
-            msg.content = msg.content
+            msg.content = msg
+                .content
                 .lines()
                 .map(|line| line.trim_end())
                 .collect::<Vec<_>>()
@@ -437,7 +487,8 @@ impl RtkEngine {
             if msg.content.len() < original_len {
                 info!(
                     "RTK compressed message: {} -> {} bytes",
-                    original_len, msg.content.len()
+                    original_len,
+                    msg.content.len()
                 );
             }
         }
@@ -445,17 +496,21 @@ impl RtkEngine {
 }
 
 fn unified_to_openai_json(req: &UnifiedRequest) -> Value {
-    let messages: Vec<Value> = req.messages.iter().map(|m| {
-        serde_json::json!({
-            "role": match m.role {
-                Role::System => "system",
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::Tool => "tool",
-            },
-            "content": m.content
+    let messages: Vec<Value> = req
+        .messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": match m.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::Tool => "tool",
+                },
+                "content": m.content
+            })
         })
-    }).collect();
+        .collect();
 
     let mut body = serde_json::json!({
         "model": req.model,
@@ -474,8 +529,10 @@ fn unified_to_openai_json(req: &UnifiedRequest) -> Value {
 }
 
 fn unified_to_anthropic_json(req: &UnifiedRequest) -> Value {
-    let messages: Vec<Value> = req.messages.iter().filter_map(|m| {
-        match m.role {
+    let messages: Vec<Value> = req
+        .messages
+        .iter()
+        .filter_map(|m| match m.role {
             Role::System => None,
             _ => Some(serde_json::json!({
                 "role": match m.role {
@@ -485,10 +542,12 @@ fn unified_to_anthropic_json(req: &UnifiedRequest) -> Value {
                 },
                 "content": m.content
             })),
-        }
-    }).collect();
+        })
+        .collect();
 
-    let system_prompt = req.messages.iter()
+    let system_prompt = req
+        .messages
+        .iter()
         .filter(|m| matches!(m.role, Role::System))
         .map(|m| m.content.as_str())
         .collect::<Vec<_>>()
@@ -512,14 +571,6 @@ fn unified_to_anthropic_json(req: &UnifiedRequest) -> Value {
     body
 }
 
-/// Event broadcast by agent instances through the gatewayd event sink.
-#[derive(Clone, Debug, serde::Serialize)]
-struct AgentEvent {
-    event_type: String,
-    instance_id: Option<String>,
-    payload: serde_json::Value,
-}
-
 // Server state (inlined)
 #[derive(Clone)]
 struct ApiState {
@@ -530,7 +581,7 @@ struct ApiState {
     db_path: std::path::PathBuf,
     mcp_registry: Option<Arc<tokio::sync::Mutex<mcp_aggregator::McpRegistry>>>,
     agent_service: Option<Arc<agents::AgentService>>,
-    event_broadcaster: tokio::sync::broadcast::Sender<AgentEvent>,
+    session_manager: crate::session::SessionManager,
 }
 
 fn resolve_provider(model: &str) -> &'static str {
@@ -591,15 +642,23 @@ async fn set_context(
     let mut guard = state.agent_type.lock().unwrap();
     *guard = Some(payload.agent_type.clone());
     let model = payload.model.as_deref().unwrap_or("unknown");
-    let _ = upsert_session(&state.db_path, &payload.session_id, &payload.agent_type, model, payload.workspace.as_deref());
-    info!("Context updated: agent_type = {}, session = {}", payload.agent_type, payload.session_id);
-    Json(serde_json::json!({"status": "ok", "agent_type": payload.agent_type, "session_id": payload.session_id}))
+    let _ = upsert_session(
+        &state.db_path,
+        &payload.session_id,
+        &payload.agent_type,
+        model,
+        payload.workspace.as_deref(),
+    );
+    info!(
+        "Context updated: agent_type = {}, session = {}",
+        payload.agent_type, payload.session_id
+    );
+    Json(
+        serde_json::json!({"status": "ok", "agent_type": payload.agent_type, "session_id": payload.session_id}),
+    )
 }
 
-async fn openai_chat_completions(
-    State(state): State<ApiState>,
-    body: Bytes,
-) -> Response {
+async fn openai_chat_completions(State(state): State<ApiState>, body: Bytes) -> Response {
     info!("Received OpenAI chat completions request");
 
     let body_str = String::from_utf8_lossy(&body);
@@ -624,7 +683,9 @@ async fn openai_chat_completions(
         optimized_size,
         if original_size > 0 {
             ((original_size - optimized_size) * 100 / original_size) as i32
-        } else { 0 }
+        } else {
+            0
+        }
     );
 
     let session_id = unified.session_id.clone();
@@ -642,7 +703,11 @@ async fn openai_chat_completions(
     state.audit.log(entry);
 
     let provider = resolve_provider(&unified.model);
-    match state.router.forward_openai(provider, optimized_body.clone()).await {
+    match state
+        .router
+        .forward_openai(provider, optimized_body.clone())
+        .await
+    {
         Ok(response) => {
             info!("Successfully forwarded request to {}", provider);
             let (parts, body) = response.into_parts();
@@ -662,7 +727,11 @@ async fn openai_chat_completions(
                 }
                 Err(e) => {
                     error!("Failed to read response body: {}", e);
-                    (StatusCode::BAD_GATEWAY, "Gateway error: failed to read response").into_response()
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        "Gateway error: failed to read response",
+                    )
+                        .into_response()
                 }
             }
         }
@@ -673,10 +742,7 @@ async fn openai_chat_completions(
     }
 }
 
-async fn anthropic_messages(
-    State(state): State<ApiState>,
-    body: Bytes,
-) -> Response {
+async fn anthropic_messages(State(state): State<ApiState>, body: Bytes) -> Response {
     info!("Received Anthropic messages request");
 
     let body_str = String::from_utf8_lossy(&body);
@@ -701,7 +767,9 @@ async fn anthropic_messages(
         optimized_size,
         if original_size > 0 {
             ((original_size - optimized_size) * 100 / original_size) as i32
-        } else { 0 }
+        } else {
+            0
+        }
     );
 
     let session_id = unified.session_id.clone();
@@ -739,7 +807,11 @@ async fn anthropic_messages(
                 }
                 Err(e) => {
                     error!("Failed to read response body: {}", e);
-                    (StatusCode::BAD_GATEWAY, "Gateway error: failed to read response").into_response()
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        "Gateway error: failed to read response",
+                    )
+                        .into_response()
                 }
             }
         }
@@ -758,9 +830,7 @@ async fn health_check() -> Json<Value> {
     }))
 }
 
-async fn reporter_status_handler(
-    State(state): State<ApiState>,
-) -> Json<Value> {
+async fn reporter_status_handler(State(state): State<ApiState>) -> Json<Value> {
     let cursor = match dh_db::DbManager::open(&state.db_path) {
         Ok(db) => db.get_reporter_cursor().unwrap_or(0),
         Err(_) => 0,
@@ -812,7 +882,10 @@ fn main() {
     if !args.agent_types.is_empty() {
         info!("Auto-start agents: {:?}", args.agent_types);
     }
-    info!("Starting gatewayd on port {}, admin on port {}", args.port, args.admin_port);
+    info!(
+        "Starting gatewayd on port {}, admin on port {}",
+        args.port, args.admin_port
+    );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     if let Err(e) = rt.block_on(run(args)) {
@@ -836,11 +909,14 @@ async fn run(args: Args) -> anyhow::Result<()> {
 
     let gateway_router = Arc::new(GatewayRouter::new());
 
-    // Broadcast channel for agent events consumed by REPL / status clients.
-    let (event_broadcaster, _event_receiver) = tokio::sync::broadcast::channel::<AgentEvent>(1024);
+    // AG-UI session manager.
+    let session_manager = crate::session::SessionManager::new();
 
-    // Initialize agent runtime (AgentService + OpencodePlugin)
-    let agent_service = match agents::init_agent_service(event_broadcaster.clone()) {
+    // Initialize agent runtime with AG-UI event sink.
+    let event_sink = Arc::new(crate::agui_sink::AguiEventSink::new(
+        session_manager.clone(),
+    ));
+    let agent_service = match agents::init_agent_service_with_sink(event_sink) {
         Ok(service) => {
             info!("AgentService initialized");
             Some(Arc::new(service))
@@ -851,20 +927,30 @@ async fn run(args: Args) -> anyhow::Result<()> {
         }
     };
 
-    // Auto-attach agents requested via --attach or --agent-type
-    let attach_types: Vec<String> = args.attach.iter().chain(args.agent_types.iter()).cloned().collect();
+    // Auto-attach agents requested via --attach or --agent-type into a default session.
+    let attach_types: Vec<String> = args
+        .attach
+        .iter()
+        .chain(args.agent_types.iter())
+        .cloned()
+        .collect();
     if !attach_types.is_empty() {
         if let Some(ref service) = agent_service {
+            let default_session = session_manager.create_session();
             for plugin_type in &attach_types {
-                let req = agent_core::models::CreateInstanceRequest {
-                    plugin_key: plugin_type.clone(),
-                    name: format!("{}-instance", plugin_type),
-                    workspace: std::env::current_dir()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string(),
-                };
-                match service.create_instance(req).await {
+                match session_manager
+                    .create_agent(
+                        &default_session,
+                        plugin_type,
+                        &format!("{}-instance", plugin_type),
+                        &std::env::current_dir()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                        service,
+                    )
+                    .await
+                {
                     Ok(info) => info!("Attached agent: {} (id={})", plugin_type, info.id),
                     Err(e) => warn!("Failed to attach agent {}: {}", plugin_type, e),
                 }
@@ -893,7 +979,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         db_path: db_path.clone(),
         mcp_registry: mcp_registry.clone(),
         agent_service: agent_service.clone(),
-        event_broadcaster: event_broadcaster.clone(),
+        session_manager: session_manager.clone(),
     };
 
     let api_router = Router::new()
@@ -911,18 +997,31 @@ async fn run(args: Args) -> anyhow::Result<()> {
         admin_router = admin_router
             .route("/mcp/servers", get(mcp_aggregator::list_mcp_servers))
             .route("/mcp/tools", get(mcp_aggregator::list_mcp_tools))
-            .route("/mcp/tools/{name}/call", post(mcp_aggregator::call_mcp_tool));
+            .route(
+                "/mcp/tools/{name}/call",
+                post(mcp_aggregator::call_mcp_tool),
+            );
     }
 
-    // Agent runtime routes
+    // AG-UI session routes
     if agent_service.is_some() {
         admin_router = admin_router
-            .route("/agents", post(agents::create_agent_handler))
-            .route("/agents", get(agents::list_agents_handler))
-            .route("/agents/{id}", get(agents::get_agent_handler))
-            .route("/agents/{id}/message", post(agents::send_message_handler))
-            .route("/agents/{id}", delete(agents::stop_agent_handler))
-            .route("/agents/events", get(agents::events_handler));
+            .route(
+                "/sessions",
+                post(crate::handlers::session::create_session_handler),
+            )
+            .route(
+                "/sessions/{session_id}/agents",
+                post(crate::handlers::session::create_agent_handler),
+            )
+            .route(
+                "/sessions/{session_id}/events",
+                get(crate::handlers::websocket::session_events_handler),
+            )
+            .route(
+                "/sessions/{session_id}/runs",
+                post(crate::handlers::sse::run_handler),
+            );
     }
 
     let admin_router = admin_router.with_state(api_state.clone());
@@ -940,7 +1039,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("API server listening on http://{}", addr);
-    info!("OpenAI compatible endpoint: http://{}/v1/chat/completions", addr);
+    info!(
+        "OpenAI compatible endpoint: http://{}/v1/chat/completions",
+        addr
+    );
     info!("Anthropic compatible endpoint: http://{}/v1/messages", addr);
 
     let pid = std::process::id();

@@ -1,5 +1,5 @@
 use dh_db::AuditLogRow;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// 将 AuditLogRow 转换为 OTLP JSON LogRecord
@@ -25,15 +25,25 @@ pub fn transform_audit_log(row: &AuditLogRow, sanitize: bool) -> Value {
     if let Some(tokens) = row.total_tokens {
         attributes.push(json!({"key": "llm.tokens.total", "value": {"intValue": tokens}}));
     }
-    attributes.push(json!({"key": "llm.payload_size_bytes", "value": {"intValue": row.payload_size_bytes}}));
+    attributes.push(
+        json!({"key": "llm.payload_size_bytes", "value": {"intValue": row.payload_size_bytes}}),
+    );
 
     if row.direction == "response" && !row.metadata.is_empty() {
-        let meta = if sanitize { sanitize_body(&row.metadata) } else { row.metadata.clone() };
+        let meta = if sanitize {
+            sanitize_body(&row.metadata)
+        } else {
+            row.metadata.clone()
+        };
         attributes.push(json!({"key": "llm.response_metadata", "value": {"stringValue": meta}}));
     }
 
     let body = if let Some(ref payload) = row.payload {
-        if sanitize { sanitize_body(payload) } else { payload.clone() }
+        if sanitize {
+            sanitize_body(payload)
+        } else {
+            payload.clone()
+        }
     } else {
         String::new()
     };
@@ -81,7 +91,12 @@ pub fn sanitize_body(content: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
         let hash = hex::encode(hasher.finalize());
-        format!("{}...{}...{}", &content[..16], &hash[..8], &content[content.len()-8..])
+        format!(
+            "{}...{}...{}",
+            &content[..16],
+            &hash[..8],
+            &content[content.len() - 8..]
+        )
     } else {
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());

@@ -15,6 +15,8 @@ dh-platform = { path = "../../crates/dh-platform" }
 dh-db = { path = "../../crates/dh-db" }
 agent-core = { path = "../../crates/agent-core" }
 opencode-plugin = { path = "../../crates/opencode-plugin" }
+claude-plugin = { path = "../../crates/claude-plugin" }
+codex-plugin = { path = "../../crates/codex-plugin" }
 
 tokio.workspace = true
 axum.workspace = true

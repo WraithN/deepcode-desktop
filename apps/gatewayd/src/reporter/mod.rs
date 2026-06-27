@@ -48,7 +48,11 @@ pub fn start(
     let (retry_tx, retry_rx) = mpsc::channel(1);
 
     let poller = Poller::new(db.clone(), config.clone(), exporter);
-    let retry = RetryWorker::new(db, config, AuditLogExporter::new(&ReporterConfig::default()));
+    let retry = RetryWorker::new(
+        db,
+        config,
+        AuditLogExporter::new(&ReporterConfig::default()),
+    );
 
     tokio::spawn(async move {
         poller.run(poller_rx).await;

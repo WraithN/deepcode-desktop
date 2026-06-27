@@ -19,7 +19,11 @@ impl RetryWorker {
         config: ReporterConfig,
         exporter: AuditLogExporter,
     ) -> Self {
-        Self { db, config, exporter }
+        Self {
+            db,
+            config,
+            exporter,
+        }
     }
 
     pub async fn run(&self, mut shutdown: mpsc::Receiver<()>) {
