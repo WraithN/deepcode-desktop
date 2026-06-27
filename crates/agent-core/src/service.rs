@@ -85,6 +85,25 @@ impl Default for InstanceRegistry {
     }
 }
 
+/// Generates a unique instance id.
+///
+/// The first instance for a plugin uses the plugin key itself for backwards
+/// compatibility. Subsequent instances append an incrementing suffix.
+fn unique_instance_id(plugin_key: &str, registry: &InstanceRegistry) -> String {
+    if registry.get(plugin_key).is_none() {
+        return plugin_key.to_string();
+    }
+
+    let mut index = 1u32;
+    loop {
+        let candidate = format!("{}-{}", plugin_key, index);
+        if registry.get(&candidate).is_none() {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
 /// High-level service that manages plugins and running instances.
 pub struct AgentService {
     plugins: PluginRegistry,
@@ -128,7 +147,28 @@ impl AgentService {
             .get(&req.plugin_key)
             .ok_or(PluginError::NotFound(req.plugin_key.clone()))?;
 
-        let id = req.plugin_key.clone();
+        // When force is not requested, reuse an existing instance that matches
+        // the requested plugin key.
+        if !req.force {
+            let registry = self.instances.lock().await;
+            if let Some((id, existing)) = registry
+                .list()
+                .into_iter()
+                .find(|(_, i)| i.plugin_key() == req.plugin_key)
+            {
+                return Ok(InstanceInfo {
+                    id: id.to_string(),
+                    plugin_key: req.plugin_key.clone(),
+                    name: req.name.clone(),
+                    workspace: req.workspace.clone(),
+                    status: existing.status(),
+                    endpoint: existing.endpoint(),
+                });
+            }
+        }
+
+        let registry = self.instances.lock().await;
+        let id = unique_instance_id(&req.plugin_key, &*registry);
         let config = InstanceConfig::new(id.clone(), req.name.clone(), req.workspace.clone());
 
         let instance = plugin.create_instance(config, self.event_sink.clone())?;

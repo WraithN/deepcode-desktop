@@ -33,6 +33,7 @@ base64 = "0.22"
 agent-core = { path = "../crates/agent-core" }
 opencode-plugin = { path = "../crates/opencode-plugin" }
 claude-plugin = { path = "../crates/claude-plugin" }
+codex-plugin = { path = "../crates/codex-plugin" }
 dh-db = { path = "../crates/dh-db" }
 
 [features]

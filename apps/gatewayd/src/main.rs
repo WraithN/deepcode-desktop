@@ -863,6 +863,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                         .unwrap_or_default()
                         .to_string_lossy()
                         .to_string(),
+                    force: false,
                 };
                 match service.create_instance(req).await {
                     Ok(info) => info!("Attached agent: {} (id={})", plugin_type, info.id),

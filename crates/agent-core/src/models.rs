@@ -24,4 +24,6 @@ pub struct CreateInstanceRequest {
     pub plugin_key: String,
     pub name: String,
     pub workspace: String,
+    #[serde(default)]
+    pub force: bool,
 }

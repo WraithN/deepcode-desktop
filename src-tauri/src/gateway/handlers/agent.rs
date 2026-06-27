@@ -32,6 +32,7 @@ async fn handle_create_instance(service: Arc<AgentService>, req: JsonRpcRequest)
     let plugin_key = req.params.get("pluginKey").and_then(|v| v.as_str());
     let name = req.params.get("name").and_then(|v| v.as_str());
     let workspace = req.params.get("workspace").and_then(|v| v.as_str());
+    let force = req.params.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if plugin_key.is_none() || name.is_none() || workspace.is_none() {
         return JsonRpcResponse::error(req.id, INVALID_PARAMS, "Missing required params: pluginKey, name, workspace", None);
@@ -41,6 +42,7 @@ async fn handle_create_instance(service: Arc<AgentService>, req: JsonRpcRequest)
         plugin_key: plugin_key.unwrap().to_string(),
         name: name.unwrap().to_string(),
         workspace: workspace.unwrap().to_string(),
+        force,
     };
 
     match service.create_instance(create_req).await {

@@ -78,12 +78,15 @@ fn main() {
             app.manage(logger.clone());
             log::info!("[main.rs] SessionLogger initialized");
 
-            // 初始化 AgentService 并注册 opencode plugin
+            // 初始化 AgentService 并注册 opencode / claude / codex plugins
             let mut agent_service = Arc::new(dh_desktop::service::agent_service::AgentService::new(logger.clone(), ws_event_sink.clone()));
             Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(
                 logger.clone(),
             )));
             Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(claude_plugin::plugin::ClaudePlugin::new(
+                logger.clone(),
+            )));
+            Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(codex_plugin::plugin::CodexPlugin::new(
                 logger.clone(),
             )));
             app.manage(agent_service.clone());

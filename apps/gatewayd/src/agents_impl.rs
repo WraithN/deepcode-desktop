@@ -52,7 +52,8 @@ pub fn init_agent_service(
     let logger = Arc::new(SessionLogger::new(event_sink.clone(), conn, Some(log_file)));
     let mut agent_service = AgentService::new(logger.clone(), event_sink.clone());
     agent_service.register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(logger.clone())));
-    agent_service.register_plugin(Box::new(claude_plugin::plugin::ClaudePlugin::new(logger)));
+    agent_service.register_plugin(Box::new(claude_plugin::plugin::ClaudePlugin::new(logger.clone())));
+    agent_service.register_plugin(Box::new(codex_plugin::plugin::CodexPlugin::new(logger)));
     Ok(agent_service)
 }
 
@@ -61,6 +62,8 @@ pub struct CreateAgentRequest {
     pub plugin_type: String,
     pub name: String,
     pub workspace: String,
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +97,7 @@ pub async fn create_agent_handler(
         plugin_key: req.plugin_type.clone(),
         name: req.name.clone(),
         workspace: req.workspace.clone(),
+        force: req.force.unwrap_or(false),
     };
     match service.create_instance(create_req).await {
         Ok(info) => (
