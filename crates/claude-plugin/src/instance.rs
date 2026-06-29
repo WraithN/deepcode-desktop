@@ -32,6 +32,10 @@ pub struct ClaudeInstance {
     out_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
     out_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Value>>>,
     shutdown: Arc<AtomicBool>,
+    // 用于 TTFT 调试：记录最近一次 send_message 的开始时间，以及是否已打印首事件日志。
+    run_start: Arc<Mutex<Option<std::time::Instant>>>,
+    first_raw_event: Arc<AtomicBool>,
+    first_token_event: Arc<AtomicBool>,
 }
 
 impl Clone for ClaudeInstance {
@@ -49,6 +53,9 @@ impl Clone for ClaudeInstance {
             out_tx: Mutex::new(self.out_tx.lock().unwrap().clone()),
             out_rx: Mutex::new(None),
             shutdown: self.shutdown.clone(),
+            run_start: self.run_start.clone(),
+            first_raw_event: self.first_raw_event.clone(),
+            first_token_event: self.first_token_event.clone(),
         }
     }
 }
@@ -70,6 +77,9 @@ impl ClaudeInstance {
             out_tx: Mutex::new(Some(out_tx)),
             out_rx: Mutex::new(Some(out_rx)),
             shutdown: Arc::new(AtomicBool::new(false)),
+            run_start: Arc::new(Mutex::new(None)),
+            first_raw_event: Arc::new(AtomicBool::new(false)),
+            first_token_event: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -101,6 +111,7 @@ impl ClaudeInstance {
             INPUT_FORMAT_FLAG.into(),
             OUTPUT_FORMAT_FLAG.into(),
             VERBOSE_FLAG.into(),
+            INCLUDE_PARTIAL_MESSAGES_FLAG.into(),
         ];
 
         let permission_mode = self
@@ -132,11 +143,21 @@ impl ClaudeInstance {
         self.shutdown.store(false, Ordering::SeqCst);
         self.set_status(InstanceStatus::Starting);
 
+        let start = std::time::Instant::now();
+        log::info!(
+            "[claude-plugin] instance={} starting Claude process...",
+            self.config.id
+        );
         let transport = self.build_transport();
         let handle = transport
             .start()
             .await
             .map_err(|e| InstanceError::ProcessError(format!("{}: {}", ERR_START_FAILED, e)))?;
+        log::info!(
+            "[claude-plugin] instance={} Claude process started after {:?}",
+            self.config.id,
+            start.elapsed()
+        );
 
         *self.transport_guard().await = Some(handle);
         self.started.store(true, Ordering::SeqCst);
@@ -252,6 +273,20 @@ impl ClaudeInstance {
     /// 4. Maps the event to frontend-facing events via `EventMapper`, using the
     ///    conversation id currently associated with the active session.
     fn process_received_value(&self, value: Value) {
+        if !self.first_raw_event.swap(true, Ordering::SeqCst) {
+            if let Some(start) = *self.run_start.lock().unwrap() {
+                let event_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let subtype = value.get("subtype").and_then(|v| v.as_str()).unwrap_or("-");
+                log::info!(
+                    "[claude-plugin] instance={} first raw event from Claude CLI after {:?}: type={} subtype={}",
+                    self.config.id,
+                    start.elapsed(),
+                    event_type,
+                    subtype
+                );
+            }
+        }
+
         let Some(raw) = parse_claude_value(&value) else {
             log::debug!("{}: failed to parse line: {}", LOG_SOURCE, value);
             return;
@@ -267,6 +302,26 @@ impl ClaudeInstance {
         let Some(event) = crate::parser::to_process_event(&raw) else {
             return;
         };
+
+        if !self.first_token_event.swap(true, Ordering::SeqCst) {
+            if let Some(start) = *self.run_start.lock().unwrap() {
+                let event_name = match &event {
+                    ProcessEvent::TextDelta { .. } => "TextDelta",
+                    ProcessEvent::Thinking { .. } => "Thinking",
+                    ProcessEvent::ToolUse { .. } => "ToolUse",
+                    ProcessEvent::ToolResult { .. } => "ToolResult",
+                    ProcessEvent::Done => "Done",
+                    ProcessEvent::Error { .. } => "Error",
+                    _ => "Other",
+                };
+                log::info!(
+                    "[claude-plugin] instance={} first ProcessEvent after {:?}: type={}",
+                    self.config.id,
+                    start.elapsed(),
+                    event_name
+                );
+            }
+        }
 
         if let ProcessEvent::Error { message } = &event {
             self.logger.log(
@@ -311,9 +366,24 @@ impl AgentInstance for ClaudeInstance {
         let message = message.to_string();
 
         Box::pin(async move {
+            let start = std::time::Instant::now();
+            *self.run_start.lock().unwrap() = Some(start);
+            self.first_raw_event.store(false, Ordering::SeqCst);
+            self.first_token_event.store(false, Ordering::SeqCst);
+            log::info!(
+                "[claude-plugin] instance={} send_message begin conversation={}",
+                self.config.id,
+                conversation_id
+            );
             self.session_map.insert(&conversation_id, &conversation_id);
             self.ensure_started().await?;
-            self.do_send(Self::build_user_message_payload(&message))
+            self.do_send(Self::build_user_message_payload(&message))?;
+            log::info!(
+                "[claude-plugin] instance={} user message sent after {:?}",
+                self.config.id,
+                start.elapsed()
+            );
+            Ok(())
         })
     }
 

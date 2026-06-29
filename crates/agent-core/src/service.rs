@@ -167,8 +167,11 @@ impl AgentService {
             }
         }
 
-        let registry = self.instances.lock().await;
-        let id = unique_instance_id(&req.plugin_key, &*registry);
+        // 先获取唯一 ID 并释放锁，避免在持有锁期间再次尝试加锁导致死锁。
+        let id = {
+            let registry = self.instances.lock().await;
+            unique_instance_id(&req.plugin_key, &*registry)
+        };
         let config = InstanceConfig::new(id.clone(), req.name.clone(), req.workspace.clone());
 
         let instance = plugin.create_instance(config, self.event_sink.clone())?;

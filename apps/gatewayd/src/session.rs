@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
+use uuid;
 
 const DEFAULT_BROADCAST_CAPACITY: usize = 1024;
 
@@ -134,6 +135,17 @@ impl SessionManager {
         input: RunAgentInput,
         agent_service: &AgentService,
     ) -> Result<String, RunError> {
+        let run_id = input
+            .run_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let start = std::time::Instant::now();
+        tracing::info!(
+            "[session_manager] run={} start_run begin for session={}",
+            run_id,
+            session_id
+        );
+
         let session = self
             .get_session(session_id)
             .ok_or(RunError::SessionNotFound)?;
@@ -142,11 +154,6 @@ impl SessionManager {
         if instances.is_empty() {
             return Err(RunError::NoAgent);
         }
-
-        let run_id = input
-            .run_id
-            .clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         let _ = session.event_tx.send(Event::RunStarted {
             base: BaseEvent {
@@ -175,10 +182,29 @@ impl SessionManager {
             .and_then(|m| m.content().map(|s| s.to_string()))
             .ok_or(RunError::NoUserMessage)?;
 
+        tracing::info!(
+            "[session_manager] run={} sending user message to instance={} after {:?}",
+            run_id,
+            instance_id,
+            start.elapsed()
+        );
+
+        let send_start = std::time::Instant::now();
         agent_service
             .send_message(&instance_id, session_id, &message)
             .await
             .map_err(RunError::AgentError)?;
+        tracing::info!(
+            "[session_manager] run={} agent_service.send_message returned after {:?}",
+            run_id,
+            send_start.elapsed()
+        );
+
+        tracing::info!(
+            "[session_manager] run={} start_run completed after {:?}",
+            run_id,
+            start.elapsed()
+        );
 
         Ok(run_id)
     }

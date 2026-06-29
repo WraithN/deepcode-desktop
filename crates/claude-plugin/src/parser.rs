@@ -11,6 +11,7 @@ const TYPE_ERROR: &str = "error";
 const TYPE_TEXT_DELTA: &str = "text_delta";
 const TYPE_THINKING_DELTA: &str = "thinking_delta";
 const TYPE_MESSAGE_STOP: &str = "message_stop";
+const TYPE_CONTENT_BLOCK_DELTA: &str = "content_block_delta";
 const CONTENT_TYPE_TEXT: &str = "text";
 const CONTENT_TYPE_THINKING: &str = "thinking";
 const CONTENT_TYPE_TOOL_USE: &str = "tool_use";
@@ -195,7 +196,32 @@ fn result_tool_name(result: &str) -> String {
 
 fn parse_stream_event_value(value: &Value) -> Option<ClaudeRawEvent> {
     let event = value.get(KEY_EVENT)?;
-    let parsed = match event.get(KEY_TYPE)?.as_str()? {
+    let event_type = event.get(KEY_TYPE)?.as_str()?;
+
+    // Claude --include-partial-messages 输出的事件结构：
+    // event.type = "content_block_delta", event.delta.type = "text_delta"/"thinking_delta"
+    if event_type == TYPE_CONTENT_BLOCK_DELTA {
+        let delta = event.get(KEY_DELTA)?;
+        return match delta.get(KEY_TYPE)?.as_str()? {
+            TYPE_TEXT_DELTA => Some(ClaudeRawEvent::StreamEvent {
+                event: ClaudeStreamEvent::TextDelta {
+                    delta: ClaudeTextDelta {
+                        text: delta.get(KEY_TEXT)?.as_str()?.to_string(),
+                    },
+                },
+            }),
+            TYPE_THINKING_DELTA => Some(ClaudeRawEvent::StreamEvent {
+                event: ClaudeStreamEvent::ThinkingDelta {
+                    delta: ClaudeThinkingDelta {
+                        thinking: delta.get(KEY_THINKING)?.as_str()?.to_string(),
+                    },
+                },
+            }),
+            _ => None,
+        };
+    }
+
+    let parsed = match event_type {
         TYPE_TEXT_DELTA => ClaudeStreamEvent::TextDelta {
             delta: ClaudeTextDelta {
                 text: event.get(KEY_DELTA)?.get(KEY_TEXT)?.as_str()?.to_string(),
@@ -285,11 +311,14 @@ pub fn to_process_event(raw: &ClaudeRawEvent) -> Option<ProcessEvent> {
             ClaudeStreamEvent::TextDelta { delta } => {
                 Some(ProcessEvent::TextDelta { text: delta.text.clone() })
             }
-            ClaudeStreamEvent::ThinkingDelta { delta } => Some(ProcessEvent::Thinking {
-                content: delta.thinking.clone(),
-            }),
+            // 过滤 thinking 流式片段：避免每个 token 都产生一组 AG-UI thinking 事件。
+            // 前端通过 isRunning 状态展示“思考中...”占位符即可。
+            ClaudeStreamEvent::ThinkingDelta { .. } => None,
             ClaudeStreamEvent::MessageStop {} => Some(ProcessEvent::Done),
         },
+        // stream-json 模式下文本增量已由 StreamEvent::TextDelta 输出，
+        // 忽略 Assistant 事件中的完整文本，避免在流末尾再发一遍重复内容。
+        // 保留 thinking 内容作为一次性“思考中...”提示。
         ClaudeRawEvent::Assistant { content } => {
             let thinking: String = content
                 .iter()
@@ -299,17 +328,7 @@ pub fn to_process_event(raw: &ClaudeRawEvent) -> Option<ProcessEvent> {
                 })
                 .collect::<Vec<_>>()
                 .join("");
-            let text: String = content
-                .iter()
-                .filter_map(|c| match c {
-                    ClaudeContent::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            if !text.is_empty() {
-                Some(ProcessEvent::TextDelta { text })
-            } else if !thinking.is_empty() {
+            if !thinking.is_empty() {
                 Some(ProcessEvent::Thinking { content: thinking })
             } else {
                 None

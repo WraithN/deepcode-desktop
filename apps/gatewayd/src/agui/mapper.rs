@@ -105,10 +105,17 @@ impl AguiMapper {
                 if delta.is_empty() {
                     return vec![];
                 }
+                // AG-UI client 要求 thinking 事件必须以 THINKING_START 开始、
+                // THINKING_END 结束，中间包裹 THINKING_TEXT_MESSAGE_* 序列。
                 vec![
+                    Event::ThinkingStart { base: base.clone() },
                     Event::ThinkingTextMessageStart { base: base.clone() },
-                    Event::ThinkingTextMessageContent { base, delta },
-                    Event::ThinkingTextMessageEnd {
+                    Event::ThinkingTextMessageContent {
+                        base: base.clone(),
+                        delta,
+                    },
+                    Event::ThinkingTextMessageEnd { base: base.clone() },
+                    Event::ThinkingEnd {
                         base: BaseEvent {
                             timestamp: Some(now()),
                             raw_event: None,

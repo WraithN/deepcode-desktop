@@ -179,6 +179,14 @@ pub enum Event {
         #[serde(rename = "messageId")]
         message_id: String,
     },
+    ThinkingStart {
+        #[serde(flatten)]
+        base: BaseEvent,
+    },
+    ThinkingEnd {
+        #[serde(flatten)]
+        base: BaseEvent,
+    },
     ThinkingTextMessageStart {
         #[serde(flatten)]
         base: BaseEvent,

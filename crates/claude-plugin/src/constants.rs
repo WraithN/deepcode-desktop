@@ -10,6 +10,7 @@ pub(crate) const PROMPT_FLAG: &str = "-p";
 pub(crate) const INPUT_FORMAT_FLAG: &str = "--input-format=stream-json";
 pub(crate) const OUTPUT_FORMAT_FLAG: &str = "--output-format=stream-json";
 pub(crate) const VERBOSE_FLAG: &str = "--verbose";
+pub(crate) const INCLUDE_PARTIAL_MESSAGES_FLAG: &str = "--include-partial-messages";
 pub(crate) const PERMISSION_MODE_PREFIX: &str = "--permission-mode=";
 pub(crate) const MODEL_PREFIX: &str = "--model=";
 pub(crate) const RESUME_PREFIX: &str = "--resume=";

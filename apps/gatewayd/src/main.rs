@@ -877,6 +877,8 @@ fn init_db<P: AsRef<std::path::Path>>(path: P) -> Result<DbManager, anyhow::Erro
 }
 
 fn main() {
+    // tracing-subscriber 开启 tracing-log feature 后会自动桥接 log crate，
+    // 使 claude-plugin 等依赖 log 的 crate 也能输出到同一 subscriber。
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     if !args.agent_types.is_empty() {
