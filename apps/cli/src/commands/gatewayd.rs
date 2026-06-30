@@ -732,6 +732,7 @@ fn is_process_alive(pid: u32) -> bool {
         let mut code: u32 = 0;
         let ok = windows_sys::Win32::System::Threading::GetExitCodeProcess(handle as _, &mut code);
         windows_sys::Win32::Foundation::CloseHandle(handle as _);
-        ok != 0 && code == windows_sys::Win32::System::Threading::STILL_ACTIVE
+        // STILL_ACTIVE is defined as 259 in winnt.h.
+        ok != 0 && code == 259
     }
 }

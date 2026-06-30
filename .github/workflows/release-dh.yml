@@ -67,7 +67,7 @@ jobs:
         shell: bash
 
       - name: Strip binary (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.cross != true
         run: |
           strip target/${{ matrix.target }}/release/dh
         shell: bash
