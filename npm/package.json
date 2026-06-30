@@ -27,17 +27,20 @@
   ],
   "author": "DeepHarness Team",
   "license": "MIT",
+  "dependencies": {
+    "undici": "^6.0.0"
+  },
   "engines": {
     "node": ">= 18"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/deepharness/deepharness-ent-desktop.git"
+    "url": "git+https://github.com/WraithN/deepharness-ent-desktop.git"
   },
   "bugs": {
-    "url": "https://github.com/deepharness/deepharness-ent-desktop/issues"
+    "url": "https://github.com/WraithN/deepharness-ent-desktop/issues"
   },
-  "homepage": "https://github.com/deepharness/deepharness-ent-desktop",
+  "homepage": "https://github.com/WraithN/deepharness-ent-desktop",
   "publishConfig": {
     "access": "public"
   }

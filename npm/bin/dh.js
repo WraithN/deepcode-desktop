@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execSync } from 'child_process';
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, realpathSync, readFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
@@ -8,7 +8,7 @@ import { homedir } from 'os';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const SYSTEM_INSTALL_URL = 'https://github.com/deepharness/deepharness-ent-desktop';
+const SYSTEM_INSTALL_URL = 'https://github.com/WraithN/deepharness-ent-desktop';
 
 /**
  * Resolve the real path of the wrapper script, following symlinks created by
@@ -22,13 +22,13 @@ function resolveWrapperPath() {
   }
 }
 
+const WRAPPER_PATH = resolveWrapperPath();
+
 /**
  * Check whether a candidate path resolves to this wrapper script itself.
  * This prevents `which dh` from returning the npm-installed JS wrapper and
  * causing an infinite subprocess loop.
  */
-const WRAPPER_PATH = resolveWrapperPath();
-
 function isWrapperItself(candidate) {
   try {
     return realpathSync(candidate) === WRAPPER_PATH;
@@ -59,7 +59,7 @@ function findProjectRoot() {
 }
 
 /**
- * Build a list of candidate paths where the `dh` native binary may live.
+ * Build a list of candidate paths where the `dh` binary may live.
  */
 function buildSearchPaths() {
   const paths = [];
@@ -113,6 +113,16 @@ function findDhBinary() {
   return null;
 }
 
+function readPackageVersion() {
+  try {
+    const pkgPath = join(__dirname, '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    return pkg.version;
+  } catch {
+    return null;
+  }
+}
+
 function printInstallInstructions() {
   console.error('Error: `dh` binary not found.');
   console.error('');
@@ -131,22 +141,44 @@ function printInstallInstructions() {
   console.error('     export DH_BINARY_PATH=/path/to/dh');
 }
 
-const dhBin = findDhBinary();
+async function ensureDhBinary() {
+  const existing = findDhBinary();
+  if (existing) return existing;
 
-if (!dhBin) {
-  printInstallInstructions();
-  process.exit(1);
+  // Try to download the binary from GitHub release on first use.
+  try {
+    const { downloadDhBinary } = await import('../scripts/download-binary.js');
+    const version = readPackageVersion();
+    if (!version) {
+      throw new Error('Cannot determine package version');
+    }
+    return await downloadDhBinary(version);
+  } catch (err) {
+    console.error(`[deepharness] Failed to download dh binary: ${err.message}`);
+    return null;
+  }
 }
 
-const args = process.argv.slice(2);
-const proc = spawn(dhBin, args, {
-  stdio: 'inherit',
-  cwd: process.cwd(),
-  env: { ...process.env, DH_NPM_WRAPPER: '1' },
-});
+async function main() {
+  const dhBin = await ensureDhBinary();
 
-proc.on('exit', (code) => process.exit(code ?? 1));
-proc.on('error', (err) => {
-  console.error(`Failed to start dh from ${dhBin}:`, err.message);
-  process.exit(1);
-});
+  if (!dhBin) {
+    printInstallInstructions();
+    process.exit(1);
+  }
+
+  const args = process.argv.slice(2);
+  const proc = spawn(dhBin, args, {
+    stdio: 'inherit',
+    cwd: process.cwd(),
+    env: { ...process.env, DH_NPM_WRAPPER: '1' },
+  });
+
+  proc.on('exit', (code) => process.exit(code ?? 1));
+  proc.on('error', (err) => {
+    console.error(`Failed to start dh from ${dhBin}:`, err.message);
+    process.exit(1);
+  });
+}
+
+main();
