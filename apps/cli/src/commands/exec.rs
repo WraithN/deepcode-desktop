@@ -29,16 +29,7 @@ pub async fn run(args: ExecArgs) -> Result<(), anyhow::Error> {
         Some(_info) => {
             // Always restart gatewayd to pick up latest API keys from config
             info!("Restarting gatewayd to inject latest API keys...");
-            if let Ok(Some(pid)) = dh_platform::fs::read_lock_file() {
-                let _ = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                // Poll until old gatewayd is gone (max 1s)
-                for _ in 0..10 {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    if check_gatewayd().await.is_none() {
-                        break;
-                    }
-                }
-            }
+            terminate_gatewayd().await;
             start_gatewayd().await?;
             wait_for_gatewayd().await.ok_or_else(|| anyhow::anyhow!("Failed to start gatewayd"))?
         }
@@ -128,6 +119,26 @@ async fn wait_for_gatewayd() -> Option<GatewaydInfo> {
         }
     }
     None
+}
+
+#[cfg(unix)]
+async fn terminate_gatewayd() {
+    if let Ok(Some(pid)) = dh_platform::fs::read_lock_file() {
+        let _ = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        // Poll until old gatewayd is gone (max 1s)
+        for _ in 0..10 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            if check_gatewayd().await.is_none() {
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn terminate_gatewayd() {
+    // Graceful restart via PID termination is not yet implemented on Windows.
+    warn!("Graceful gatewayd restart is not yet implemented on Windows");
 }
 
 fn read_opencode_model(agent: &str) -> Option<String> {
