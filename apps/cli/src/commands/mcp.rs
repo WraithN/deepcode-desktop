@@ -52,9 +52,7 @@ pub async fn run(command: McpCommands) -> Result<(), anyhow::Error> {
             let env_map: std::collections::HashMap<String, String> = env
                 .into_iter()
                 .filter_map(|s| {
-                    let mut parts = s.splitn(2, '=');
-                    let key = parts.next()?;
-                    let val = parts.next()?;
+                    let (key, val) = s.split_once('=')?;
                     Some((key.to_string(), val.to_string()))
                 })
                 .collect();

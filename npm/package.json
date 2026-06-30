@@ -1,16 +1,17 @@
 {
   "name": "deepharness",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "type": "module",
   "description": "DeepHarness CLI - Connect to AI coding agents with Claude Code, OpenCode, and more",
   "bin": {
     "dh": "bin/dh.js"
   },
   "scripts": {
-    "postinstall": "node scripts/postinstall.js"
+    "prepublishOnly": "node scripts/prebuild.js"
   },
   "files": [
     "bin/",
+    "binaries/",
     "scripts/",
     "README.md"
   ],

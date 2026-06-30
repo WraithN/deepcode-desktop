@@ -17,6 +17,9 @@ enum Commands {
     /// Chat with an agent in interactive REPL mode
     Chat(commands::chat::ChatArgs),
 
+    /// Detect installed coding agents
+    Detect(commands::detect::DetectArgs),
+
     /// Manage configuration and cloud sync
     #[command(subcommand)]
     Config(commands::config::ConfigCommands),
@@ -41,6 +44,9 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(async {
         match cli.command {
+            Commands::Detect(args) => {
+                commands::detect::run(args)
+            }
             Commands::Config(cmd) => {
                 commands::config::run(cmd).await
             }

@@ -59,6 +59,32 @@ function findProjectRoot() {
 }
 
 /**
+ * Return the bundled native binary for the current platform, if it exists.
+ * The npm package is published with pre-built binaries in `binaries/`.
+ */
+function findBundledBinary() {
+  const key = `${process.platform}:${process.arch}`;
+  const bundledName = {
+    'linux:x64': 'dh-linux-x64',
+    'linux:arm64': 'dh-linux-arm64',
+    'darwin:x64': 'dh-darwin-x64',
+    'darwin:arm64': 'dh-darwin-arm64',
+    'win32:x64': 'dh-windows-x64.exe',
+  }[key];
+
+  if (!bundledName) {
+    return null;
+  }
+
+  const bundledPath = join(__dirname, '..', 'binaries', bundledName);
+  if (existsSync(bundledPath)) {
+    return bundledPath;
+  }
+
+  return null;
+}
+
+/**
  * Build a list of candidate paths where the `dh` binary may live.
  */
 function buildSearchPaths() {
@@ -69,7 +95,15 @@ function buildSearchPaths() {
     paths.push(resolve(process.env.DH_BINARY_PATH));
   }
 
-  // 2. Project-local builds when developing from source.
+  // 2. Bundled binary shipped with the npm package.
+  try {
+    const bundled = findBundledBinary();
+    if (bundled) {
+      paths.push(bundled);
+    }
+  } catch {}
+
+  // 3. Project-local builds when developing from source.
   try {
     const projectRoot = findProjectRoot();
     if (projectRoot) {
@@ -78,13 +112,13 @@ function buildSearchPaths() {
     }
   } catch {}
 
-  // 3. Common user-level install locations.
+  // 4. Common user-level install locations.
   paths.push(
     join(homedir(), '.local', 'bin', 'dh'),
     join(homedir(), '.cargo', 'bin', 'dh'),
   );
 
-  // 4. System-wide install locations.
+  // 5. System-wide install locations.
   paths.push('/usr/local/bin/dh', '/usr/bin/dh');
 
   return paths;

@@ -4,7 +4,7 @@
 
 ## 安装
 
-`deepharness` npm 包会在安装时自动下载对应平台的原生 `dh` 二进制文件。
+`deepharness` npm 包已预置所有支持平台的原生 `dh` 二进制文件，安装时无需额外下载或编译。
 
 ```bash
 npm install -g deepharness
@@ -37,7 +37,7 @@ npx deepharness --version
 
 ### 手动指定二进制路径
 
-如果自动下载失败，或你想使用自己编译的 `dh`，可通过环境变量指定：
+如果当前平台不在支持列表内，或你想使用自己编译的 `dh`，可通过环境变量指定：
 
 ```bash
 export DH_BINARY_PATH=/path/to/dh
@@ -46,7 +46,7 @@ dh --version
 
 ## 支持的平台
 
-安装脚本会根据当前系统自动下载对应二进制：
+npm 包内置以下平台的预编译二进制，安装后会自动选择当前平台对应的版本：
 
 - Linux x64 / arm64
 - macOS x64 / arm64
@@ -93,6 +93,6 @@ npm link
 
 ## 安全说明
 
-- 本 npm 包只提供轻量级 JS 包装器，不包含任何二进制或 API 密钥
+- 本 npm 包提供轻量级 JS 包装器，并附带预构建的原生 `dh` 二进制
 - 所有 AI 调用和 API 密钥都由本地的 DeepHarness Desktop 或 Claude Code / OpenCode 自行管理
 - 数据全部保存在本地，不会发送到第三方服务器
