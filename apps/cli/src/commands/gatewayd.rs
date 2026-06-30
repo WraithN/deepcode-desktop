@@ -707,7 +707,15 @@ async fn check_running() -> bool {
 /// Verify whether a process with the given PID is alive.
 #[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__errno_location() == libc::EPERM }
+    unsafe {
+        if libc::kill(pid as i32, 0) == 0 {
+            return true;
+        }
+        // kill returns -1 on error. EPERM means the process exists but we lack
+        // permission to signal it, so it is still considered alive. Using
+        // std::io::Error avoids platform-specific errno accessors.
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
 }
 
 #[cfg(windows)]
