@@ -13,6 +13,7 @@ dist-ssr
 output
 *.local
 package-lock.json
+!npm/package-lock.json
 .lock
 *.tgz
 

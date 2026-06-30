@@ -135,7 +135,7 @@ jobs:
 
       - name: Install npm dependencies
         working-directory: npm
-        run: npm ci
+        run: npm install
 
       - name: Pre-build npm package
         working-directory: npm
