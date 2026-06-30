@@ -69,7 +69,7 @@ function findBundledBinary() {
     'linux:arm64': 'dh-linux-arm64',
     'darwin:x64': 'dh-darwin-x64',
     'darwin:arm64': 'dh-darwin-arm64',
-    'win32:x64': 'dh-windows-x64.exe',
+    'win32:x64': 'dh-win32-x64.exe',
   }[key];
 
   if (!bundledName) {

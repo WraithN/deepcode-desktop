@@ -1,6 +1,6 @@
 {
   "name": "deepharness",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "DeepHarness CLI - Connect to AI coding agents with Claude Code, OpenCode, and more",
   "bin": {
