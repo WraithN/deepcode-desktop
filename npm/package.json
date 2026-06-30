@@ -6,7 +6,14 @@
   "bin": {
     "dh": "bin/dh.js"
   },
-  "scripts": {},
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md"
+  ],
   "keywords": [
     "ai",
     "coding",

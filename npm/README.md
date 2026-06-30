@@ -4,14 +4,73 @@
 
 ## 安装
 
+`deepharness` npm 包是一个轻量级 JS 包装器，它需要本地 `dh` 二进制文件才能工作。
+
+### 1. 先安装 `dh` 二进制文件（必须）
+
+选择以下任一方式：
+
+#### 方式 A：安装 DeepHarness Desktop
+
+从发布页下载并安装桌面应用，它会自动将 `dh` 放入 PATH：
+
 ```bash
+https://github.com/deepharness/deepharness-ent-desktop
+```
+
+#### 方式 B：从源码编译（需要 Rust 工具链）
+
+```bash
+git clone https://github.com/deepharness/deepharness-ent-desktop.git
+cd deepharness-ent-desktop
+cargo build --release -p deepharness-cli
+
+# 安装到用户级可执行目录
+mkdir -p ~/.local/bin
+cp target/release/dh ~/.local/bin/dh
+
+# 确保 ~/.local/bin 在 PATH 中
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### 2. 再安装 npm 包
+
+```bash
+# 全局安装（推荐安装到用户目录，避免权限问题）
 npm install -g deepharness
 ```
 
-**依赖要求：**
+> **权限问题？** 如果看到 `EACCES` 错误，说明 npm 默认全局目录需要 root 权限。推荐以下两种方案：
 
-- 已安装 DeepHarness Desktop 应用 或 `dh` 二进制在 PATH 中
-- 若从源码编译：需要 Rust 工具链 (`cargo install --path apps/cli`)
+#### 方案 1：更改 npm 全局目录到用户主目录
+
+```bash
+mkdir -p ~/.npm-global
+npm config set prefix '~/.npm-global'
+export PATH="$HOME/.npm-global/bin:$PATH"
+# 将上面这行 export 也加入 ~/.bashrc 或 ~/.zshrc
+
+npm install -g deepharness
+```
+
+#### 方案 2：使用 `npx`（无需全局安装）
+
+```bash
+npx deepharness --version
+```
+
+### 3. 验证安装
+
+```bash
+dh --version
+```
+
+如果包装器找不到二进制文件，可以通过环境变量显式指定：
+
+```bash
+export DH_BINARY_PATH=/path/to/dh
+dh --version
+```
 
 ## 使用
 
