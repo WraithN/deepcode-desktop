@@ -128,6 +128,57 @@ impl SessionManager {
         Ok(info)
     }
 
+    /// 如果 session 没有 agent 实例且 run 请求携带了 agent_key，则自动挂载对应插件。
+    /// 将挂载逻辑提取为小函数，避免 start_run 出现过深嵌套。
+    async fn ensure_agent_for_run(
+        &self,
+        session_id: &str,
+        agent_key: &str,
+        run_id: &str,
+        agent_service: &AgentService,
+    ) -> Result<(), RunError> {
+        let workspace = std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        tracing::info!(
+            "[session_manager] run={} session={} has no agent, auto-attaching agent_key={}",
+            run_id,
+            session_id,
+            agent_key
+        );
+        match self
+            .create_agent(
+                session_id,
+                agent_key,
+                &format!("{}-auto", agent_key),
+                &workspace,
+                false,
+                agent_service,
+            )
+            .await
+        {
+            Ok(info) => {
+                tracing::info!(
+                    "[session_manager] run={} auto-attached instance={} plugin_key={}",
+                    run_id,
+                    info.id,
+                    info.plugin_key
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[session_manager] run={} auto-attach agent_key={} failed: {}",
+                    run_id,
+                    agent_key,
+                    e
+                );
+                Err(RunError::NoAgent)
+            }
+        }
+    }
+
     /// Start a run for the given session using the provided input.
     pub async fn start_run(
         &self,
@@ -150,7 +201,17 @@ impl SessionManager {
             .get_session(session_id)
             .ok_or(RunError::SessionNotFound)?;
 
-        let instances = session.instances();
+        let mut instances = session.instances();
+
+        // 如果 session 尚未挂载 agent，且 run 请求携带了 agent_key，自动加载对应 agent。
+        if instances.is_empty() {
+            if let Some(agent_key) = input.agent_key.as_deref().filter(|s| !s.is_empty()) {
+                self.ensure_agent_for_run(session_id, agent_key, &run_id, agent_service)
+                    .await?;
+                instances = session.instances();
+            }
+        }
+
         if instances.is_empty() {
             return Err(RunError::NoAgent);
         }

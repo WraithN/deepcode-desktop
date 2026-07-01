@@ -123,6 +123,11 @@ impl TransportHandle for HttpHandle {
         self.receiver = None;
         Ok(())
     }
+
+    fn is_alive(&mut self) -> bool {
+        // HTTP transport 没有子进程，认为只要 receiver 存在就是可用。
+        self.receiver.is_some()
+    }
 }
 
 impl HttpHandle {

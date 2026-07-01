@@ -147,6 +147,14 @@ fn parse_system_value(value: &Value) -> Option<ClaudeRawEvent> {
 }
 
 fn parse_assistant_value(value: &Value) -> Option<ClaudeRawEvent> {
+    // Claude 在 --print stream-json 模式下遇到 API 错误时，会返回 type=assistant 事件，
+    // 并在顶层携带 error 字段，文本内容即为错误说明（如 "API Error: 402 Insufficient Balance"）。
+    // 这种情况下没有 text_delta 流，原有逻辑会忽略文本导致前端空响应，
+    // 因此优先将其识别为 Error 事件。
+    if value.get(KEY_ERROR).is_some() {
+        return parse_error_value(value);
+    }
+
     let message = value.get(KEY_MESSAGE).unwrap_or(value);
     let content = parse_content(message.get(KEY_CONTENT)?)?;
     if let Some(tool_use) = first_tool_use(&content) {
@@ -253,10 +261,27 @@ fn parse_error_value(value: &Value) -> Option<ClaudeRawEvent> {
         .get(KEY_ERROR)
         .and_then(|v| v.get(KEY_MESSAGE_TEXT))
         .or_else(|| value.get(KEY_MESSAGE_TEXT))
-        .or_else(|| value.get(KEY_RESULT))?
-        .as_str()?
-        .to_string();
+        .or_else(|| value.get(KEY_RESULT))
+        .and_then(|v| v.as_str().map(String::from))
+        .or_else(|| extract_text_from_message_content(value))
+        .unwrap_or_else(|| "unknown error".to_string());
     Some(ClaudeRawEvent::Error { message })
+}
+
+/// 从 assistant/user 消息的 content 数组中提取第一段文本内容，用于错误提示。
+fn extract_text_from_message_content(value: &Value) -> Option<String> {
+    let message = value.get(KEY_MESSAGE).unwrap_or(value);
+    let content = message.get(KEY_CONTENT)?.as_array()?;
+    content
+        .iter()
+        .filter_map(|item| {
+            if item.get(KEY_TYPE)?.as_str()? == CONTENT_TYPE_TEXT {
+                item.get(KEY_TEXT)?.as_str().map(String::from)
+            } else {
+                None
+            }
+        })
+        .next()
 }
 
 fn parse_content(value: &Value) -> Option<Vec<ClaudeContent>> {

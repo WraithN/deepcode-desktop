@@ -36,4 +36,6 @@ pub trait TransportHandle: Send + Sync {
     async fn send(&mut self, payload: Value) -> Result<(), TransportError>;
     async fn receive(&mut self) -> Result<Value, TransportError>;
     async fn close(&mut self) -> Result<(), TransportError>;
+    /// 返回底层子进程是否仍在运行。用于在复用实例前检测进程是否已崩溃退出。
+    fn is_alive(&mut self) -> bool;
 }

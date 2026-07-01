@@ -115,6 +115,11 @@ pub struct RunAgentInput {
     pub context: Vec<ContextItem>,
     #[serde(rename = "forwardedProps", default = "empty_object")]
     pub forwarded_props: Value,
+    /// Optional agent key (e.g. claude-code, opencode, codex). When the session
+    /// has no attached agent instance, gatewayd will auto-attach the requested
+    /// plugin before starting the run.
+    #[serde(rename = "agent_key", skip_serializing_if = "Option::is_none")]
+    pub agent_key: Option<String>,
 }
 
 fn empty_object() -> Value {

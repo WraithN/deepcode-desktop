@@ -8,7 +8,9 @@ use agent_core::process::stdio::StdioTransport;
 use agent_core::process::transport::{Transport, TransportError, TransportHandle};
 use agent_core::session_map::ConversationSessionMap;
 use serde_json::{json, Value};
+use std::fs;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -132,12 +134,23 @@ impl ClaudeInstance {
         StdioTransport::new(PROGRAM_CLAUDE, args, self.config.workspace.clone())
     }
 
-    /// Start the Claude process and mark the instance running.
+    /// Start the Claude process and mark the instance running。
+    /// 若已存在 transport 但对应子进程已退出，则清理后重新启动，
+    /// 避免复用僵死实例导致 send_message 后无任何事件返回。
     async fn ensure_started(&self) -> Result<(), InstanceError> {
         let _guard = self.startup_lock.lock().await;
 
-        if self.transport_guard().await.is_some() {
-            return Ok(());
+        if let Some(handle) = self.transport_guard().await.as_mut() {
+            if handle.is_alive() {
+                return Ok(());
+            }
+            log::warn!(
+                "[claude-plugin] instance={} existing transport is dead, restarting",
+                self.config.id
+            );
+            *self.transport_guard().await = None;
+            self.started.store(false, Ordering::SeqCst);
+            self.set_status(InstanceStatus::Stopped);
         }
 
         self.shutdown.store(false, Ordering::SeqCst);
@@ -229,6 +242,17 @@ impl ClaudeInstance {
                     break;
                 };
 
+                // 如果子进程已退出，停止读取循环，避免无限空转。
+                if !handle.is_alive() {
+                    log::warn!(
+                        "[claude-plugin] instance={} reader detected dead process, stopping",
+                        instance.config.id
+                    );
+                    drop(guard);
+                    instance.set_status(InstanceStatus::Stopped);
+                    break;
+                }
+
                 if let Ok(payload) = try_payload {
                     Self::send_outgoing_or_log(handle, payload).await;
                 }
@@ -264,6 +288,63 @@ impl ClaudeInstance {
             Ok(Ok(value)) => Some(value),
             Ok(Err(_)) | Err(_) => None,
         }
+    }
+
+    /// 实际执行 Claude Code 的 write 工具，将内容写入 workspace。
+    ///
+    /// 支持参数：
+    /// - `file_path`: 相对 workspace 的路径，或绝对路径（必须在 workspace 内）。
+    /// - `content`: 文件内容字符串。
+    /// - `append`: 可选，为 true 时追加而非覆盖。
+    ///
+    /// 对越界路径返回错误，避免写坏系统文件。
+    fn apply_write_tool(&self, input: &Value) -> Result<(), String> {
+        let file_path = input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or("missing file_path")?;
+        let content = input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let append = input
+            .get("append")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let workspace = PathBuf::from(&self.config.workspace);
+        let target = workspace.join(file_path);
+
+        if !target.starts_with(&workspace) {
+            return Err(format!(
+                "file_path {} outside workspace {}",
+                target.display(),
+                workspace.display()
+            ));
+        }
+
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("create dir failed: {e}"))?;
+        }
+
+        if append {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&target)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes()))
+                .map_err(|e| format!("append failed: {e}"))?;
+        } else {
+            fs::write(&target, content).map_err(|e| format!("write failed: {e}"))?;
+        }
+
+        log::info!(
+            "[claude-plugin] instance={} wrote file {} (append={})",
+            self.config.id,
+            target.display(),
+            append
+        );
+        Ok(())
     }
 
     /// Routes a single raw JSON value from Claude:
@@ -302,6 +383,16 @@ impl ClaudeInstance {
         let Some(event) = crate::parser::to_process_event(&raw) else {
             return;
         };
+
+        // Claude Code 的 write 工具需要实际落盘，否则前端预览/下载时文件不存在。
+        // 在事件映射为前端通知前先在 workspace 内执行写入，保证 [[FILE:...]] 标记真实有效。
+        if let ProcessEvent::ToolUse { name, input } = &event {
+            if name == "write" {
+                if let Err(e) = self.apply_write_tool(input) {
+                    log::warn!("[claude-plugin] instance={} write tool failed: {}", self.config.id, e);
+                }
+            }
+        }
 
         if !self.first_token_event.swap(true, Ordering::SeqCst) {
             if let Some(start) = *self.run_start.lock().unwrap() {

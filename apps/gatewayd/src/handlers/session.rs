@@ -9,11 +9,24 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct CreateAgentRequest {
-    pub plugin_key: String,
+    #[serde(default)]
+    pub plugin_key: Option<String>,
+    /// agent_key 是 plugin_key 的别名，方便前端统一使用 agent_key 来指定 agent。
+    #[serde(default)]
+    pub agent_key: Option<String>,
     pub name: String,
     pub workspace: String,
     #[serde(default)]
     pub force: Option<bool>,
+}
+
+impl CreateAgentRequest {
+    fn resolve_plugin_key(&self) -> Option<String> {
+        self.plugin_key
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.agent_key.clone().filter(|s| !s.is_empty()))
+    }
 }
 
 pub async fn create_session_handler(State(state): State<crate::ApiState>) -> impl IntoResponse {
@@ -37,11 +50,20 @@ pub async fn create_agent_handler(
             .into_response();
     };
 
+    let plugin_key = req.resolve_plugin_key().unwrap_or_default();
+    if plugin_key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "plugin_key or agent_key is required" })),
+        )
+            .into_response();
+    }
+
     match state
         .session_manager
         .create_agent(
             &session_id,
-            &req.plugin_key,
+            &plugin_key,
             &req.name,
             &req.workspace,
             req.force.unwrap_or(false),

@@ -143,6 +143,12 @@ impl TransportHandle for StdioHandle {
             }
         }
     }
+
+    fn is_alive(&mut self) -> bool {
+        // try_wait returns Some if the process has already exited.
+        // None means it's still running (or we haven't waited yet).
+        self.child.try_wait().ok().flatten().is_none()
+    }
 }
 
 #[cfg(test)]
