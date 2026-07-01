@@ -125,7 +125,7 @@ impl CodexInstance {
 
     fn build_transport(&self) -> StdioTransport {
         let args = vec![APP_SERVER_SUBCOMMAND.into(), STDIO_FLAG.into()];
-        StdioTransport::new(PROGRAM_CODEX, args, self.config.workspace.clone())
+        StdioTransport::new(PROGRAM_CODEX, args, self.config.work_directory.clone())
     }
 
     async fn ensure_started(&self) -> Result<(), InstanceError> {
@@ -197,7 +197,7 @@ impl CodexInstance {
     /// Starts a new Codex thread and records its id.
     async fn start_thread(&self) -> Result<(), InstanceError> {
         let mut params = serde_json::Map::new();
-        params.insert("cwd".to_string(), json!(self.config.workspace));
+        params.insert("cwd".to_string(), json!(self.config.work_directory));
 
         if let Some(model) = &self.config.model {
             params.insert("model".to_string(), json!(model));
@@ -383,7 +383,7 @@ impl AgentInstance for CodexInstance {
         self.status.lock().unwrap().clone()
     }
 
-    fn plugin_key(&self) -> &'static str {
+    fn agent_key(&self) -> &'static str {
         PLUGIN_KEY
     }
 

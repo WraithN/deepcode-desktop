@@ -32,7 +32,6 @@ pub struct ClaudeInstance {
     active_session_id: Arc<Mutex<Option<String>>>,
     startup_lock: Arc<TokioMutex<()>>,
     out_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
-    out_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Value>>>,
     shutdown: Arc<AtomicBool>,
     // 用于 TTFT 调试：记录最近一次 send_message 的开始时间，以及是否已打印首事件日志。
     run_start: Arc<Mutex<Option<std::time::Instant>>>,
@@ -53,7 +52,6 @@ impl Clone for ClaudeInstance {
             active_session_id: self.active_session_id.clone(),
             startup_lock: self.startup_lock.clone(),
             out_tx: Mutex::new(self.out_tx.lock().unwrap().clone()),
-            out_rx: Mutex::new(None),
             shutdown: self.shutdown.clone(),
             run_start: self.run_start.clone(),
             first_raw_event: self.first_raw_event.clone(),
@@ -64,7 +62,7 @@ impl Clone for ClaudeInstance {
 
 impl ClaudeInstance {
     pub fn new(config: InstanceConfig, event_sink: DynEventSink, logger: Arc<SessionLogger>) -> Self {
-        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let out_tx = tokio::sync::mpsc::unbounded_channel::<Value>().0;
 
         Self {
             config,
@@ -77,7 +75,6 @@ impl ClaudeInstance {
             active_session_id: Arc::new(Mutex::new(None)),
             startup_lock: Arc::new(TokioMutex::new(())),
             out_tx: Mutex::new(Some(out_tx)),
-            out_rx: Mutex::new(Some(out_rx)),
             shutdown: Arc::new(AtomicBool::new(false)),
             run_start: Arc::new(Mutex::new(None)),
             first_raw_event: Arc::new(AtomicBool::new(false)),
@@ -131,7 +128,7 @@ impl ClaudeInstance {
             args.push(format!("{}{}", RESUME_PREFIX, session_id));
         }
 
-        StdioTransport::new(PROGRAM_CLAUDE, args, self.config.workspace.clone())
+        StdioTransport::new(PROGRAM_CLAUDE, args, self.config.work_directory.clone())
     }
 
     /// Start the Claude process and mark the instance running。
@@ -140,7 +137,8 @@ impl ClaudeInstance {
     async fn ensure_started(&self) -> Result<(), InstanceError> {
         let _guard = self.startup_lock.lock().await;
 
-        if let Some(handle) = self.transport_guard().await.as_mut() {
+        let mut transport_guard = self.transport_guard().await;
+        if let Some(handle) = transport_guard.as_mut() {
             if handle.is_alive() {
                 return Ok(());
             }
@@ -148,10 +146,11 @@ impl ClaudeInstance {
                 "[claude-plugin] instance={} existing transport is dead, restarting",
                 self.config.id
             );
-            *self.transport_guard().await = None;
+            *transport_guard = None;
             self.started.store(false, Ordering::SeqCst);
             self.set_status(InstanceStatus::Stopped);
         }
+        drop(transport_guard);
 
         self.shutdown.store(false, Ordering::SeqCst);
         self.set_status(InstanceStatus::Starting);
@@ -176,9 +175,9 @@ impl ClaudeInstance {
         self.started.store(true, Ordering::SeqCst);
         self.set_status(InstanceStatus::Running { pid: UNKNOWN_PID });
 
-        if let Some(out_rx) = self.out_rx.lock().unwrap().take() {
-            self.spawn_reader(out_rx, self.transport.clone(), self.shutdown.clone());
-        }
+        let (new_out_tx, new_out_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        *self.out_tx.lock().unwrap() = Some(new_out_tx);
+        self.spawn_reader(new_out_rx, self.transport.clone(), self.shutdown.clone());
 
         self.logger.log(
             &self.config.id,
@@ -312,7 +311,7 @@ impl ClaudeInstance {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let workspace = PathBuf::from(&self.config.workspace);
+        let workspace = PathBuf::from(&self.config.work_directory);
         let target = workspace.join(file_path);
 
         if !target.starts_with(&workspace) {
@@ -444,7 +443,7 @@ impl AgentInstance for ClaudeInstance {
         self.status.lock().unwrap().clone()
     }
 
-    fn plugin_key(&self) -> &'static str {
+    fn agent_key(&self) -> &'static str {
         PLUGIN_KEY
     }
 
@@ -559,7 +558,7 @@ mod tests {
         InstanceConfig {
             id: TEST_INSTANCE_ID.into(),
             name: "test".into(),
-            workspace: "/tmp".into(),
+            work_directory: "/tmp".into(),
             session_id: None,
             model: None,
             permission_mode: None,

@@ -9,28 +9,26 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct CreateAgentRequest {
-    #[serde(default)]
-    pub plugin_key: Option<String>,
-    /// agent_key 是 plugin_key 的别名，方便前端统一使用 agent_key 来指定 agent。
-    #[serde(default)]
-    pub agent_key: Option<String>,
+    pub agent_key: String,
     pub name: String,
-    pub workspace: String,
+    pub work_directory: String,
     #[serde(default)]
     pub force: Option<bool>,
 }
 
-impl CreateAgentRequest {
-    fn resolve_plugin_key(&self) -> Option<String> {
-        self.plugin_key
-            .clone()
-            .filter(|s| !s.is_empty())
-            .or_else(|| self.agent_key.clone().filter(|s| !s.is_empty()))
-    }
+/// `POST /sessions` 可选请求体，用于指定空闲超时时间。
+#[derive(Deserialize, Default)]
+pub struct CreateSessionRequest {
+    #[serde(default)]
+    pub expired_time: Option<u64>,
 }
 
-pub async fn create_session_handler(State(state): State<crate::ApiState>) -> impl IntoResponse {
-    let session_id = state.session_manager.create_session();
+pub async fn create_session_handler(
+    State(state): State<crate::ApiState>,
+    body: Option<Json<CreateSessionRequest>>,
+) -> impl IntoResponse {
+    let expired = body.and_then(|Json(b)| b.expired_time);
+    let session_id = state.session_manager.create_session(expired);
     (
         StatusCode::CREATED,
         Json(serde_json::json!({ "sessionId": session_id })),
@@ -50,11 +48,10 @@ pub async fn create_agent_handler(
             .into_response();
     };
 
-    let plugin_key = req.resolve_plugin_key().unwrap_or_default();
-    if plugin_key.is_empty() {
+    if req.agent_key.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "plugin_key or agent_key is required" })),
+            Json(serde_json::json!({ "error": "agent_key is required" })),
         )
             .into_response();
     }
@@ -63,9 +60,9 @@ pub async fn create_agent_handler(
         .session_manager
         .create_agent(
             &session_id,
-            &plugin_key,
+            &req.agent_key,
             &req.name,
-            &req.workspace,
+            &req.work_directory,
             req.force.unwrap_or(false),
             service,
         )
@@ -75,7 +72,7 @@ pub async fn create_agent_handler(
             StatusCode::CREATED,
             Json(serde_json::json!({
                 "instance_id": info.id,
-                "plugin_key": info.plugin_key,
+                "agent_key": info.agent_key,
                 "name": info.name,
                 "status": info.status,
             })),

@@ -87,16 +87,16 @@ impl Default for InstanceRegistry {
 
 /// Generates a unique instance id.
 ///
-/// The first instance for a plugin uses the plugin key itself for backwards
+/// The first instance for a plugin uses the agent key itself for backwards
 /// compatibility. Subsequent instances append an incrementing suffix.
-fn unique_instance_id(plugin_key: &str, registry: &InstanceRegistry) -> String {
-    if registry.get(plugin_key).is_none() {
-        return plugin_key.to_string();
+fn unique_instance_id(agent_key: &str, registry: &InstanceRegistry) -> String {
+    if registry.get(agent_key).is_none() {
+        return agent_key.to_string();
     }
 
     let mut index = 1u32;
     loop {
-        let candidate = format!("{}-{}", plugin_key, index);
+        let candidate = format!("{}-{}", agent_key, index);
         if registry.get(&candidate).is_none() {
             return candidate;
         }
@@ -144,23 +144,23 @@ impl AgentService {
     ) -> Result<InstanceInfo, PluginError> {
         let plugin = self
             .plugins
-            .get(&req.plugin_key)
-            .ok_or(PluginError::NotFound(req.plugin_key.clone()))?;
+            .get(&req.agent_key)
+            .ok_or(PluginError::NotFound(req.agent_key.clone()))?;
 
         // When force is not requested, reuse an existing instance that matches
-        // the requested plugin key.
+        // the requested agent key.
         if !req.force {
             let registry = self.instances.lock().await;
             if let Some((id, existing)) = registry
                 .list()
                 .into_iter()
-                .find(|(_, i)| i.plugin_key() == req.plugin_key)
+                .find(|(_, i)| i.agent_key() == req.agent_key)
             {
                 return Ok(InstanceInfo {
                     id: id.to_string(),
-                    plugin_key: req.plugin_key.clone(),
+                    agent_key: req.agent_key.clone(),
                     name: req.name.clone(),
-                    workspace: req.workspace.clone(),
+                    work_directory: req.work_directory.clone(),
                     status: existing.status(),
                     endpoint: existing.endpoint(),
                 });
@@ -170,16 +170,16 @@ impl AgentService {
         // 先获取唯一 ID 并释放锁，避免在持有锁期间再次尝试加锁导致死锁。
         let id = {
             let registry = self.instances.lock().await;
-            unique_instance_id(&req.plugin_key, &*registry)
+            unique_instance_id(&req.agent_key, &*registry)
         };
-        let config = InstanceConfig::new(id.clone(), req.name.clone(), req.workspace.clone());
+        let config = InstanceConfig::new(id.clone(), req.name.clone(), req.work_directory.clone());
 
         let instance = plugin.create_instance(config, self.event_sink.clone())?;
         let info = InstanceInfo {
             id: instance.id().to_string(),
-            plugin_key: req.plugin_key.clone(),
+            agent_key: req.agent_key.clone(),
             name: req.name.clone(),
-            workspace: req.workspace.clone(),
+            work_directory: req.work_directory.clone(),
             status: instance.status(),
             endpoint: instance.endpoint(),
         };
@@ -241,14 +241,27 @@ impl AgentService {
         instance.stop().await
     }
 
+    /// 停止并从注册表中移除实例，用于 session 过期回收。
+    pub async fn stop_and_remove_instance(&self, instance_id: &str) -> Result<(), InstanceError> {
+        let instance = {
+            let registry = self.instances.lock().await;
+            registry
+                .get(instance_id)
+                .ok_or(InstanceError::NotFound(instance_id.to_string()))?
+        };
+        instance.stop().await?;
+        self.instances.lock().await.remove(instance_id);
+        Ok(())
+    }
+
     pub async fn get_instance(&self, instance_id: &str) -> Option<InstanceInfo> {
         let registry = self.instances.lock().await;
         let instance = registry.get(instance_id)?;
         Some(InstanceInfo {
             id: instance.id().to_string(),
-            plugin_key: instance.plugin_key().to_string(),
+            agent_key: instance.agent_key().to_string(),
             name: instance.id().to_string(),
-            workspace: String::new(),
+            work_directory: String::new(),
             status: instance.status(),
             endpoint: instance.endpoint(),
         })
@@ -261,9 +274,9 @@ impl AgentService {
             .into_iter()
             .map(|(id, instance)| InstanceInfo {
                 id: id.clone(),
-                plugin_key: instance.plugin_key().to_string(),
+                agent_key: instance.agent_key().to_string(),
                 name: instance.id().to_string(),
-                workspace: String::new(),
+                work_directory: String::new(),
                 status: instance.status(),
                 endpoint: instance.endpoint(),
             })

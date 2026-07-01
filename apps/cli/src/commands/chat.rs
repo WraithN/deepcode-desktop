@@ -201,7 +201,7 @@ async fn find_or_create_instance(
         let agents: Vec<Value> = resp.json().await?;
         for agent in agents {
             if agent
-                .get("plugin_key")
+                .get("agent_key")
                 .and_then(|v| v.as_str())
                 .map(|s| s == plugin_type)
                 .unwrap_or(false)
@@ -214,14 +214,14 @@ async fn find_or_create_instance(
     }
 
     let create_url = format!("{}/agents", base_url);
-    let workspace = std::env::current_dir()
+    let work_directory = std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
     let payload = serde_json::json!({
-        "plugin_type": plugin_type,
+        "agent_key": plugin_type,
         "name": format!("{}-repl", plugin_type),
-        "workspace": workspace,
+        "work_directory": work_directory,
     });
 
     let resp = client

@@ -55,6 +55,8 @@ async fn handle_socket(socket: WebSocket, state: crate::ApiState, session_id: St
         if let Message::Text(text) = msg {
             match serde_json::from_str::<RunAgentInput>(&text) {
                 Ok(input) => {
+                    // 收到用户输入，刷新 session 空闲计时器。
+                    state.session_manager.touch_session(&session_id);
                     if let Err(e) = state
                         .session_manager
                         .start_run(&session_id, input, service)

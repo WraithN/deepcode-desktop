@@ -254,7 +254,7 @@ impl AgentInstance for OpencodeInstance {
         self.status.lock().unwrap().clone()
     }
 
-    fn plugin_key(&self) -> &'static str {
+    fn agent_key(&self) -> &'static str {
         PLUGIN_KEY
     }
 

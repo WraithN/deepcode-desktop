@@ -136,9 +136,9 @@ describe('agentStore', () => {
       const { useWebSocketStore } = await import('./websocketStore');
       const mockSendRequest = vi.fn().mockResolvedValue({
         instanceId: 'new-inst',
-        pluginKey: 'opencode',
+        agentKey: 'opencode',
         name: 'Test Agent',
-        workspace: '/tmp',
+        workDirectory: '/tmp',
         status: 'running',
       });
       vi.mocked(useWebSocketStore.getState).mockReturnValue({
@@ -152,9 +152,9 @@ describe('agentStore', () => {
       });
 
       expect(mockSendRequest).toHaveBeenCalledWith('agent.createInstance', {
-        pluginKey: 'opencode',
+        agentKey: 'opencode',
         name: 'Test Agent',
-        workspace: '/tmp',
+        workDirectory: '/tmp',
         modelConfig: undefined,
       });
       expect(result.id).toBe('new-inst');

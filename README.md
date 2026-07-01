@@ -282,103 +282,138 @@ dh-gatewayd --daemon --attach opencode --attach claude
 dh-gatewayd --daemon --agent-type opencode
 ```
 
-启动后会暴露下列端点：
+启动后会暴露下列端点。所有 Admin 接口监听 `127.0.0.1:<admin_port>`（默认 `2346`），API 接口监听 `127.0.0.1:<port>`（默认 `2345`）。
 
-| 路径 | 端口 | 说明 |
-|------|------|------|
-| `POST /v1/chat/completions` | API | OpenAI 兼容入口（被透明拦截的请求会走这里） |
-| `POST /v1/messages` | API | Anthropic 兼容入口 |
-| `GET /health` | Admin | 健康检查（返回 `version` 等元信息） |
-| `POST /context` | Admin | 由 `dh exec` 注入 `agent_type / session_id / workspace / model` |
-| `POST /sessions` | Admin | 创建 AG-UI session，返回 `sessionId`（同时作为 AG-UI `threadId`） |
-| `POST /sessions/{sessionId}/agents` | Admin | 在指定 session 下创建 opencode / claude-code 实例 |
-| `WS /sessions/{sessionId}/events` | Admin | WebSocket 实时事件流，双向收发 AG-UI 事件 |
-| `POST /sessions/{sessionId}/runs` | Admin | HTTP POST + SSE，启动一次 run 并流式返回 AG-UI 事件 |
-| `GET /mcp/servers`、`GET /mcp/tools`、`POST /mcp/tools/{name}/call` | Admin | MCP 聚合器（仅在配置了 MCP server 时启用） |
-| `GET /admin/reporter/status` | Admin | 远程上报器状态 |
+| 方法 + 路径 | 端口 | 请求体 | 响应 |
+|------|------|------|------|
+| `POST /v1/chat/completions` | API | OpenAI Chat Completions JSON | OpenAI 兼容响应 / SSE 流 |
+| `POST /v1/messages` | API | Anthropic Messages JSON | Anthropic 兼容响应 / SSE 流 |
+| `GET /health` | Admin | 无 | `{ status, service, version }` |
+| `POST /context` | Admin | `ContextPayload` | `{ status, agent_type, session_id }` |
+| `POST /sessions` | Admin | `CreateSessionRequest`（可选） | `{ sessionId }`（201） |
+| `POST /sessions/{sessionId}/agents` | Admin | `CreateAgentRequest` | `{ instance_id, agent_key, name, status }`（201） |
+| `WS /sessions/{sessionId}/events` | Admin | 客户端发 `RunAgentInput`（文本帧） | 服务端推 `Event`（文本帧） |
+| `POST /sessions/{sessionId}/chat` | Admin | `RunAgentInput` | SSE 流，每行一个 `Event` |
+| `GET /mcp/servers` | Admin | 无 | `{ servers: [{ name, alive }] }` |
+| `GET /mcp/tools` | Admin | 无 | `{ tools: [Tool] }` |
+| `POST /mcp/tools/{name}/call` | Admin | `{ arguments: Value }` | `{ result: ToolResult }` |
+| `GET /admin/reporter/status` | Admin | 无 | `{ enabled, endpoint, last_sync_rowid, queue_pending, queue_dead }` |
 
-> **注意**：旧版 Agent 接口（`/agents`、`/agents/{id}/message`、`/agents/events`）已废弃，请使用以 `/sessions` 为入口的 AG-UI 接口。
+> **注意**：旧版 Agent 接口（`/agents`、`/agents/{id}/message`、`/agents/events`）已废弃，请使用以 `/sessions` 为入口的 AG-UI 接口。`/mcp/*` 仅在配置了 MCP server 时启用。
 
 #### AG-UI 协议接口详情
 
-dh-gatewayd 的 Agent 对外交互已统一为 [AG-UI](https://docs.ag-ui.com/introduction) 事件协议。所有事件均为 JSON，通过 `type` 字段区分，采用 `SCREAMING_SNAKE_CASE` 命名。
+dh-gatewayd 的 Agent 对外交互已统一为 [AG-UI](https://docs.ag-ui.com/introduction) 事件协议。所有事件均为 JSON，通过 `type` 字段区分，采用 `SCREAMING_SNAKE_CASE` 命名。下文逐一列出各接口的请求/响应参数。
 
-**1. 创建 Session**
+##### 1. `POST /context` —— 注入运行上下文
 
-```bash
-curl -X POST http://127.0.0.1:2346/sessions
-```
+由 `dh exec` 调用，把当前被拦截 CLI 的上下文写入网关，用于审计串联与 session 落库。
 
-返回：
+**请求体 `ContextPayload`：**
 
-```json
-{
-  "sessionId": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|:----:|------|
+| `agent_type` | string | 是 | 智能体类型，如 `opencode`、`claude`、`aider` |
+| `session_id` | string | 是 | 审计用 session ID（`DEEPHARNESS_SESSION_ID`） |
+| `work_directory` | string | 否 | 工作目录绝对路径，留空则记为 `""` |
+| `model` | string | 否 | 默认模型名，留空则记为 `unknown` |
 
-`sessionId` 同时作为 AG-UI 的 `threadId`。
+**响应：** `{ status: "ok", agent_type, session_id }`
 
-**2. 挂载 Agent 实例**
+##### 2. `POST /sessions` —— 创建 AG-UI Session
+
+创建新 session，返回的 ID 同时作为 AG-UI `threadId`。请求体可选，用于自定义空闲超时。
+
+**请求体 `CreateSessionRequest`（可选）：**
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|------|------|:----:|:----:|------|
+| `expired_time` | number | 否 | `600` | session 空闲超时时间（秒）。超过该时间无用户输入，session 下挂载的 agent 实例会被自动回收 |
+
+**响应（201）：** `{ sessionId: "<uuid>" }`
+
+> **实例回收机制**：gatewayd 后台每分钟扫描一次所有 session。若某 session 距离上次用户输入已超过 `expired_time` 秒，其下挂载的 agent 实例会被停止并从注册表中移除，释放底层进程资源。session 本身不会被删除，下次有用户输入时可通过 `RunAgentInput.agent_key` 重新自动挂载。
+
+##### 3. `POST /sessions/{sessionId}/agents` —— 挂载 Agent 实例
+
+在指定 session 下创建一个 opencode / claude-code / codex 实例。一个 session 当前仅支持挂载一个实例（除非 `force=true`）。
+
+**路径参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `sessionId` | 由 `POST /sessions` 返回的 ID |
+
+**请求体 `CreateAgentRequest`：**
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|------|------|:----:|:----:|------|
+| `agent_key` | string | 是 | — | 插件标识：`opencode`、`claude-code`、`codex` |
+| `name` | string | 是 | — | 实例显示名 |
+| `work_directory` | string | 是 | — | 工作目录绝对路径 |
+| `force` | boolean | 否 | `false` | 为 `true` 时允许覆盖已有实例 |
+
+**响应（201）：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `instance_id` | string | 实例唯一 ID |
+| `agent_key` | string | 实际使用的插件标识 |
+| `name` | string | 实例名 |
+| `status` | string | 实例状态 |
+
+**示例：**
 
 ```bash
 curl -X POST http://127.0.0.1:2346/sessions/{sessionId}/agents \
   -H "Content-Type: application/json" \
   -d '{
-    "plugin_key": "opencode",
+    "agent_key": "opencode",
     "name": "my-opencode",
-    "workspace": "/path/to/project"
+    "work_directory": "/path/to/project"
   }'
 ```
 
-支持 `plugin_key`: `opencode`、`claude-code`。一个 session 当前仅支持挂载一个实例。
+##### 4. `WS /sessions/{sessionId}/events` —— 双向 WebSocket 信道
 
-**3. WebUI 信道：双向 WebSocket**
+连接建立后，客户端以**文本帧**发送 `RunAgentInput` 启动 run，服务端持续推送 `Event`。
+
+**客户端 → 服务端：** `RunAgentInput`（见下文数据结构）
+
+**服务端 → 客户端：** `Event`（见下文事件类型）
 
 ```bash
 websocat ws://127.0.0.1:2346/sessions/{sessionId}/events
 ```
 
-连接建立后，客户端发送 AG-UI `RunAgentInput`：
+> 若 session 不存在或 Agent runtime 不可用，服务端会立即下发一条 `RUN_ERROR` 文本帧并关闭连接。
+> 每次收到用户输入（`RunAgentInput`），服务端会刷新该 session 的空闲计时器，延迟实例回收。
 
-```json
-{
-  "threadId": "550e8400-e29b-41d4-a716-446655440000",
-  "messages": [
-    { "role": "user", "content": "帮我重构 Button 组件" }
-  ],
-  "state": {},
-  "tools": [],
-  "context": [],
-  "forwardedProps": {}
-}
-```
+##### 5. `POST /sessions/{sessionId}/chat` —— HTTP POST + SSE 信道
 
-服务端持续推送 AG-UI 事件，例如：
+启动一次对话。请求体与 WebSocket 发送的 `RunAgentInput` 完全一致，响应为 SSE 流。
 
-```json
-{ "type": "RUN_STARTED", "threadId": "...", "runId": "..." }
-{ "type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant" }
-{ "type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": "好的" }
-{ "type": "TEXT_MESSAGE_END", "messageId": "msg-1" }
-{ "type": "RUN_FINISHED", "threadId": "...", "runId": "..." }
-```
-
-**4. HTTP POST + SSE 信道**
+**前置校验**：
+1. 检查 `sessionId` 是否存在，不存在返回 `404`。
+2. 检查 session 下是否已有 agent 实例：
+   - 若已有实例，直接启动 run。
+   - 若无实例但请求体携带了非空 `agent_key`，自动挂载对应插件后再启动 run。
+   - 若无实例且未携带 `agent_key`，返回 `400` 提示需要提供 `agent_key`。
 
 ```bash
-curl -X POST http://127.0.0.1:2346/sessions/{sessionId}/runs \
+curl -N -X POST http://127.0.0.1:2346/sessions/{sessionId}/chat \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -d '{
     "threadId": "550e8400-e29b-41d4-a716-446655440000",
+    "agent_key": "opencode",
     "messages": [
-      { "role": "user", "content": "帮我重构 Button 组件" }
+      { "role": "user", "id": "u1", "content": "帮我重构 Button 组件" }
     ]
   }'
 ```
 
-响应为 SSE 流，每行一个 AG-UI 事件：
+响应：
 
 ```
 data: {"type":"RUN_STARTED","threadId":"...","runId":"..."}
@@ -392,17 +427,94 @@ data: {"type":"TEXT_MESSAGE_END","messageId":"..."}
 data: {"type":"RUN_FINISHED","threadId":"...","runId":"..."}
 ```
 
-**5. 主要事件类型**
+##### 6. 数据结构：`RunAgentInput`
 
-| 事件类型 | 说明 |
-|----------|------|
-| `RUN_STARTED` / `RUN_FINISHED` / `RUN_ERROR` | run 生命周期 |
-| `TEXT_MESSAGE_START` / `TEXT_MESSAGE_CONTENT` / `TEXT_MESSAGE_END` |  assistant 文本消息流 |
-| `THINKING_TEXT_MESSAGE_*` | 思考过程 |
-| `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` / `TOOL_CALL_RESULT` | 工具调用 |
-| `STATE_SNAPSHOT` | 共享状态快照（MVP 回显输入 state） |
-| `CUSTOM` | permission / question / todowrite 等扩展事件 |
-| `RAW` | session.log 等原始事件 |
+启动一次 run 的完整输入，WebSocket 文本帧与 `POST /runs` 请求体共用此结构。
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|------|------|:----:|:----:|------|
+| `threadId` | string | 是 | — | 会话线程 ID，应等于 `sessionId` |
+| `runId` | string | 否 | 自动生成 UUID | 本次 run 的 ID，不填则由网关生成 |
+| `state` | object | 否 | `{}` | 共享状态，会以 `STATE_SNAPSHOT` 回显 |
+| `messages` | `Message[]` | 是 | — | 消息列表，至少含一条 `user` 消息 |
+| `tools` | `Tool[]` | 否 | `[]` | 工具定义 |
+| `context` | `ContextItem[]` | 否 | `[]` | 上下文条目 |
+| `forwardedProps` | object | 否 | `{}` | 透传给下游插件的属性 |
+| `agent_key` | string | 否 | — | 当 session 无实例时自动挂载此插件（`opencode`/`claude-code`/`codex`）。`POST /chat` 接口在 session 无实例且未提供此字段时会返回 `400` |
+
+> **自动挂载**：若 session 尚未挂载任何 agent 实例，且 `RunAgentInput` 携带了非空 `agent_key`，网关会以当前工作目录自动创建对应插件实例后再启动 run。
+
+##### 7. 数据结构：`Message`
+
+按 `role` 标签区分，所有变体都含 `id` 字段。
+
+| role | 必填字段 | 可选字段 | 说明 |
+|------|----------|----------|------|
+| `developer` | `id`, `content` | `name` | 高优先级系统指令（OpenAI o1/o3 等模型用，等价于 `system`） |
+| `system` | `id`, `content` | `name` | 系统指令（Anthropic 及旧版 OpenAI 用） |
+| `user` | `id`, `content` | `name` | 用户消息 |
+| `assistant` | `id` | `content`, `name`, `toolCalls` | 模型回复 |
+| `tool` | `id`, `content`, `toolCallId` | `error` | 工具调用结果 |
+
+> **`developer` vs `system`**：AG-UI 协议同时支持两者以兼容不同 provider。OpenAI 在较新版本中把 `system` 重命名为 `developer`（用于 o1/o3 等推理模型）；Anthropic 仍使用 `system`。下游插件会按目标 provider 自动转换。
+
+示例：
+
+```json
+{ "role": "user", "id": "u1", "content": "帮我重构 Button 组件" }
+{ "role": "assistant", "id": "a1", "content": "好的", "toolCalls": null }
+{ "role": "tool", "id": "t1", "content": "...", "toolCallId": "call-1", "error": null }
+```
+
+##### 8. 数据结构：`Tool` 与 `ContextItem`
+
+| 结构 | 字段 | 类型 | 必填 | 说明 |
+|------|------|------|:----:|------|
+| `Tool` | `name` | string | 是 | 工具名 |
+| `Tool` | `description` | string | 否 | 工具描述 |
+| `Tool` | `parameters` | object | 是 | JSON Schema 参数定义 |
+| `ContextItem` | `name` | string | 是 | 条目名 |
+| `ContextItem` | `value` | any | 是 | 条目值 |
+
+##### 9. 事件类型 `Event`
+
+服务端推送的事件按 `type` 区分（`SCREAMING_SNAKE_CASE`），所有事件共享可选的 `timestamp`（Unix 秒，浮点）与 `rawEvent` 字段。
+
+| 事件类型 | 关键字段 | 说明 |
+|----------|----------|------|
+| `RUN_STARTED` / `RUN_FINISHED` / `RUN_ERROR` | `threadId`, `runId`（`RUN_ERROR` 用 `message`、`code?`） | run 生命周期 |
+| `TEXT_MESSAGE_START` / `TEXT_MESSAGE_CONTENT` / `TEXT_MESSAGE_END` | `messageId`, `role`（start）/ `delta`（content） | assistant 文本消息流 |
+| `THINKING_START` / `THINKING_END` | — | 思考过程起止 |
+| `THINKING_TEXT_MESSAGE_START` / `THINKING_TEXT_MESSAGE_CONTENT` / `THINKING_TEXT_MESSAGE_END` | `delta`（content） | 思考文本流 |
+| `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` | `toolCallId`, `toolCallName`（start）/ `delta`（args） | 工具调用 |
+| `TOOL_CALL_RESULT` | `toolCallId`, `messageId`, `content` | 工具调用结果 |
+| `STATE_SNAPSHOT` | `snapshot` | 共享状态快照（MVP 回显输入 state） |
+| `STATE_DELTA` | `delta` | 状态增量 |
+| `MESSAGES_SNAPSHOT` | `messages` | 消息列表快照 |
+| `STEP_STARTED` / `STEP_FINISHED` | `stepName` | 步骤生命周期 |
+| `CUSTOM` | `name`, `value` | permission / question / todowrite 等扩展事件 |
+| `RAW` | `event`, `source?` | session.log 等原始事件透传 |
+
+##### 10. MCP 聚合接口
+
+仅当配置了 MCP server 时启用。
+
+**`GET /mcp/servers`** —— 无请求体。
+
+响应：`{ servers: [{ name: string, alive: boolean }] }`
+
+**`GET /mcp/tools`** —— 无请求体。
+
+响应：`{ tools: Tool[] }`
+
+**`POST /mcp/tools/{name}/call`**
+
+| 参数位置 | 字段 | 类型 | 必填 | 说明 |
+|----------|------|------|:----:|------|
+| path | `name` | string | 是 | 工具全名，格式 `namespace:tool_name` |
+| body | `arguments` | object | 否 | 工具参数，默认 `{}` |
+
+响应：`{ result: ToolResult }`
 
 > ⚠️ 守护进程使用 PID 锁文件防止重复启动。如果 `dh gwd status` 报告"lock 文件存在但进程已死"，请先执行 `dh gwd stop` 清理。
 

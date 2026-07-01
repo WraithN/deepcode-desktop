@@ -170,7 +170,7 @@ pub async fn run(args: GwdArgs) -> Result<(), anyhow::Error> {
                                             println!("  Agents ({}):", agents.len());
                                             for agent in agents {
                                                 let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                                let plugin = agent.get("plugin_key").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                                let plugin = agent.get("agent_key").and_then(|v| v.as_str()).unwrap_or("unknown");
                                                 let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or(id);
                                                 let status = gatewayd_support::format_agent_status(agent.get("status"));
                                                 println!("    - {} ({}) [{}]", name, plugin, status);

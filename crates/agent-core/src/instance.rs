@@ -19,18 +19,18 @@ pub const UNKNOWN_PID: u32 = 0;
 pub struct InstanceConfig {
     pub id: String,
     pub name: String,
-    pub workspace: String,
+    pub work_directory: String,
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
 }
 
 impl InstanceConfig {
-    pub fn new(id: String, name: String, workspace: String) -> Self {
+    pub fn new(id: String, name: String, work_directory: String) -> Self {
         Self {
             id,
             name,
-            workspace,
+            work_directory,
             session_id: None,
             model: None,
             permission_mode: None,
@@ -41,7 +41,7 @@ impl InstanceConfig {
 pub trait AgentInstance: Send + Sync {
     fn id(&self) -> &str;
     fn status(&self) -> InstanceStatus;
-    fn plugin_key(&self) -> &'static str;
+    fn agent_key(&self) -> &'static str;
 
     /// Optional endpoint URL for this instance (e.g. opencode serve URL).
     fn endpoint(&self) -> Option<String> {
@@ -86,7 +86,7 @@ mod tests {
         let cfg = InstanceConfig {
             id: "i-1".into(),
             name: "test".into(),
-            workspace: "/tmp".into(),
+            work_directory: "/tmp".into(),
             session_id: Some("s-1".into()),
             model: Some(TEST_MODEL.into()),
             permission_mode: Some(TEST_PERMISSION_MODE.into()),

@@ -14,6 +14,7 @@ use rusqlite::params;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
@@ -28,6 +29,9 @@ mod handlers;
 mod mcp_aggregator;
 mod reporter;
 mod session;
+
+/// 空闲实例回收任务的扫描间隔（秒）。
+const REAPER_INTERVAL_SECS: u64 = 60;
 
 // Audit module (inlined to avoid rustc 1.95 ICE with directory modules)
 struct AuditLogger {
@@ -600,7 +604,7 @@ fn resolve_provider(model: &str) -> &'static str {
 struct ContextPayload {
     agent_type: String,
     session_id: String,
-    workspace: Option<String>,
+    work_directory: Option<String>,
     model: Option<String>,
 }
 
@@ -613,14 +617,14 @@ fn upsert_session(
     session_id: &str,
     agent_type: &str,
     model: &str,
-    workspace: Option<&str>,
+    work_directory: Option<&str>,
 ) -> anyhow::Result<()> {
     let conn = open_db(db_path)?;
-    let workspace = workspace.unwrap_or("");
+    let work_directory = work_directory.unwrap_or("");
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO sessions (id, agent_type, model, workspace, started_at, last_active_at, status)          VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active')          ON CONFLICT(id) DO UPDATE SET          agent_type = excluded.agent_type,          model = excluded.model,          workspace = excluded.workspace,          last_active_at = excluded.last_active_at",
-        rusqlite::params![session_id, agent_type, model, workspace, now],
+        rusqlite::params![session_id, agent_type, model, work_directory, now],
     )?;
     Ok(())
 }
@@ -647,7 +651,7 @@ async fn set_context(
         &payload.session_id,
         &payload.agent_type,
         model,
-        payload.workspace.as_deref(),
+        payload.work_directory.as_deref(),
     );
     info!(
         "Context updated: agent_type = {}, session = {}",
@@ -938,7 +942,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .collect();
     if !attach_types.is_empty() {
         if let Some(ref service) = agent_service {
-            let default_session = session_manager.create_session();
+            let default_session = session_manager.create_session(None);
             for plugin_type in &attach_types {
                 match session_manager
                     .create_agent(
@@ -1022,12 +1026,27 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 get(crate::handlers::websocket::session_events_handler),
             )
             .route(
-                "/sessions/{session_id}/runs",
-                post(crate::handlers::sse::run_handler),
+                "/sessions/{session_id}/chat",
+                post(crate::handlers::sse::chat_handler),
             );
     }
 
     let admin_router = admin_router.with_state(api_state.clone());
+
+    // 启动空闲实例回收后台任务：定期扫描 session，回收超过 expired_time 无用户输入的实例。
+    if let Some(ref service) = agent_service {
+        let reap_service = Arc::clone(service);
+        let reap_manager = session_manager.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(REAPER_INTERVAL_SECS));
+            // 跳过首次立即触发，避免启动瞬间就执行回收。
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                reap_manager.reap_expired(&reap_service).await;
+            }
+        });
+    }
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let admin_addr = SocketAddr::from(([127, 0, 0, 1], args.admin_port));

@@ -29,19 +29,19 @@ pub async fn handle_agent_request(
 }
 
 async fn handle_create_instance(service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
-    let plugin_key = req.params.get("pluginKey").and_then(|v| v.as_str());
+    let agent_key = req.params.get("agentKey").and_then(|v| v.as_str());
     let name = req.params.get("name").and_then(|v| v.as_str());
-    let workspace = req.params.get("workspace").and_then(|v| v.as_str());
+    let work_directory = req.params.get("workDirectory").and_then(|v| v.as_str());
     let force = req.params.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    if plugin_key.is_none() || name.is_none() || workspace.is_none() {
-        return JsonRpcResponse::error(req.id, INVALID_PARAMS, "Missing required params: pluginKey, name, workspace", None);
+    if agent_key.is_none() || name.is_none() || work_directory.is_none() {
+        return JsonRpcResponse::error(req.id, INVALID_PARAMS, "Missing required params: agentKey, name, workDirectory", None);
     }
 
     let create_req = CreateInstanceRequest {
-        plugin_key: plugin_key.unwrap().to_string(),
+        agent_key: agent_key.unwrap().to_string(),
         name: name.unwrap().to_string(),
-        workspace: workspace.unwrap().to_string(),
+        work_directory: work_directory.unwrap().to_string(),
         force,
     };
 
@@ -49,9 +49,9 @@ async fn handle_create_instance(service: Arc<AgentService>, req: JsonRpcRequest)
         Ok(info) => JsonRpcResponse::success(req.id, json!({
             "instanceId": info.id,
             "status": info.status,
-            "pluginKey": info.plugin_key,
+            "agentKey": info.agent_key,
             "name": info.name,
-            "workspace": info.workspace,
+            "workDirectory": info.work_directory,
         })),
         Err(e) => JsonRpcResponse::error(req.id, INTERNAL_ERROR, &e.to_string(), None),
     }

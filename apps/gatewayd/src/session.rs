@@ -7,10 +7,12 @@ use agent_core::service::AgentService;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use uuid;
 
 const DEFAULT_BROADCAST_CAPACITY: usize = 1024;
+const DEFAULT_EXPIRED_TIME_SECS: u64 = 600;
 
 /// Errors that can occur when starting a run.
 #[derive(Debug, thiserror::Error)]
@@ -27,24 +29,28 @@ pub enum RunError {
     AgentError(#[from] InstanceError),
 }
 
-/// A single AG-UI session.  Holds the event broadcaster and the list of
-/// attached agent instances.
+/// A single AG-UI session.  Holds the event broadcaster, the list of
+/// attached agent instances, and idle-timeout metadata for reaping.
 #[derive(Clone)]
 pub struct Session {
     pub session_id: String,
     pub event_tx: broadcast::Sender<Event>,
     instances: Arc<Mutex<Vec<String>>>,
     state: Arc<Mutex<Value>>,
+    expired_time: Duration,
+    last_input_at: Arc<Mutex<Instant>>,
 }
 
 impl Session {
-    fn new(session_id: String) -> Self {
+    fn new(session_id: String, expired_time: Duration) -> Self {
         let (event_tx, _rx) = broadcast::channel(DEFAULT_BROADCAST_CAPACITY);
         Self {
             session_id,
             event_tx,
             instances: Arc::new(Mutex::new(Vec::new())),
             state: Arc::new(Mutex::new(Value::Object(serde_json::Map::new()))),
+            expired_time,
+            last_input_at: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
@@ -56,12 +62,27 @@ impl Session {
         self.instances.lock().unwrap().clone()
     }
 
+    pub fn clear_instances(&self) {
+        self.instances.lock().unwrap().clear();
+    }
+
     pub fn state(&self) -> Value {
         self.state.lock().unwrap().clone()
     }
 
     pub fn set_state(&self, state: Value) {
         *self.state.lock().unwrap() = state;
+    }
+
+    /// 更新最近一次用户输入时间，用于空闲回收判定。
+    pub fn touch(&self) {
+        *self.last_input_at.lock().unwrap() = Instant::now();
+    }
+
+    /// 判断 session 是否已超过 expired_time 没有用户输入。
+    pub fn is_expired(&self) -> bool {
+        let last = *self.last_input_at.lock().unwrap();
+        Instant::now().duration_since(last) > self.expired_time
     }
 }
 
@@ -79,9 +100,11 @@ impl SessionManager {
     }
 
     /// Create a new session and return its id.
-    pub fn create_session(&self) -> String {
+    /// `expired_time_secs` 为空闲超时秒数，None 则使用默认值 600。
+    pub fn create_session(&self, expired_time_secs: Option<u64>) -> String {
+        let secs = expired_time_secs.unwrap_or(DEFAULT_EXPIRED_TIME_SECS);
         let session_id = uuid::Uuid::new_v4().to_string();
-        let session = Session::new(session_id.clone());
+        let session = Session::new(session_id.clone(), Duration::from_secs(secs));
         self.inner
             .lock()
             .unwrap()
@@ -94,13 +117,20 @@ impl SessionManager {
         self.inner.lock().unwrap().get(session_id).cloned()
     }
 
+    /// 更新 session 的最近用户输入时间。
+    pub fn touch_session(&self, session_id: &str) {
+        if let Some(session) = self.get_session(session_id) {
+            session.touch();
+        }
+    }
+
     /// Create an agent instance under the given session.
     pub async fn create_agent(
         &self,
         session_id: &str,
-        plugin_key: &str,
+        agent_key: &str,
         name: &str,
-        workspace: &str,
+        work_directory: &str,
         force: bool,
         agent_service: &AgentService,
     ) -> Result<agent_core::models::InstanceInfo, agent_core::error::PluginError> {
@@ -109,17 +139,15 @@ impl SessionManager {
         })?;
 
         if !session.instances().is_empty() && !force {
-            // We cannot return a custom error here because AgentService uses PluginError.
-            // Use CreateInstanceFailed as a close match.
             return Err(agent_core::error::PluginError::CreateInstanceFailed(
                 "session already has an agent instance".to_string(),
             ));
         }
 
         let req = CreateInstanceRequest {
-            plugin_key: plugin_key.to_string(),
+            agent_key: agent_key.to_string(),
             name: name.to_string(),
-            workspace: workspace.to_string(),
+            work_directory: work_directory.to_string(),
             force,
         };
 
@@ -137,7 +165,7 @@ impl SessionManager {
         run_id: &str,
         agent_service: &AgentService,
     ) -> Result<(), RunError> {
-        let workspace = std::env::current_dir()
+        let work_directory = std::env::current_dir()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
@@ -152,7 +180,7 @@ impl SessionManager {
                 session_id,
                 agent_key,
                 &format!("{}-auto", agent_key),
-                &workspace,
+                &work_directory,
                 false,
                 agent_service,
             )
@@ -160,10 +188,10 @@ impl SessionManager {
         {
             Ok(info) => {
                 tracing::info!(
-                    "[session_manager] run={} auto-attached instance={} plugin_key={}",
+                    "[session_manager] run={} auto-attached instance={} agent_key={}",
                     run_id,
                     info.id,
-                    info.plugin_key
+                    info.agent_key
                 );
                 Ok(())
             }
@@ -200,6 +228,9 @@ impl SessionManager {
         let session = self
             .get_session(session_id)
             .ok_or(RunError::SessionNotFound)?;
+
+        // 收到用户输入，刷新空闲计时器，防止 session 被回收。
+        session.touch();
 
         let mut instances = session.instances();
 
@@ -291,6 +322,39 @@ impl SessionManager {
             }
         }
         None
+    }
+
+    /// 遍历所有 session，回收超过 expired_time 无用户输入的实例。
+    /// 回收操作会停止底层进程并从 session 与 AgentService 注册表中移除实例。
+    pub async fn reap_expired(&self, agent_service: &AgentService) {
+        let expired: Vec<(String, Vec<String>)> = {
+            let guard = self.inner.lock().unwrap();
+            guard
+                .iter()
+                .filter(|(_, session)| session.is_expired() && !session.instances().is_empty())
+                .map(|(sid, session)| (sid.clone(), session.instances()))
+                .collect()
+        };
+
+        for (session_id, instance_ids) in expired {
+            for instance_id in &instance_ids {
+                tracing::info!(
+                    "[session_manager] reaping expired instance={} session={}",
+                    instance_id,
+                    session_id
+                );
+                if let Err(e) = agent_service.stop_and_remove_instance(instance_id).await {
+                    tracing::warn!(
+                        "[session_manager] failed to stop instance={}: {}",
+                        instance_id,
+                        e
+                    );
+                }
+            }
+            if let Some(session) = self.get_session(&session_id) {
+                session.clear_instances();
+            }
+        }
     }
 }
 

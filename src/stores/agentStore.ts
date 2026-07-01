@@ -36,9 +36,9 @@ interface AgentState {
 function mapBackendInstance(data: Record<string, unknown>): AgentInstance {
   return {
     id: (data.instanceId as string) || (data.id as string) || '',
-    agentKey: (data.pluginKey as string) || (data.agentKey as string) || '',
+    agentKey: (data.agentKey as string) || (data.pluginKey as string) || '',
     displayName: (data.name as string) || (data.displayName as string) || '',
-    workspace: (data.workspace as string) || '.',
+    workspace: (data.workDirectory as string) || (data.workspace as string) || '.',
     modelConfig: (data.modelConfig as AgentModelConfig | undefined),
     status: (data.status as AgentInstance['status']) || 'stopped',
     pid: data.pid as number | undefined,
@@ -52,9 +52,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   createInstance: async (config) => {
     const ws = useWebSocketStore.getState();
     const result = await ws.sendRequest<Record<string, unknown>>('agent.createInstance', {
-      pluginKey: config.agentKey,
+      agentKey: config.agentKey,
       name: config.displayName,
-      workspace: config.workspace,
+      workDirectory: config.workspace,
       modelConfig: config.modelConfig,
     });
 

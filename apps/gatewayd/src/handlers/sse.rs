@@ -14,15 +14,17 @@ use std::task::{Context, Poll};
 use tokio::sync::broadcast;
 use uuid;
 
-pub async fn run_handler(
-    State(state): State<crate::ApiState>,
+use crate::ApiState;
+
+pub async fn chat_handler(
+    State(state): State<ApiState>,
     Path(session_id): Path<String>,
     axum::Json(input): axum::Json<RunAgentInput>,
 ) -> Result<Sse<AguiEventStream>, (StatusCode, axum::Json<Value>)> {
     let run_id = input.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let start = std::time::Instant::now();
     tracing::info!(
-        "[gatewayd] run={} POST /sessions/{}/runs received",
+        "[gatewayd] run={} POST /sessions/{}/chat received",
         run_id,
         session_id
     );
@@ -34,15 +36,37 @@ pub async fn run_handler(
         )
     })?;
 
+    // 显式校验 session 是否存在，不存在直接返回 404。
     let rx = state
         .session_manager
         .subscribe(&session_id)
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                axum::Json(serde_json::json!({ "error": "session not found" })),
+                axum::Json(serde_json::json!({
+                    "error": "session not found",
+                    "session_id": session_id,
+                })),
             )
         })?;
+
+    // 若 session 下尚无 agent 实例，且请求未携带 agent_key，则报错；
+    // 若携带了 agent_key，start_run 内部会自动挂载对应插件实例。
+    let session = state.session_manager.get_session(&session_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "session not found" })),
+        )
+    })?;
+    if session.instances().is_empty() && input.agent_key.as_deref().filter(|s| !s.is_empty()).is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "error": "session has no agent instance; provide agent_key in the request to auto-create one",
+                "session_id": session_id,
+            })),
+        ));
+    }
 
     state
         .session_manager

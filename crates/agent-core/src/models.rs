@@ -11,9 +11,9 @@ pub struct PluginInfo {
 #[derive(Clone, Debug, Serialize)]
 pub struct InstanceInfo {
     pub id: String,
-    pub plugin_key: String,
+    pub agent_key: String,
     pub name: String,
-    pub workspace: String,
+    pub work_directory: String,
     pub status: InstanceStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
@@ -21,9 +21,9 @@ pub struct InstanceInfo {
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct CreateInstanceRequest {
-    pub plugin_key: String,
+    pub agent_key: String,
     pub name: String,
-    pub workspace: String,
+    pub work_directory: String,
     #[serde(default)]
     pub force: bool,
 }
