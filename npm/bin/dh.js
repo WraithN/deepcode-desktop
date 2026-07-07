@@ -58,19 +58,32 @@ function findProjectRoot() {
   }
 }
 
+function getPlatformKey() {
+  return `${process.platform}:${process.arch}`;
+}
+
+const DH_BUNDLED_NAMES = {
+  'linux:x64': 'dh-linux-x64',
+  'linux:arm64': 'dh-linux-arm64',
+  'darwin:x64': 'dh-darwin-x64',
+  'darwin:arm64': 'dh-darwin-arm64',
+  'win32:x64': 'dh-win32-x64.exe',
+};
+
+const GATEWAYD_BUNDLED_NAMES = {
+  'linux:x64': 'dh-gatewayd-linux-x64',
+  'linux:arm64': 'dh-gatewayd-linux-arm64',
+  'darwin:x64': 'dh-gatewayd-darwin-x64',
+  'darwin:arm64': 'dh-gatewayd-darwin-arm64',
+  'win32:x64': 'dh-gatewayd-win32-x64.exe',
+};
+
 /**
  * Return the bundled native binary for the current platform, if it exists.
  * The npm package is published with pre-built binaries in `binaries/`.
  */
-function findBundledBinary() {
-  const key = `${process.platform}:${process.arch}`;
-  const bundledName = {
-    'linux:x64': 'dh-linux-x64',
-    'linux:arm64': 'dh-linux-arm64',
-    'darwin:x64': 'dh-darwin-x64',
-    'darwin:arm64': 'dh-darwin-arm64',
-    'win32:x64': 'dh-win32-x64.exe',
-  }[key];
+function findBundledBinary(nameMap) {
+  const bundledName = nameMap[getPlatformKey()];
 
   if (!bundledName) {
     return null;
@@ -84,10 +97,18 @@ function findBundledBinary() {
   return null;
 }
 
+function findBundledDhBinary() {
+  return findBundledBinary(DH_BUNDLED_NAMES);
+}
+
+function findBundledGatewaydBinary() {
+  return findBundledBinary(GATEWAYD_BUNDLED_NAMES);
+}
+
 /**
  * Build a list of candidate paths where the `dh` binary may live.
  */
-function buildSearchPaths() {
+function buildDhSearchPaths() {
   const paths = [];
 
   // 1. Explicit override from environment.
@@ -97,7 +118,7 @@ function buildSearchPaths() {
 
   // 2. Bundled binary shipped with the npm package.
   try {
-    const bundled = findBundledBinary();
+    const bundled = findBundledDhBinary();
     if (bundled) {
       paths.push(bundled);
     }
@@ -128,7 +149,7 @@ function buildSearchPaths() {
  * Locate the `dh` binary, or return `null` if it cannot be found.
  */
 function findDhBinary() {
-  for (const p of buildSearchPaths()) {
+  for (const p of buildDhSearchPaths()) {
     if (existsSync(p) && !isWrapperItself(p)) return p;
   }
 
@@ -142,6 +163,69 @@ function findDhBinary() {
   try {
     const which = execSync('which dh', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     if (which && existsSync(which) && !isWrapperItself(which)) return which;
+  } catch {}
+
+  return null;
+}
+
+/**
+ * Build a list of candidate paths where the `dh-gatewayd` binary may live.
+ */
+function buildGatewaydSearchPaths(dhBin) {
+  const paths = [];
+
+  // 1. Explicit override from environment.
+  if (process.env.DH_GATEWAYD_PATH) {
+    paths.push(resolve(process.env.DH_GATEWAYD_PATH));
+  }
+
+  // 2. Same directory as the resolved `dh` binary (bundled install).
+  if (dhBin) {
+    const dhDir = dirname(dhBin);
+    paths.push(join(dhDir, process.platform === 'win32' ? 'dh-gatewayd.exe' : 'dh-gatewayd'));
+  }
+
+  // 3. Bundled binary shipped with the npm package.
+  try {
+    const bundled = findBundledGatewaydBinary();
+    if (bundled) {
+      paths.push(bundled);
+    }
+  } catch {}
+
+  // 4. Project-local builds when developing from source.
+  try {
+    const projectRoot = findProjectRoot();
+    if (projectRoot) {
+      paths.push(join(projectRoot, 'target', 'release', 'dh-gatewayd'));
+      paths.push(join(projectRoot, 'target', 'debug', 'dh-gatewayd'));
+    }
+  } catch {}
+
+  // 5. Common user-level install locations.
+  paths.push(
+    join(homedir(), '.local', 'bin', process.platform === 'win32' ? 'dh-gatewayd.exe' : 'dh-gatewayd'),
+    join(homedir(), '.cargo', 'bin', process.platform === 'win32' ? 'dh-gatewayd.exe' : 'dh-gatewayd'),
+  );
+
+  // 6. System-wide install locations.
+  paths.push('/usr/local/bin/dh-gatewayd', '/usr/bin/dh-gatewayd');
+
+  return paths;
+}
+
+/**
+ * Locate the `dh-gatewayd` binary, or return `null` if it cannot be found.
+ */
+function findGatewaydBinary(dhBin) {
+  for (const p of buildGatewaydSearchPaths(dhBin)) {
+    if (existsSync(p)) return p;
+  }
+
+  // Fallback: rely on the user's PATH.
+  try {
+    const which = execSync('which dh-gatewayd', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (which && existsSync(which)) return which;
   } catch {}
 
   return null;
@@ -193,12 +277,48 @@ async function ensureDhBinary() {
   }
 }
 
+async function ensureGatewaydBinary(dhBin) {
+  const existing = findGatewaydBinary(dhBin);
+  if (existing) return existing;
+
+  // Try to download the binary from GitHub release on first use.
+  try {
+    const { downloadGatewaydBinary } = await import('../scripts/download-binary.js');
+    const version = readPackageVersion();
+    if (!version) {
+      throw new Error('Cannot determine package version');
+    }
+    return await downloadGatewaydBinary(version);
+  } catch (err) {
+    console.error(`[deepharness] Failed to download dh-gatewayd binary: ${err.message}`);
+    return null;
+  }
+}
+
 async function main() {
   const dhBin = await ensureDhBinary();
 
   if (!dhBin) {
     printInstallInstructions();
     process.exit(1);
+  }
+
+  // `dh gwd start` spawns `dh-gatewayd`, so make sure it is available too.
+  const subcommand = process.argv[2];
+  const isGatewaydCommand = subcommand === 'gwd' || subcommand === 'gatewayd';
+  if (isGatewaydCommand) {
+    const gatewaydBin = await ensureGatewaydBinary(dhBin);
+    if (!gatewaydBin) {
+      console.error('Error: `dh-gatewayd` binary not found and could not be downloaded.');
+      console.error('');
+      console.error('The `dh gwd` commands require the `dh-gatewayd` daemon binary.');
+      console.error('You can install it manually with:');
+      console.error('  cargo build --release -p dh-gatewayd');
+      console.error('  cp target/release/dh-gatewayd ~/.local/bin/dh-gatewayd');
+      console.error('');
+      console.error('Or set DH_GATEWAYD_PATH to point to an existing binary.');
+      process.exit(1);
+    }
   }
 
   const args = process.argv.slice(2);

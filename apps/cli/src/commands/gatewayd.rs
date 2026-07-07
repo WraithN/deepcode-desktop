@@ -1,8 +1,10 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use tracing::{error, info};
 
-use super::gatewayd_support;
 use super::detect;
+use super::gatewayd_support;
 
 #[derive(Parser, Debug)]
 pub struct GwdArgs {
@@ -61,6 +63,41 @@ pub enum GatewaydCommands {
     },
 }
 
+/// Name of the gatewayd binary for the current platform.
+fn gatewayd_binary_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "dh-gatewayd.exe"
+    } else {
+        "dh-gatewayd"
+    }
+}
+
+/// Resolve the path to the `dh-gatewayd` binary.
+///
+/// Resolution order:
+/// 1. `DH_GATEWAYD_PATH` environment variable.
+/// 2. The same directory as the running `dh` executable (bundled install).
+/// 3. The system PATH.
+fn resolve_gatewayd_binary() -> PathBuf {
+    // 1. Explicit override from environment.
+    if let Ok(override_path) = std::env::var("DH_GATEWAYD_PATH") {
+        return PathBuf::from(override_path);
+    }
+
+    // 2. Bundled install: look next to the current `dh` executable.
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            let candidate = exe_dir.join(gatewayd_binary_name());
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    // 3. Fall back to PATH lookup.
+    PathBuf::from(gatewayd_binary_name())
+}
+
 pub async fn run(args: GwdArgs) -> Result<(), anyhow::Error> {
     // Handle --attach without any subcommand (attach to running gatewayd)
     if args.command.is_none() && !args.attach.is_empty() {
@@ -85,7 +122,8 @@ pub async fn run(args: GwdArgs) -> Result<(), anyhow::Error> {
                 return Ok(());
             }
 
-            let mut cmd = std::process::Command::new("dh-gatewayd");
+            let gatewayd_path = resolve_gatewayd_binary();
+            let mut cmd = std::process::Command::new(&gatewayd_path);
             if *daemon {
                 cmd.arg("--daemon");
             }

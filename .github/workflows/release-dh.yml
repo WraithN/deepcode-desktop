@@ -16,31 +16,68 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.package }} ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux targets use musl for fully-static binaries so the released CLI
-          # does not depend on a specific host glibc version (e.g. GLIBC_2.39).
-          - target: x86_64-unknown-linux-musl
+          # dh CLI
+          - package: deepharness-cli
+            binary: dh
+            target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             asset_name: dh-linux-x64
             cross: true
-          - target: aarch64-unknown-linux-musl
+          - package: deepharness-cli
+            binary: dh
+            target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             asset_name: dh-linux-arm64
             cross: true
-          - target: x86_64-apple-darwin
+          - package: deepharness-cli
+            binary: dh
+            target: x86_64-apple-darwin
             os: macos-latest
             asset_name: dh-darwin-x64
-          - target: aarch64-apple-darwin
+          - package: deepharness-cli
+            binary: dh
+            target: aarch64-apple-darwin
             os: macos-latest
             asset_name: dh-darwin-arm64
-          - target: x86_64-pc-windows-msvc
+          - package: deepharness-cli
+            binary: dh
+            target: x86_64-pc-windows-msvc
             os: windows-latest
             asset_name: dh-windows-x64.exe
+          # dh-gatewayd daemon
+          - package: dh-gatewayd
+            binary: dh-gatewayd
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            asset_name: dh-gatewayd-linux-x64
+            cross: true
+          - package: dh-gatewayd
+            binary: dh-gatewayd
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            asset_name: dh-gatewayd-linux-arm64
+            cross: true
+          - package: dh-gatewayd
+            binary: dh-gatewayd
+            target: x86_64-apple-darwin
+            os: macos-latest
+            asset_name: dh-gatewayd-darwin-x64
+          - package: dh-gatewayd
+            binary: dh-gatewayd
+            target: aarch64-apple-darwin
+            os: macos-latest
+            asset_name: dh-gatewayd-darwin-arm64
+          - package: dh-gatewayd
+            binary: dh-gatewayd
+            target: x86_64-pc-windows-msvc
+            os: windows-latest
+            asset_name: dh-gatewayd-windows-x64.exe
 
     steps:
       - name: Checkout
@@ -54,7 +91,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ matrix.package }}
 
       - name: Install cross
         if: matrix.cross
@@ -63,25 +100,25 @@ jobs:
       - name: Build release binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release -p deepharness-cli --target ${{ matrix.target }}
+            cross build --release -p ${{ matrix.package }} --target ${{ matrix.target }}
           else
-            cargo build --release -p deepharness-cli --target ${{ matrix.target }}
+            cargo build --release -p ${{ matrix.package }} --target ${{ matrix.target }}
           fi
         shell: bash
 
       - name: Strip binary (Unix)
         if: runner.os != 'Windows' && matrix.cross != true
         run: |
-          strip target/${{ matrix.target }}/release/dh
+          strip target/${{ matrix.target }}/release/${{ matrix.binary }}
         shell: bash
 
       - name: Stage binary
         run: |
           mkdir -p dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/${{ matrix.target }}/release/dh.exe dist/${{ matrix.asset_name }}
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }}.exe dist/${{ matrix.asset_name }}
           else
-            cp target/${{ matrix.target }}/release/dh dist/${{ matrix.asset_name }}
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.asset_name }}
           fi
         shell: bash
 

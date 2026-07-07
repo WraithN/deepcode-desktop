@@ -1,6 +1,6 @@
 use crate::gateway::codec::{JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR, INVALID_PARAMS, INSTANCE_NOT_FOUND};
 use crate::gateway::session_manager::SessionManager;
-use crate::models::agent::CreateInstanceRequest;
+use crate::models::agent::{CreateInstanceRequest, UpdateModelConfigRequest};
 use crate::service::agent_service::AgentService;
 use serde_json::json;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ pub async fn handle_agent_request(
         "agent.getInstance" => handle_get_instance(service, req).await,
         "agent.setMode" => handle_set_mode(service, req).await,
         "agent.respond" => handle_respond(service, req).await,
+        "agent.updateModelConfig" => handle_update_model_config(service, req).await,
         _ => JsonRpcResponse::error(
             req.id,
             crate::gateway::codec::METHOD_NOT_FOUND,
@@ -146,4 +147,29 @@ async fn handle_set_mode(_service: Arc<AgentService>, req: JsonRpcRequest) -> Js
     }
 
     JsonRpcResponse::success(req.id, json!({"status": "mode_set"}))
+}
+
+async fn handle_update_model_config(service: Arc<AgentService>, req: JsonRpcRequest) -> JsonRpcResponse {
+    let instance_id = req.params.get("instanceId").and_then(|v| v.as_str());
+
+    if instance_id.is_none() {
+        return JsonRpcResponse::error(req.id, INVALID_PARAMS, "Missing required param: instanceId", None);
+    }
+
+    let update_req = UpdateModelConfigRequest {
+        instance_id: instance_id.unwrap().to_string(),
+        model_type: req.params.get("modelType").and_then(|v| v.as_str()).map(String::from),
+        model_id: req.params.get("modelId").and_then(|v| v.as_str()).map(String::from),
+        model_name: req.params.get("modelName").and_then(|v| v.as_str()).map(String::from),
+        url: req.params.get("url").and_then(|v| v.as_str()).map(String::from),
+        api_key: req.params.get("apiKey").and_then(|v| v.as_str()).map(String::from),
+        show_thinking: req.params.get("showThinking").and_then(|v| v.as_bool()),
+        temperature: req.params.get("temperature").and_then(|v| v.as_f64()).map(|v| v as f32),
+        max_tokens: req.params.get("maxTokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+    };
+
+    match service.update_model_config(update_req).await {
+        Ok(()) => JsonRpcResponse::success(req.id, json!({"status": "config_updated"})),
+        Err(e) => JsonRpcResponse::error(req.id, INSTANCE_NOT_FOUND, &e.to_string(), None),
+    }
 }

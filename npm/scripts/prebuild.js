@@ -3,9 +3,9 @@
  * Pre-build hook for the `deepharness` npm package.
  *
  * Before publishing the npm package, this script downloads or copies the
- * native `dh` binaries for all supported platforms into `npm/binaries/`.
- * The published package therefore contains all native binaries and does not
- * need a postinstall hook.
+ * native `dh` and `dh-gatewayd` binaries for all supported platforms into
+ * `npm/binaries/`. The published package therefore contains all native
+ * binaries and does not need a postinstall hook.
  */
 import {
   chmodSync,
@@ -25,12 +25,20 @@ const GITHUB_OWNER = 'WraithN';
 const GITHUB_REPO = 'deepharness-ent-desktop';
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
-const PLATFORMS = [
+const DH_PLATFORMS = [
   { platform: 'linux', arch: 'x64', assetName: 'dh-linux-x64', binaryName: 'dh' },
   { platform: 'linux', arch: 'arm64', assetName: 'dh-linux-arm64', binaryName: 'dh' },
   { platform: 'darwin', arch: 'x64', assetName: 'dh-darwin-x64', binaryName: 'dh' },
   { platform: 'darwin', arch: 'arm64', assetName: 'dh-darwin-arm64', binaryName: 'dh' },
   { platform: 'win32', arch: 'x64', assetName: 'dh-windows-x64.exe', binaryName: 'dh.exe' },
+];
+
+const GATEWAYD_PLATFORMS = [
+  { platform: 'linux', arch: 'x64', assetName: 'dh-gatewayd-linux-x64', binaryName: 'dh-gatewayd' },
+  { platform: 'linux', arch: 'arm64', assetName: 'dh-gatewayd-linux-arm64', binaryName: 'dh-gatewayd' },
+  { platform: 'darwin', arch: 'x64', assetName: 'dh-gatewayd-darwin-x64', binaryName: 'dh-gatewayd' },
+  { platform: 'darwin', arch: 'arm64', assetName: 'dh-gatewayd-darwin-arm64', binaryName: 'dh-gatewayd' },
+  { platform: 'win32', arch: 'x64', assetName: 'dh-gatewayd-windows-x64.exe', binaryName: 'dh-gatewayd.exe' },
 ];
 
 function getRootDir() {
@@ -67,9 +75,9 @@ function getBinaryDir() {
   return join(getRootDir(), 'binaries');
 }
 
-function getBinaryPath(platform, arch, binaryName) {
+function getBinaryPath(kind, platform, arch, binaryName) {
   const suffix = binaryName.endsWith('.exe') ? '.exe' : '';
-  return join(getBinaryDir(), `dh-${platform}-${arch}${suffix}`);
+  return join(getBinaryDir(), `${kind}-${platform}-${arch}${suffix}`);
 }
 
 function getDownloadUrl(version, assetName) {
@@ -125,10 +133,9 @@ async function downloadBinary(version, assetName, destPath) {
   writeFileSync(destPath, buffer);
 }
 
-function copyLocalBinary(assetName, destPath) {
+function copyLocalBinary(kind, assetName, destPath) {
   const rootDir = join(getRootDir(), '..');
-  const isWindows = assetName.endsWith('.exe');
-  const localName = isWindows ? 'dh.exe' : 'dh';
+  const localName = assetName.endsWith('.exe') ? `${kind}.exe` : kind;
   const candidates = [
     join(rootDir, 'dist', assetName),
     join(rootDir, 'target', 'release', localName),
@@ -146,9 +153,9 @@ function copyLocalBinary(assetName, destPath) {
   return false;
 }
 
-async function prepareBinary(platformInfo, version) {
+async function prepareBinary(kind, platformInfo, version) {
   const { platform, arch, assetName, binaryName } = platformInfo;
-  const destPath = getBinaryPath(platform, arch, binaryName);
+  const destPath = getBinaryPath(kind, platform, arch, binaryName);
 
   if (existsSync(destPath)) {
     console.log(`[deepharness] Binary already exists: ${destPath}`);
@@ -165,11 +172,34 @@ async function prepareBinary(platformInfo, version) {
   }
 
   // Fallback: copy from local build artifacts.
-  if (copyLocalBinary(assetName, destPath)) {
+  if (copyLocalBinary(kind, assetName, destPath)) {
     return;
   }
 
-  throw new Error(`Could not prepare binary for ${platform}-${arch}`);
+  throw new Error(`Could not prepare binary for ${kind} ${platform}-${arch}`);
+}
+
+async function preparePlatforms(kind, platforms, version) {
+  for (const platformInfo of platforms) {
+    try {
+      await prepareBinary(kind, platformInfo, version);
+      const destPath = getBinaryPath(
+        kind,
+        platformInfo.platform,
+        platformInfo.arch,
+        platformInfo.binaryName,
+      );
+      if (process.platform !== 'win32' && !platformInfo.binaryName.endsWith('.exe')) {
+        chmodSync(destPath, 0o755);
+      }
+    } catch (err) {
+      console.error(
+        `[deepharness] Failed to prepare ${platformInfo.assetName}: ${err.message}`,
+      );
+      return true;
+    }
+  }
+  return false;
 }
 
 async function main() {
@@ -183,27 +213,10 @@ async function main() {
 
   mkdirSync(getBinaryDir(), { recursive: true });
 
-  let hasError = false;
-  for (const platformInfo of PLATFORMS) {
-    try {
-      await prepareBinary(platformInfo, version);
-      const destPath = getBinaryPath(
-        platformInfo.platform,
-        platformInfo.arch,
-        platformInfo.binaryName,
-      );
-      if (process.platform !== 'win32' && !platformInfo.binaryName.endsWith('.exe')) {
-        chmodSync(destPath, 0o755);
-      }
-    } catch (err) {
-      console.error(
-        `[deepharness] Failed to prepare ${platformInfo.assetName}: ${err.message}`,
-      );
-      hasError = true;
-    }
-  }
+  const dhError = await preparePlatforms('dh', DH_PLATFORMS, version);
+  const gatewaydError = await preparePlatforms('dh-gatewayd', GATEWAYD_PLATFORMS, version);
 
-  if (hasError) {
+  if (dhError || gatewaydError) {
     console.error('[deepharness] Pre-build completed with errors.');
     process.exit(1);
   }

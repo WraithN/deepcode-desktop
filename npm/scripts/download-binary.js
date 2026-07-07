@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Download the native `dh` binary from the GitHub release that matches the
- * current platform and architecture.
+ * Download the native DeepHarness binaries (`dh` and `dh-gatewayd`) from the
+ * GitHub release that matches the current platform and architecture.
  */
 import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -12,12 +12,20 @@ const GITHUB_OWNER = 'WraithN';
 const GITHUB_REPO = 'deepharness-ent-desktop';
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 
-const PLATFORM_ASSET_NAMES = {
+const DH_PLATFORM_ASSET_NAMES = {
   'linux:x64': 'dh-linux-x64',
   'linux:arm64': 'dh-linux-arm64',
   'darwin:x64': 'dh-darwin-x64',
   'darwin:arm64': 'dh-darwin-arm64',
   'win32:x64': 'dh-windows-x64.exe',
+};
+
+const GATEWAYD_PLATFORM_ASSET_NAMES = {
+  'linux:x64': 'dh-gatewayd-linux-x64',
+  'linux:arm64': 'dh-gatewayd-linux-arm64',
+  'darwin:x64': 'dh-gatewayd-darwin-x64',
+  'darwin:arm64': 'dh-gatewayd-darwin-arm64',
+  'win32:x64': 'dh-gatewayd-windows-x64.exe',
 };
 
 function getProxyUrl() {
@@ -61,25 +69,33 @@ function getPackageVersion() {
   }
 }
 
-function getAssetName() {
+function getAssetName(platformAssetNames) {
   const key = `${process.platform}:${process.arch}`;
-  const assetName = PLATFORM_ASSET_NAMES[key];
+  const assetName = platformAssetNames[key];
   if (!assetName) {
-    throw new Error(`Unsupported platform/architecture: ${key}. Supported platforms: ${Object.keys(PLATFORM_ASSET_NAMES).join(', ')}`);
+    throw new Error(`Unsupported platform/architecture: ${key}. Supported platforms: ${Object.keys(platformAssetNames).join(', ')}`);
   }
   return assetName;
 }
 
-function getBinaryName() {
+function getDhBinaryName() {
   return process.platform === 'win32' ? 'dh.exe' : 'dh';
+}
+
+function getGatewaydBinaryName() {
+  return process.platform === 'win32' ? 'dh-gatewayd.exe' : 'dh-gatewayd';
 }
 
 function getInstallDir() {
   return join(homedir(), '.local', 'bin');
 }
 
-function getBinaryPath() {
-  return join(getInstallDir(), getBinaryName());
+function getDhBinaryPath() {
+  return join(getInstallDir(), getDhBinaryName());
+}
+
+function getGatewaydBinaryPath() {
+  return join(getInstallDir(), getGatewaydBinaryName());
 }
 
 function getDownloadUrl(version, assetName) {
@@ -87,15 +103,12 @@ function getDownloadUrl(version, assetName) {
 }
 
 /**
- * Download the binary for the current platform and install it to ~/.local/bin.
- * Returns the path to the installed binary.
+ * Download a release asset and install it to the given path.
  */
-export async function downloadDhBinary(version) {
-  const assetName = getAssetName();
-  const binaryPath = getBinaryPath();
+async function downloadReleaseAsset(version, assetName, binaryPath, label) {
   const downloadUrl = getDownloadUrl(version, assetName);
 
-  console.log(`[deepharness] Downloading dh ${version} for ${process.platform}-${process.arch}...`);
+  console.log(`[deepharness] Downloading ${label} ${version} for ${process.platform}-${process.arch}...`);
   console.log(`[deepharness] URL: ${downloadUrl}`);
 
   const response = await fetchWithProxy(downloadUrl);
@@ -112,18 +125,45 @@ export async function downloadDhBinary(version) {
     chmodSync(binaryPath, 0o755);
   }
 
-  console.log(`[deepharness] Installed dh to ${binaryPath}`);
+  console.log(`[deepharness] Installed ${label} to ${binaryPath}`);
   return binaryPath;
 }
 
 /**
- * Check whether the installed binary is present.
+ * Download the `dh` binary for the current platform and install it to ~/.local/bin.
+ * Returns the path to the installed binary.
  */
-export function isBinaryInstalled() {
-  return existsSync(getBinaryPath());
+export async function downloadDhBinary(version) {
+  const assetName = getAssetName(DH_PLATFORM_ASSET_NAMES);
+  const binaryPath = getDhBinaryPath();
+  return downloadReleaseAsset(version, assetName, binaryPath, 'dh');
 }
 
-export { getBinaryPath, getPackageVersion };
+/**
+ * Download the `dh-gatewayd` binary for the current platform and install it to ~/.local/bin.
+ * Returns the path to the installed binary.
+ */
+export async function downloadGatewaydBinary(version) {
+  const assetName = getAssetName(GATEWAYD_PLATFORM_ASSET_NAMES);
+  const binaryPath = getGatewaydBinaryPath();
+  return downloadReleaseAsset(version, assetName, binaryPath, 'dh-gatewayd');
+}
+
+/**
+ * Check whether the installed `dh` binary is present.
+ */
+export function isBinaryInstalled() {
+  return existsSync(getDhBinaryPath());
+}
+
+/**
+ * Check whether the installed `dh-gatewayd` binary is present.
+ */
+export function isGatewaydBinaryInstalled() {
+  return existsSync(getGatewaydBinaryPath());
+}
+
+export { getDhBinaryPath, getGatewaydBinaryPath, getPackageVersion };
 
 // CLI entry point for testing or manual download.
 if (import.meta.url === `file://${process.argv[1]}`) {
