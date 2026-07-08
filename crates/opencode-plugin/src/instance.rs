@@ -95,7 +95,7 @@ impl OpencodeInstance {
         let port = find_available_port().map_err(InstanceError::ProcessError)?;
         let base_url = format!("{}:{}", LOCALHOST, port);
 
-        let mut child = start_opencode_process(port)?;
+        let mut child = start_opencode_process(port, &self.config.work_directory)?;
 
         let client = OpenCodeClient::new(&base_url);
         let mut ready = false;

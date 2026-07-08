@@ -38,11 +38,7 @@ impl ConfigInterceptor {
     pub fn restore(&mut self) {
         for backup in &self.backups {
             if let Err(e) = std::fs::write(&backup.path, &backup.original_content) {
-                warn!(
-                    "Failed to restore config {}: {}",
-                    backup.path.display(),
-                    e
-                );
+                warn!("Failed to restore config {}: {}", backup.path.display(), e);
             } else {
                 info!("Restored config: {}", backup.path.display());
             }

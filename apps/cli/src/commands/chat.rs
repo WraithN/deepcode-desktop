@@ -1,5 +1,5 @@
 use clap::Args;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::io::Write;
 use std::time::Duration;
@@ -12,8 +12,13 @@ const STARTUP_WAIT_ATTEMPTS: usize = 40;
 const STARTUP_WAIT_DELAY_MS: u64 = 250;
 const WS_SETTLE_DELAY_MS: u64 = 300;
 const AGENT_RESPONSE_TIMEOUT_SECS: u64 = 300;
-const AGENTS_REQUEST_TIMEOUT_SECS: u64 = 5;
+const CREATE_SESSION_TIMEOUT_SECS: u64 = 5;
 const CREATE_AGENT_TIMEOUT_SECS: u64 = 10;
+
+const EVENT_TYPE_STATUS_CHANGED: &str = "status_changed";
+const EVENT_NAME_AGENT_PERMISSION: &str = "agent.permission";
+const EVENT_NAME_AGENT_QUESTION: &str = "agent.question";
+const EVENT_NAME_AGENT_TODO_WRITE: &str = "agent.todowrite";
 
 #[derive(Args, Debug)]
 pub struct ChatArgs {
@@ -25,6 +30,12 @@ pub struct ChatArgs {
     pub interactive: bool,
 }
 
+/// Identifies a session and the agent instance attached to it.
+struct ChatSession {
+    session_id: String,
+    instance_id: String,
+}
+
 pub async fn run(args: ChatArgs) -> Result<(), anyhow::Error> {
     if !args.interactive {
         anyhow::bail!("--interactive is required for now");
@@ -33,22 +44,36 @@ pub async fn run(args: ChatArgs) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
     let admin_port = ensure_gatewayd_running(&client).await?;
     let base_url = format!("http://127.0.0.1:{}", admin_port);
-    let ws_url = format!("ws://127.0.0.1:{}/agents/events", admin_port);
 
-    // Find or create an agent instance for the requested plugin type.
-    let instance_id = find_or_create_instance(&client, &base_url, &args.plugin_type).await?;
-    println!("Connected to agent: {} (plugin: {})", instance_id, args.plugin_type);
+    // Create a fresh session and attach the requested plugin.
+    let ChatSession {
+        session_id,
+        instance_id,
+    } = create_session_with_agent(&client, &base_url, &args.plugin_type).await?;
+    println!(
+        "Connected to agent: {} (plugin: {}) in session: {}",
+        instance_id, args.plugin_type, session_id
+    );
     println!("Type a message and press Enter. Use /quit or /exit to leave.");
 
-    // Establish WebSocket connection to receive agent events.
-    let (ws_stream, _) = connect_async(format!("{}?instance_id={}", ws_url, instance_id)).await?;
+    // Establish WebSocket connection to receive and send AG-UI events.
+    let ws_url = format!(
+        "ws://127.0.0.1:{}/sessions/{}/events",
+        admin_port, session_id
+    );
+    let (ws_stream, _) = connect_async(&ws_url).await?;
     tokio::time::sleep(Duration::from_millis(WS_SETTLE_DELAY_MS)).await;
 
-    let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel::<Result<Message, tokio_tungstenite::tungstenite::Error>>();
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+
+    // Forward incoming WebSocket messages to an unbounded channel so the REPL
+    // loop can consume them with a timeout.
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<
+        Result<Message, tokio_tungstenite::tungstenite::Error>,
+    >();
     tokio::spawn(async move {
-        let mut ws_stream = ws_stream;
-        while let Some(msg) = ws_stream.next().await {
-            if ws_tx.send(msg).is_err() {
+        while let Some(msg) = ws_rx.next().await {
+            if event_tx.send(msg).is_err() {
                 break;
             }
         }
@@ -84,36 +109,54 @@ pub async fn run(args: ChatArgs) -> Result<(), anyhow::Error> {
             break;
         }
 
-        let conversation_id = format!("cli-chat-{}", uuid::Uuid::new_v4());
-        let url = format!("{}/agents/{}/message", base_url, instance_id);
-        let payload = serde_json::json!({
-            "conversation_id": conversation_id,
-            "message": input,
-        });
+        let run_id = format!("cli-chat-{}", uuid::Uuid::new_v4());
+        let payload = build_run_agent_input(&session_id, &run_id, &args.plugin_type, &input);
 
-        match client.post(&url).json(&payload).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                info!("Message sent to {}", instance_id);
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                eprintln!("[error] failed to send message: {} - {}", status, body);
-            }
+        let payload_text = match serde_json::to_string(&payload) {
+            Ok(text) => text,
             Err(e) => {
-                eprintln!("[error] request failed: {}", e);
+                eprintln!("[error] failed to serialize message: {}", e);
+                continue;
             }
-        }
+        };
 
-        wait_for_agent_response(&mut ws_rx, &mut output_state).await;
+        if let Err(e) = ws_tx.send(Message::Text(payload_text.into())).await {
+            eprintln!("[error] failed to send message: {}", e);
+            continue;
+        }
+        info!("Message sent to session {} run {}", session_id, run_id);
+
+        wait_for_agent_response(&mut event_rx, &mut output_state).await;
     }
 
     println!("Goodbye.");
     Ok(())
 }
 
+/// Build an AG-UI RunAgentInput payload for the user message.
+fn build_run_agent_input(session_id: &str, run_id: &str, plugin_type: &str, input: &str) -> Value {
+    serde_json::json!({
+        "threadId": session_id,
+        "runId": run_id,
+        "state": {},
+        "messages": [
+            {
+                "role": "user",
+                "id": format!("msg-{}", uuid::Uuid::new_v4()),
+                "content": input,
+            }
+        ],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {},
+        "agent_key": plugin_type,
+    })
+}
+
 async fn wait_for_agent_response(
-    ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Result<Message, tokio_tungstenite::tungstenite::Error>>,
+    event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<
+        Result<Message, tokio_tungstenite::tungstenite::Error>,
+    >,
     output_state: &mut ReplOutputState,
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(AGENT_RESPONSE_TIMEOUT_SECS);
@@ -121,7 +164,7 @@ async fn wait_for_agent_response(
         let timeout = tokio::time::sleep_until(deadline);
         tokio::pin!(timeout);
         match tokio::select! {
-            msg = ws_rx.recv() => msg,
+            msg = event_rx.recv() => msg,
             _ = timeout => None,
         } {
             Some(Ok(Message::Text(text))) => {
@@ -182,38 +225,51 @@ async fn is_healthy(client: &reqwest::Client, url: &str) -> bool {
         .timeout(Duration::from_secs(HEALTH_TIMEOUT_SECS))
         .send()
         .await;
-    response.map(|resp| resp.status().is_success()).unwrap_or(false)
+    response
+        .map(|resp| resp.status().is_success())
+        .unwrap_or(false)
 }
 
-async fn find_or_create_instance(
+/// Create a new session and attach a single agent instance for the plugin.
+async fn create_session_with_agent(
     client: &reqwest::Client,
     base_url: &str,
     plugin_type: &str,
-) -> Result<String, anyhow::Error> {
-    let list_url = format!("{}/agents", base_url);
+) -> Result<ChatSession, anyhow::Error> {
+    let session_id = create_session(client, base_url).await?;
+    let instance_id = create_agent(client, base_url, &session_id, plugin_type).await?;
+    Ok(ChatSession {
+        session_id,
+        instance_id,
+    })
+}
+
+async fn create_session(client: &reqwest::Client, base_url: &str) -> Result<String, anyhow::Error> {
+    let url = format!("{}/sessions", base_url);
     let resp = client
-        .get(&list_url)
-        .timeout(Duration::from_secs(AGENTS_REQUEST_TIMEOUT_SECS))
+        .post(&url)
+        .timeout(Duration::from_secs(CREATE_SESSION_TIMEOUT_SECS))
         .send()
         .await?;
 
-    if resp.status().is_success() {
-        let agents: Vec<Value> = resp.json().await?;
-        for agent in agents {
-            if agent
-                .get("agent_key")
-                .and_then(|v| v.as_str())
-                .map(|s| s == plugin_type)
-                .unwrap_or(false)
-            {
-                if let Some(id) = agent.get("id").and_then(|v| v.as_str()) {
-                    return Ok(id.to_string());
-                }
-            }
-        }
+    if !resp.status().is_success() {
+        anyhow::bail!("failed to create session: {}", resp.text().await?);
     }
 
-    let create_url = format!("{}/agents", base_url);
+    let body: Value = resp.json().await?;
+    body.get("sessionId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("missing sessionId in create response"))
+}
+
+async fn create_agent(
+    client: &reqwest::Client,
+    base_url: &str,
+    session_id: &str,
+    plugin_type: &str,
+) -> Result<String, anyhow::Error> {
+    let url = format!("{}/sessions/{}/agents", base_url, session_id);
     let work_directory = std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
@@ -225,7 +281,7 @@ async fn find_or_create_instance(
     });
 
     let resp = client
-        .post(&create_url)
+        .post(&url)
         .json(&payload)
         .timeout(Duration::from_secs(CREATE_AGENT_TIMEOUT_SECS))
         .send()
@@ -248,82 +304,107 @@ struct ReplOutputState {
 
 fn print_event(event: &Value, state: &mut ReplOutputState) -> bool {
     let event_type = event
-        .get("event_type")
+        .get("type")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    let payload = event.get("payload").unwrap_or(&Value::Null);
 
     match event_type {
-        "agent:status_changed" => {
-            if let Some(status) = payload.get("status") {
-                let text = match status {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Object(map) if map.contains_key("running") => "running".to_string(),
-                    serde_json::Value::Object(map) if map.contains_key("crashed") => {
-                        format!("crashed: {}", map.get("crashed").and_then(|v| v.as_str()).unwrap_or("unknown"))
-                    }
-                    _ => status.to_string(),
-                };
-                if state.ai_started {
-                    println!();
-                    state.ai_started = false;
-                }
-                println!("[status]>>>> {}", text);
-            }
+        "TEXT_MESSAGE_START" => {
+            reset_ai_line(state);
+            print!("[ai]>>>> ");
+            state.ai_started = true;
+            let _ = std::io::stdout().flush();
         }
-        "agent.thinking" => {
-            if let Some(text) = payload.get("content").and_then(|v| v.as_str()) {
-                if !text.is_empty() {
-                    if state.ai_started {
-                        println!();
-                        state.ai_started = false;
-                    }
-                    let think_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let prefix = match think_type {
-                        "tool_use" => "===> tool_use => ".to_string(),
-                        "tool_result" => {
-                            let name = payload.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
-                            let failed = payload.get("failed").and_then(|v| v.as_bool()).unwrap_or(false);
-                            if failed {
-                                format!("===> tool_result [FAILED] {} => ", name)
-                            } else {
-                                format!("===> tool_result {} => ", name)
-                            }
-                        }
-                        _ => "===> ai thinking => ".to_string(),
-                    };
-                    println!("{} {}", prefix, text);
-                    let _ = std::io::stdout().flush();
-                }
-            }
-        }
-        "agent.token" => {
-            if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
-                if !text.is_empty() {
+        "TEXT_MESSAGE_CONTENT" => {
+            if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                if !delta.is_empty() {
                     if !state.ai_started {
                         print!("[ai]>>>> ");
                         state.ai_started = true;
                     }
-                    print!("{}", text);
+                    print!("{}", delta);
                     let _ = std::io::stdout().flush();
                 }
             }
         }
-        "agent.done" => {
+        "TEXT_MESSAGE_END" => {
             if state.ai_started {
                 println!();
                 state.ai_started = false;
             }
             return true;
         }
-        "agent.question" | "agent.permission" | "agent.todowrite" => {
-            if state.ai_started {
-                println!();
-                state.ai_started = false;
+        "THINKING_TEXT_MESSAGE_CONTENT" => {
+            if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                if !delta.is_empty() {
+                    reset_ai_line(state);
+                    println!("===> ai thinking => {}", delta);
+                }
             }
-            println!("[{}]>>>> {}", event_type, payload);
+        }
+        "TOOL_CALL_START" => {
+            reset_ai_line(state);
+            let name = event
+                .get("toolCallName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            println!("===> tool_use => {}", name);
+        }
+        "TOOL_CALL_ARGS" => {
+            if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                if !delta.is_empty() {
+                    println!("===> tool_args => {}", delta);
+                }
+            }
+        }
+        "TOOL_CALL_RESULT" => {
+            if let Some(content) = event.get("content").and_then(|v| v.as_str()) {
+                println!("===> tool_result => {}", content);
+            }
+        }
+        "RUN_ERROR" => {
+            reset_ai_line(state);
+            let message = event
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            eprintln!("[error]>>>> {}", message);
+            return true;
+        }
+        "CUSTOM" => {
+            if let Some(name) = event.get("name").and_then(|v| v.as_str()) {
+                match name {
+                    EVENT_TYPE_STATUS_CHANGED => {
+                        reset_ai_line(state);
+                        let status = event
+                            .get("value")
+                            .and_then(|v| v.get("status"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        println!("[status]>>>> {}", status);
+                    }
+                    EVENT_NAME_AGENT_PERMISSION
+                    | EVENT_NAME_AGENT_QUESTION
+                    | EVENT_NAME_AGENT_TODO_WRITE => {
+                        reset_ai_line(state);
+                        println!(
+                            "[{}]>>>> {}",
+                            name,
+                            event.get("value").unwrap_or(&Value::Null)
+                        );
+                    }
+                    _ => {}
+                }
+            }
         }
         _ => {}
     }
     false
+}
+
+fn reset_ai_line(state: &mut ReplOutputState) {
+    if state.ai_started {
+        println!();
+        state.ai_started = false;
+    }
 }

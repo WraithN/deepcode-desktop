@@ -167,10 +167,12 @@ fn expand_targets<'a>(
             registry.keys().join(", ")
         );
     }
-    Ok(vec![match registry.keys().into_iter().find(|k| *k == target) {
-        Some(k) => k,
-        None => unreachable!(),
-    }])
+    Ok(vec![
+        match registry.keys().into_iter().find(|k| *k == target) {
+            Some(k) => k,
+            None => unreachable!(),
+        },
+    ])
 }
 
 fn print_outcome(outcome: &dh_config_adapter::ApplyOutcome, dry_run: bool) {

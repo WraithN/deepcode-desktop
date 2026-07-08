@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { AgentInstance } from '@/stores';
+import { useAgentStore } from '@/stores';
 import BasicTab from './settings/BasicTab';
 import AgentsTab from './settings/AgentsTab';
 import SkillsTab from './settings/SkillsTab';
@@ -93,15 +94,25 @@ export default function SettingsDialog({ open, onOpenChange, agents = [], onUpda
   };
 
   /* ─────── 智能体 ─────── */
-  const handleSaveAgentConfigs = () => {
+  const handleSaveAgentConfigs = async () => {
     saveAgentTypeConfigs(agentTypeConfigs);
-    // 同步到当前所有 agent instances
     const updated = agents.map((a) => {
       const typeCfg = agentTypeConfigs[a.agentKey];
       if (typeCfg) { return { ...a, modelConfig: typeCfg }; }
       return a;
     });
     onUpdateAgents(updated);
+
+    for (const agent of updated) {
+      if (agent.modelConfig) {
+        try {
+          await useAgentStore.getState().updateModelConfig(agent.id, agent.modelConfig);
+        } catch {
+          // 后端可能未运行，忽略错误
+        }
+      }
+    }
+
     toast.success('智能体配置已保存');
   };
 

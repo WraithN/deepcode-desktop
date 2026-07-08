@@ -7,6 +7,7 @@ export interface AgentModelConfig {
   name?: string;
   url?: string;
   apiKey?: string;
+  showThinking?: boolean;
 }
 
 export interface AgentInstance {
@@ -31,6 +32,7 @@ interface AgentState {
   setInstances: (instances: AgentInstance[]) => void;
   addInstance: (instance: AgentInstance) => void;
   updateInstance: (instanceId: string, updates: Partial<AgentInstance>) => void;
+  updateModelConfig: (instanceId: string, modelConfig: AgentModelConfig) => Promise<void>;
 }
 
 function mapBackendInstance(data: Record<string, unknown>): AgentInstance {
@@ -114,5 +116,20 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         i.id === instanceId ? { ...i, ...updates } : i
       ),
     }));
+  },
+
+  updateModelConfig: async (instanceId, modelConfig) => {
+    const ws = useWebSocketStore.getState();
+    await ws.sendRequest('agent.updateModelConfig', {
+      instanceId,
+      modelType: modelConfig.type,
+      modelId: modelConfig.modelId,
+      modelName: modelConfig.name,
+      url: modelConfig.url,
+      apiKey: modelConfig.apiKey,
+      showThinking: modelConfig.showThinking,
+    });
+
+    get().updateInstance(instanceId, { modelConfig });
   },
 }));

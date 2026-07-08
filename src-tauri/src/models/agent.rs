@@ -1,1 +1,1 @@
-pub use agent_core::models::{CreateInstanceRequest, InstanceInfo, PluginInfo};
+pub use agent_core::models::{CreateInstanceRequest, InstanceInfo, PluginInfo, UpdateModelConfigRequest};

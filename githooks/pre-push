@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# pre-push — 推送到 main 时自动 bump workspace patch 版本号
+#
+# 触发条件: 推送 refs/heads/main 且本地有领先远程的新提交（非删除操作）。
+# 行为: 调用 scripts/bump-version.sh 生成一个 "chore: bump version to x.y.z" 提交，
+#       随后 git push 会将该 bump 提交一并推送至远程。
+#
+# 安装（一次性）: git config core.hooksPath githooks
+# 临时跳过: git push --no-verify
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+ZERO=0000000000000000000000000000000000000000
+
+# pre-push 从 stdin 读取多行，每行格式:
+#   <local ref> <local sha> <remote ref> <remote sha>
+while read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  # 仅处理 main 分支的实际推送：排除删除（LOCAL_SHA 为全零）与无变化的情况。
+  if [[ "$REMOTE_REF" == "refs/heads/main" && "$LOCAL_SHA" != "$ZERO" && "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
+    bash "$ROOT/scripts/bump-version.sh"
+  fi
+done
+
+exit 0

@@ -14,7 +14,10 @@ pub struct ExecArgs {
 }
 
 pub async fn run(args: ExecArgs) -> Result<(), anyhow::Error> {
-    info!("Executing agent: {} with args: {:?}", args.agent, args.agent_args);
+    info!(
+        "Executing agent: {} with args: {:?}",
+        args.agent, args.agent_args
+    );
 
     // Generate a persistent session ID for this agent run
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -31,12 +34,16 @@ pub async fn run(args: ExecArgs) -> Result<(), anyhow::Error> {
             info!("Restarting gatewayd to inject latest API keys...");
             terminate_gatewayd().await;
             start_gatewayd().await?;
-            wait_for_gatewayd().await.ok_or_else(|| anyhow::anyhow!("Failed to start gatewayd"))?
+            wait_for_gatewayd()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Failed to start gatewayd"))?
         }
         None => {
             info!("gatewayd not running, starting it...");
             start_gatewayd().await?;
-            wait_for_gatewayd().await.ok_or_else(|| anyhow::anyhow!("Failed to start gatewayd"))?
+            wait_for_gatewayd()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Failed to start gatewayd"))?
         }
     };
 
@@ -98,7 +105,12 @@ async fn check_gatewayd() -> Option<GatewaydInfo> {
             for port in [2345u16, 2346, 2347, 2348, 2349] {
                 let admin_port = port + 1;
                 let url = format!("http://127.0.0.1:{}/health", admin_port);
-                if let Ok(resp) = client.get(&url).timeout(std::time::Duration::from_millis(500)).send().await {
+                if let Ok(resp) = client
+                    .get(&url)
+                    .timeout(std::time::Duration::from_millis(500))
+                    .send()
+                    .await
+                {
                     if resp.status().is_success() {
                         return Some(GatewaydInfo { port });
                     }
@@ -155,7 +167,8 @@ fn read_opencode_api_key(provider: &str) -> Option<String> {
     let config_path = dirs::home_dir()?.join(".config/opencode/opencode.json");
     let content = std::fs::read_to_string(&config_path).ok()?;
     let config: serde_json::Value = serde_json::from_str(&content).ok()?;
-    config.get("provider")?
+    config
+        .get("provider")?
         .get(provider)?
         .get("options")?
         .get("apiKey")?
@@ -185,7 +198,10 @@ pub(crate) async fn start_gatewayd() -> Result<(), anyhow::Error> {
     if let Ok(exe_path) = std::env::current_exe() {
         let possible_paths = [
             exe_path.parent().map(|p| p.join("dh-gatewayd")),
-            exe_path.parent().and_then(|p| p.parent()).map(|p| p.join("dh-gatewayd")),
+            exe_path
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("dh-gatewayd")),
         ];
         for path in possible_paths.iter().flatten() {
             if path.exists() {

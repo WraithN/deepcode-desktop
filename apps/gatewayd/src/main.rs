@@ -4,7 +4,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use clap::Parser;
 use dh_core::{AuditLogEntry, Direction, Message, Provider, Role, UnifiedRequest, estimate_tokens};
@@ -1028,6 +1028,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
             .route(
                 "/sessions/{session_id}/chat",
                 post(crate::handlers::sse::chat_handler),
+            )
+            .route(
+                "/sessions/{session_id}/agents/{agent_id}/config",
+                put(crate::handlers::agent::update_agent_config_handler),
             );
     }
 

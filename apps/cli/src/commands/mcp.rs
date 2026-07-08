@@ -37,16 +37,19 @@ pub enum McpCommands {
 
 pub async fn run(command: McpCommands) -> Result<(), anyhow::Error> {
     match command {
-        McpCommands::List => {
-            match list_via_api().await {
-                Ok(()) => {}
-                Err(e) => {
-                    info!("Gatewayd API unavailable ({}), falling back to DB", e);
-                    list_via_db()?;
-                }
+        McpCommands::List => match list_via_api().await {
+            Ok(()) => {}
+            Err(e) => {
+                info!("Gatewayd API unavailable ({}), falling back to DB", e);
+                list_via_db()?;
             }
-        }
-        McpCommands::Add { name, cmd, args, env } => {
+        },
+        McpCommands::Add {
+            name,
+            cmd,
+            args,
+            env,
+        } => {
             let conn = open_db()?;
 
             let env_map: std::collections::HashMap<String, String> = env
@@ -72,10 +75,7 @@ pub async fn run(command: McpCommands) -> Result<(), anyhow::Error> {
         }
         McpCommands::Remove { name } => {
             let conn = open_db()?;
-            let affected = conn.execute(
-                "DELETE FROM mcp_servers WHERE name = ?1",
-                [&name],
-            )?;
+            let affected = conn.execute("DELETE FROM mcp_servers WHERE name = ?1", [&name])?;
 
             if affected == 0 {
                 println!("No MCP server found: {}", name);
@@ -105,7 +105,9 @@ pub async fn run(command: McpCommands) -> Result<(), anyhow::Error> {
                             return Ok(());
                         }
                         if resp.status().as_u16() == 503 {
-                            anyhow::bail!("MCP aggregator not available (disabled or no servers configured)");
+                            anyhow::bail!(
+                                "MCP aggregator not available (disabled or no servers configured)"
+                            );
                         }
                     }
                     Err(_) => continue,
@@ -131,7 +133,11 @@ async fn list_via_api() -> Result<(), anyhow::Error> {
             Ok(resp) => {
                 if resp.status().is_success() {
                     let body: Value = resp.json().await?;
-                    let servers = body.get("servers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    let servers = body
+                        .get("servers")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
 
                     if servers.is_empty() {
                         println!("No MCP servers configured.");
@@ -140,14 +146,22 @@ async fn list_via_api() -> Result<(), anyhow::Error> {
 
                     // Fetch tools to show count per server
                     let tools_url = format!("http://127.0.0.1:{}/mcp/tools", port);
-                    let mut tools_by_server: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-                    if let Ok(tools_resp) = client.get(&tools_url).timeout(std::time::Duration::from_secs(2)).send().await {
+                    let mut tools_by_server: std::collections::HashMap<String, usize> =
+                        std::collections::HashMap::new();
+                    if let Ok(tools_resp) = client
+                        .get(&tools_url)
+                        .timeout(std::time::Duration::from_secs(2))
+                        .send()
+                        .await
+                    {
                         if let Ok(tools_body) = tools_resp.json::<Value>().await {
-                            if let Some(tools) = tools_body.get("tools").and_then(|v| v.as_array()) {
+                            if let Some(tools) = tools_body.get("tools").and_then(|v| v.as_array())
+                            {
                                 for tool in tools {
                                     if let Some(name) = tool.get("name").and_then(|v| v.as_str()) {
                                         if let Some(ns) = name.split(':').next() {
-                                            *tools_by_server.entry(ns.to_string()).or_insert(0) += 1;
+                                            *tools_by_server.entry(ns.to_string()).or_insert(0) +=
+                                                1;
                                         }
                                     }
                                 }
@@ -160,10 +174,18 @@ async fn list_via_api() -> Result<(), anyhow::Error> {
 
                     for server in servers {
                         let name = server.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let alive = server.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let alive = server
+                            .get("alive")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                         let status = if alive { "alive" } else { "dead" };
                         let tool_count = tools_by_server.get(name).copied().unwrap_or(0);
-                        println!("{:<20} {:<10} {:<20}", name, status, format!("{} tools", tool_count));
+                        println!(
+                            "{:<20} {:<10} {:<20}",
+                            name,
+                            status,
+                            format!("{} tools", tool_count)
+                        );
                     }
                     return Ok(());
                 }
@@ -176,9 +198,8 @@ async fn list_via_api() -> Result<(), anyhow::Error> {
 
 fn list_via_db() -> Result<(), anyhow::Error> {
     let conn = open_db()?;
-    let mut stmt = conn.prepare(
-        "SELECT name, command, args, enabled FROM mcp_servers ORDER BY name"
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT name, command, args, enabled FROM mcp_servers ORDER BY name")?;
     let rows: Vec<(String, String, String, i64)> = stmt
         .query_map([], |row| {
             Ok((
@@ -195,7 +216,10 @@ fn list_via_db() -> Result<(), anyhow::Error> {
         return Ok(());
     }
 
-    println!("{:<20} {:<10} {:<30} {:<10}", "NAME", "STATUS", "COMMAND", "ENABLED");
+    println!(
+        "{:<20} {:<10} {:<30} {:<10}",
+        "NAME", "STATUS", "COMMAND", "ENABLED"
+    );
     println!("{}", "-".repeat(75));
 
     for (name, cmd, args, enabled) in rows {
@@ -207,11 +231,9 @@ fn list_via_db() -> Result<(), anyhow::Error> {
         } else {
             cmd_display
         };
-        println!("{:<20} {:<10} {:<30} {:<10}",
-            name,
-            "unknown",
-            cmd_truncated,
-            enabled_str
+        println!(
+            "{:<20} {:<10} {:<30} {:<10}",
+            name, "unknown", cmd_truncated, enabled_str
         );
     }
 

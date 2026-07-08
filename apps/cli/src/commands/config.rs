@@ -71,9 +71,8 @@ pub async fn run(command: ConfigCommands) -> Result<(), anyhow::Error> {
         ConfigCommands::List => {
             let conn = open_db()?;
 
-            let mut stmt = conn.prepare(
-                "SELECT key, value, updated_at FROM configs ORDER BY key"
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT key, value, updated_at FROM configs ORDER BY key")?;
             let rows: Vec<(String, String, String)> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -111,7 +110,12 @@ pub async fn run(command: ConfigCommands) -> Result<(), anyhow::Error> {
                 println!("{:<20} {:<40} {:<20}", KEY_REMOTE_URL, "(not set)", "-");
             }
             if !has_refresh_time {
-                println!("{:<20} {:<40} {:<20}", KEY_REFRESH_TIME, format!("{}s (default)", DEFAULT_REFRESH_TIME), "-");
+                println!(
+                    "{:<20} {:<40} {:<20}",
+                    KEY_REFRESH_TIME,
+                    format!("{}s (default)", DEFAULT_REFRESH_TIME),
+                    "-"
+                );
             }
         }
         ConfigCommands::Refresh(cmd) => match cmd {
@@ -140,9 +144,7 @@ async fn refresh_from_cloud(
     let remote_url = match get_config_value(&conn, KEY_REMOTE_URL)? {
         Some(url) => url,
         None => {
-            anyhow::bail!(
-                "Cloud URL not configured. Run: dh config set remote-url <url>"
-            );
+            anyhow::bail!("Cloud URL not configured. Run: dh config set remote-url <url>");
         }
     };
 

@@ -125,13 +125,18 @@ impl OpenCodeClient {
     }
 }
 
-/// Spawns `opencode serve` on the given port.
-pub fn start_opencode_process(port: u16) -> Result<Child, InstanceError> {
+/// Spawns `opencode serve` on the given port, rooted at `work_directory`.
+///
+/// 显式设置子进程 CWD 为目标工作区，避免继承 gatewayd 自身目录。
+/// 若不设置，opencode serve 会以 gatewayd 的 CWD 为工作区，导致
+/// 文件操作落到错误目录（与 claude-plugin 的 StdioTransport 行为对齐）。
+pub fn start_opencode_process(port: u16, work_directory: &str) -> Result<Child, InstanceError> {
     let mut cmd = tokio::process::Command::new(OPCODE_BINARY);
     cmd.arg(ARG_SERVE)
         .arg(ARG_PORT)
         .arg(port.to_string())
         .arg(ARG_PURE)
+        .current_dir(work_directory)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 

@@ -1,5 +1,13 @@
-
-pub type LogRow = (String, String, String, String, Option<String>, i64, String, String);
+pub type LogRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+    String,
+    String,
+);
 
 pub type DetailRow = (
     String,
@@ -17,7 +25,15 @@ pub type DetailRow = (
     Option<String>,
 );
 
-pub type SessionMeta = (String, String, String, Option<String>, String, String, String);
+pub type SessionMeta = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+);
 
 pub async fn attach_agents(plugins: &[String]) -> Result<(), anyhow::Error> {
     let client = reqwest::Client::new();
@@ -52,7 +68,11 @@ pub async fn attach_agents(plugins: &[String]) -> Result<(), anyhow::Error> {
                 }
             }
             Ok(resp) => {
-                eprintln!("Failed to attach agent {}: {}", plugin_type, resp.text().await?);
+                eprintln!(
+                    "Failed to attach agent {}: {}",
+                    plugin_type,
+                    resp.text().await?
+                );
             }
             Err(e) => {
                 eprintln!("Failed to attach agent {}: {}", plugin_type, e);
@@ -195,9 +215,9 @@ pub fn find_session(
 }
 
 pub fn print_session_details(meta: Option<&SessionMeta>, rows: &[DetailRow]) {
-    let sid = meta.map(|m| m.0.as_str()).unwrap_or_else(|| {
-        rows.first().map(|r| r.9.as_str()).unwrap_or("unknown")
-    });
+    let sid = meta
+        .map(|m| m.0.as_str())
+        .unwrap_or_else(|| rows.first().map(|r| r.9.as_str()).unwrap_or("unknown"));
 
     println!("═ Session: {} ═", sid);
 
@@ -255,8 +275,12 @@ pub fn print_session_details(meta: Option<&SessionMeta>, rows: &[DetailRow]) {
             model,
             agent_type.as_deref().unwrap_or("-"),
             size,
-            prompt.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
-            complete.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
+            prompt
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            complete
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
             &rid[..rid.len().min(36)]
         );
     }

@@ -1,5 +1,5 @@
 use crate::instance::InstanceStatus;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PluginInfo {
@@ -19,11 +19,52 @@ pub struct InstanceInfo {
     pub endpoint: Option<String>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct CreateInstanceRequest {
     pub agent_key: String,
     pub name: String,
     pub work_directory: String,
     #[serde(default)]
     pub force: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModelConfig {
+    #[serde(default)]
+    pub model_type: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub model_name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub show_thinking: Option<bool>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct UpdateModelConfigRequest {
+    pub instance_id: String,
+    #[serde(default)]
+    pub model_type: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub model_name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub show_thinking: Option<bool>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }

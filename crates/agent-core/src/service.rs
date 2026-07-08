@@ -16,7 +16,7 @@ use crate::error::{InstanceError, PluginError};
 use crate::event_sink::DynEventSink;
 use crate::instance::{AgentInstance, InstanceConfig};
 use crate::logger::SessionLogger;
-use crate::models::{CreateInstanceRequest, InstanceInfo, PluginInfo};
+use crate::models::{CreateInstanceRequest, InstanceInfo, ModelConfig, PluginInfo, UpdateModelConfigRequest};
 use crate::plugin::AgentPlugin;
 
 /// Registry of available agent plugins keyed by their unique key.
@@ -108,6 +108,7 @@ fn unique_instance_id(agent_key: &str, registry: &InstanceRegistry) -> String {
 pub struct AgentService {
     plugins: PluginRegistry,
     instances: Arc<Mutex<InstanceRegistry>>,
+    model_configs: Arc<Mutex<HashMap<String, ModelConfig>>>,
     logger: Arc<SessionLogger>,
     event_sink: DynEventSink,
 }
@@ -117,6 +118,7 @@ impl AgentService {
         Self {
             plugins: PluginRegistry::new(),
             instances: Arc::new(Mutex::new(InstanceRegistry::new())),
+            model_configs: Arc::new(Mutex::new(HashMap::new())),
             logger,
             event_sink,
         }
@@ -281,5 +283,47 @@ impl AgentService {
                 endpoint: instance.endpoint(),
             })
             .collect()
+    }
+
+    pub async fn update_model_config(
+        &self,
+        req: UpdateModelConfigRequest,
+    ) -> Result<(), InstanceError> {
+        let instance_exists = self
+            .instances
+            .lock()
+            .await
+            .get(&req.instance_id)
+            .is_some();
+
+        if !instance_exists {
+            return Err(InstanceError::NotFound(req.instance_id.clone()));
+        }
+
+        let config = ModelConfig {
+            model_type: req.model_type,
+            model_id: req.model_id,
+            model_name: req.model_name,
+            url: req.url,
+            api_key: req.api_key,
+            show_thinking: req.show_thinking,
+            temperature: req.temperature,
+            max_tokens: req.max_tokens,
+        };
+
+        self.model_configs
+            .lock()
+            .await
+            .insert(req.instance_id, config);
+
+        Ok(())
+    }
+
+    pub async fn get_model_config(&self, instance_id: &str) -> Option<ModelConfig> {
+        self.model_configs.lock().await.get(instance_id).cloned()
+    }
+
+    pub async fn remove_model_config(&self, instance_id: &str) {
+        self.model_configs.lock().await.remove(instance_id);
     }
 }
