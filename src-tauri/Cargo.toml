@@ -35,6 +35,7 @@ opencode-plugin = { path = "../crates/opencode-plugin" }
 claude-plugin = { path = "../crates/claude-plugin" }
 codex-plugin = { path = "../crates/codex-plugin" }
 dh-db = { path = "../crates/dh-db" }
+dh-config = { path = "../crates/dh-config" }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

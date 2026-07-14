@@ -11,6 +11,7 @@ mod agent_db;
 mod commands;
 mod setup;
 
+use dh_desktop::platform;
 use dh_desktop::{DbState, RouterState, WebSocketShutdown};
 use crate::setup::db::db_path;
 use crate::setup::window::show_main_window;
@@ -62,7 +63,24 @@ fn main() {
             log::info!("[main.rs] SessionManager initialized");
 
             // 初始化 WebSocket EventSink
-            let ws_event_sink = Arc::new(dh_desktop::event_sink::WebSocketEventSink::new(session_manager.clone()));
+            let ws_event_sink: Arc<dyn agent_core::event_sink::EventSink> = Arc::new(
+                dh_desktop::event_sink::WebSocketEventSink::new(session_manager.clone())
+            );
+
+            // 加载平台配置，若启用则用 ReportingEventSink 包装 WS sink
+            // （两阶段初始化：Phase 1 在 AgentService 创建前包装 sink，
+            //   Phase 2 在 AgentService 创建后启动 reporter 后台任务）
+            let platform_config = platform::load_platform_config();
+            let (event_sink, reporter_rx) = match &platform_config {
+                Some(cfg) => match platform::create_reporting_sink(cfg, ws_event_sink.clone()) {
+                    Some((sink, rx)) => {
+                        log::info!("[main.rs] Platform reporting enabled");
+                        (sink, Some(rx))
+                    }
+                    None => (ws_event_sink.clone(), None),
+                },
+                None => (ws_event_sink.clone(), None),
+            };
 
             // 初始化 SessionLogger（通过 EventSink 解耦 Tauri）
             let logger_db_path = db_path.clone();
@@ -71,7 +89,7 @@ fn main() {
                 .into_inner();
             let log_file_path = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("session.log");
             let logger = std::sync::Arc::new(agent_core::logger::SessionLogger::new(
-                ws_event_sink.clone(),
+                event_sink.clone(),
                 logger_conn,
                 Some(log_file_path),
             ));
@@ -79,7 +97,7 @@ fn main() {
             log::info!("[main.rs] SessionLogger initialized");
 
             // 初始化 AgentService 并注册 opencode / claude / codex plugins
-            let mut agent_service = Arc::new(dh_desktop::service::agent_service::AgentService::new(logger.clone(), ws_event_sink.clone()));
+            let mut agent_service = Arc::new(dh_desktop::service::agent_service::AgentService::new(logger.clone(), event_sink.clone()));
             Arc::get_mut(&mut agent_service).unwrap().register_plugin(Box::new(opencode_plugin::plugin::OpencodePlugin::new(
                 logger.clone(),
             )));
@@ -91,6 +109,11 @@ fn main() {
             )));
             app.manage(agent_service.clone());
             log::info!("[main.rs] AgentService initialized");
+
+            // Phase 2: 启动平台 reporter 后台任务（需要 AgentService 句柄）
+            if let (Some(cfg), Some(rx)) = (platform_config, reporter_rx) {
+                platform::start_reporter(&cfg, rx, Arc::clone(&shared_conn), agent_service.clone());
+            }
 
             // 初始化 DbService（复用同一个数据库连接）
             let db_service = Arc::new(dh_desktop::service::db_service::DbService::new(Arc::clone(&shared_conn)));

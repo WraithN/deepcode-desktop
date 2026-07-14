@@ -29,6 +29,11 @@ impl DbService {
         self.repository.load_conversations(&user_id, limit)
     }
 
+    /// Loads recent conversations across all users (for platform reporting).
+    pub fn load_all_conversations(&self, limit: i64) -> Result<Vec<Value>, String> {
+        self.repository.load_all_conversations(limit)
+    }
+
     pub fn create_conversation(&self, data: Value) -> Result<Value, String> {
         self.repository.create_conversation(&data)
     }

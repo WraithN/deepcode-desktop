@@ -55,3 +55,11 @@ pub const PLACEHOLDER_WORKSPACE: &str = "workspace";
 
 /// Maximum recursion depth allowed when expanding nested placeholders.
 pub const MAX_PLACEHOLDER_DEPTH: usize = 8;
+
+// ───── Platform integration defaults ─────
+
+/// Default interval between batch reports to the platform (seconds).
+pub const DEFAULT_REPORT_INTERVAL_SECS: u64 = 30;
+
+/// Default HTTP request timeout for platform API calls (seconds).
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 10;

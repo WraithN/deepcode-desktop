@@ -1,0 +1,120 @@
+//! Data transfer types for the platform integration.
+//!
+//! These types define the contract between the desktop app and the remote
+//! platform:
+//! - [`PlatformRemoteConfig`] is the response model for `GET /api/platform/config`.
+//! - `*Batch` / `*Report` types are request bodies for the report endpoints.
+
+use serde::{Deserialize, Serialize};
+
+// ───── Remote platform config (GET /api/platform/config) ─────
+
+/// Configuration fetched from the platform at startup.
+///
+/// The platform can push down agent defaults, available models, feature flags,
+/// and skill definitions that the desktop app should adopt.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct PlatformRemoteConfig {
+    /// Agent definitions the platform recommends.
+    #[serde(default)]
+    pub agents: Vec<RemoteAgentInfo>,
+
+    /// Available models the platform exposes.
+    #[serde(default)]
+    pub models: Vec<RemoteModelInfo>,
+
+    /// Arbitrary feature flags (e.g. `{"enableReporting": true}`).
+    #[serde(default)]
+    pub features: serde_json::Value,
+
+    /// Skill definitions available on the platform.
+    #[serde(default)]
+    pub skills: Vec<RemoteSkillInfo>,
+}
+
+/// Agent definition pushed down from the platform.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RemoteAgentInfo {
+    pub key: String,
+    pub name: String,
+    pub default_model: Option<String>,
+}
+
+/// Model definition pushed down from the platform.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RemoteModelInfo {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+}
+
+/// Skill definition pushed down from the platform.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RemoteSkillInfo {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+// ───── Session report (POST /api/report/sessions) ─────
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SessionReportBatch {
+    pub batch: Vec<SessionReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SessionReport {
+    pub id: String,
+    pub user_id: String,
+    pub title: String,
+    pub agent: String,
+    pub model: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub messages: Vec<MessageReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MessageReport {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub token_in: Option<i64>,
+    pub token_out: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub created_at: String,
+}
+
+// ───── Agent report (POST /api/report/agents) ─────
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AgentReportBatch {
+    pub batch: Vec<AgentReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AgentReport {
+    pub id: String,
+    pub agent_key: String,
+    pub name: String,
+    pub work_directory: String,
+    pub status: serde_json::Value,
+    pub endpoint: Option<String>,
+}
+
+// ───── Monitoring report (POST /api/report/monitoring) ─────
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MonitoringReportBatch {
+    pub batch: Vec<MonitoringReport>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MonitoringReport {
+    pub conversation_id: String,
+    pub instance_id: Option<String>,
+    pub timestamp: String,
+    pub level: String,
+    pub source: String,
+    pub message: String,
+}

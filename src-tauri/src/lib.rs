@@ -4,6 +4,7 @@ pub mod commands;
 pub mod event_sink;
 pub mod gateway;
 pub mod models;
+pub mod platform;
 pub mod service;
 
 pub struct DbState(pub Arc<Mutex<rusqlite::Connection>>);

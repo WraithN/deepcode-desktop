@@ -102,17 +102,19 @@ impl AppRepository {
             .prepare("SELECT id, user_id, title, agent, model, created_at, updated_at FROM conversations WHERE user_id = ?1 ORDER BY updated_at DESC LIMIT ?2")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![user_id, limit], |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, String>(0)?,
-                    "user_id": row.get::<_, String>(1)?,
-                    "title": row.get::<_, String>(2)?,
-                    "agent": row.get::<_, String>(3)?,
-                    "model": row.get::<_, String>(4)?,
-                    "created_at": row.get::<_, String>(5)?,
-                    "updated_at": row.get::<_, String>(6)?,
-                }))
-            })
+            .query_map(params![user_id, limit], map_conversation_row)
+            .map_err(|e| e.to_string())?;
+        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
+    /// Loads recent conversations across all users (for platform reporting).
+    pub fn load_all_conversations(&self, limit: i64) -> Result<Vec<Value>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, user_id, title, agent, model, created_at, updated_at FROM conversations ORDER BY updated_at DESC LIMIT ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], map_conversation_row)
             .map_err(|e| e.to_string())?;
         rows.map(|r| r.map_err(|e| e.to_string())).collect()
     }
@@ -350,4 +352,17 @@ impl AppRepository {
         )?;
         Ok(conn.last_insert_rowid())
     }
+}
+
+/// Shared row mapper for the `conversations` table SELECT query.
+fn map_conversation_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
+    Ok(serde_json::json!({
+        "id": row.get::<_, String>(0)?,
+        "user_id": row.get::<_, String>(1)?,
+        "title": row.get::<_, String>(2)?,
+        "agent": row.get::<_, String>(3)?,
+        "model": row.get::<_, String>(4)?,
+        "created_at": row.get::<_, String>(5)?,
+        "updated_at": row.get::<_, String>(6)?,
+    }))
 }

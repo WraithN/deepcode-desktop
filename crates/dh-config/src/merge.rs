@@ -11,7 +11,8 @@
 //! append semantics; map fields are merged key-by-key.
 
 use crate::schema::{
-    McpServerConfig, ModelConfig, ProviderConfig, RulesConfig, SkillsConfig, UnifiedConfig,
+    McpServerConfig, ModelConfig, PlatformConfig, ProviderConfig, RulesConfig, SkillsConfig,
+    UnifiedConfig,
 };
 use std::collections::BTreeMap;
 
@@ -27,6 +28,7 @@ pub fn merge(mut base: UnifiedConfig, over: UnifiedConfig) -> UnifiedConfig {
     base.mcp = merge_mcp(base.mcp, over.mcp);
     base.skills = merge_skills(base.skills, over.skills);
     base.rules = merge_rules(base.rules, over.rules);
+    base.platform = merge_platform(base.platform, over.platform);
     base
 }
 
@@ -114,6 +116,30 @@ fn merge_rules(mut base: RulesConfig, over: RulesConfig) -> RulesConfig {
     base
 }
 
+/// Platform config follows scalar-override semantics: any field set in the
+/// higher-precedence layer replaces the base value. Empty defaults are ignored.
+fn merge_platform(mut base: PlatformConfig, over: PlatformConfig) -> PlatformConfig {
+    if over.url.is_some() {
+        base.url = over.url;
+    }
+    if over.api_key.is_some() {
+        base.api_key = over.api_key;
+    }
+    if over.enabled {
+        base.enabled = true;
+    }
+    if over.report_interval_secs.is_some() {
+        base.report_interval_secs = over.report_interval_secs;
+    }
+    if over.request_timeout_secs.is_some() {
+        base.request_timeout_secs = over.request_timeout_secs;
+    }
+    if over.sanitize {
+        base.sanitize = true;
+    }
+    base
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +220,40 @@ mod tests {
         let merged = merge_all([g, p, proj]);
         assert_eq!(merged.default_profile.as_deref(), Some("g"));
         assert_eq!(merged.providers["p"].api_key.as_deref(), Some("proj"));
+    }
+
+    #[test]
+    fn platform_merge_overrides_url_and_key() {
+        let mut base = UnifiedConfig::default();
+        base.platform.url = Some("https://old.example.com".into());
+        base.platform.api_key = Some("old-key".into());
+
+        let mut over = UnifiedConfig::default();
+        over.platform.url = Some("https://new.example.com".into());
+        over.platform.enabled = true;
+
+        let merged = merge(base, over);
+        assert_eq!(
+            merged.platform.url.as_deref(),
+            Some("https://new.example.com")
+        );
+        // api_key not overridden -> kept from base
+        assert_eq!(merged.platform.api_key.as_deref(), Some("old-key"));
+        assert!(merged.platform.enabled);
+    }
+
+    #[test]
+    fn platform_merge_preserves_base_when_over_empty() {
+        let mut base = UnifiedConfig::default();
+        base.platform.url = Some("https://base.example.com".into());
+        base.platform.enabled = true;
+
+        let over = UnifiedConfig::default();
+        let merged = merge(base, over);
+        assert_eq!(
+            merged.platform.url.as_deref(),
+            Some("https://base.example.com")
+        );
+        assert!(merged.platform.enabled);
     }
 }

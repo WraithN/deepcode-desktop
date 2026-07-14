@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::constants::{DEFAULT_REPORT_INTERVAL_SECS, DEFAULT_REQUEST_TIMEOUT_SECS};
+
 /// Top-level configuration document.
 ///
 /// All fields are optional at the file level; merge logic fills in defaults
@@ -33,6 +35,10 @@ pub struct UnifiedConfig {
 
     /// Engineering rules (system-prompt fragments).
     pub rules: RulesConfig,
+
+    /// Platform integration (remote config fetch + session/agent/monitoring reporting).
+    #[serde(default)]
+    pub platform: PlatformConfig,
 }
 
 /// Provider definition (base URL + credentials).
@@ -105,6 +111,69 @@ pub struct RulesConfig {
     pub files: Vec<PathBuf>,
 }
 
+/// Platform integration configuration.
+///
+/// Configured via the `[platform]` section in `config.toml`.
+/// When `enabled` is true and `url` is set, the desktop app will:
+/// - Fetch remote platform config at startup
+/// - Report session info, agent status, and monitoring data to the platform
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PlatformConfig {
+    /// Platform base URL, e.g. `https://platform.deepharness.com`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+
+    /// Bearer token used for authentication with the platform API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// Master switch for platform integration. Default: `false`.
+    pub enabled: bool,
+
+    /// Interval between periodic batch reports, in seconds.
+    /// Falls back to [`DEFAULT_REPORT_INTERVAL_SECS`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_interval_secs: Option<u64>,
+
+    /// Per-request HTTP timeout for platform API calls, in seconds.
+    /// Falls back to [`DEFAULT_REQUEST_TIMEOUT_SECS`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_timeout_secs: Option<u64>,
+
+    /// When true, session message content is hashed before reporting
+    /// to avoid sending raw user/agent text to the platform.
+    pub sanitize: bool,
+}
+
+impl PlatformConfig {
+    /// Returns the effective report interval, falling back to the default.
+    pub fn report_interval(&self) -> u64 {
+        self.report_interval_secs.unwrap_or(DEFAULT_REPORT_INTERVAL_SECS)
+    }
+
+    /// Returns the effective request timeout, falling back to the default.
+    pub fn request_timeout(&self) -> u64 {
+        self.request_timeout_secs.unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS)
+    }
+
+    /// Returns true when the platform integration is ready to operate:
+    /// enabled, with a URL configured.
+    pub fn is_active(&self) -> bool {
+        self.enabled && self.url.as_ref().is_some_and(|u| !u.trim().is_empty())
+    }
+
+    /// Returns true when no platform-specific content has been configured.
+    pub fn is_empty(&self) -> bool {
+        self.url.is_none()
+            && self.api_key.is_none()
+            && !self.enabled
+            && self.report_interval_secs.is_none()
+            && self.request_timeout_secs.is_none()
+            && !self.sanitize
+    }
+}
+
 impl UnifiedConfig {
     /// Convenience: returns the default model entry if defined.
     pub fn default_model(&self) -> Option<&ModelConfig> {
@@ -120,6 +189,7 @@ impl UnifiedConfig {
             && self.skills.search_paths.is_empty()
             && self.skills.enabled.is_empty()
             && self.rules.files.is_empty()
+            && self.platform.is_empty()
     }
 }
 
@@ -170,5 +240,36 @@ nonsense_field = 1
 "#;
         let result: std::result::Result<UnifiedConfig, _> = toml::from_str(src);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_platform_section() {
+        let src = r#"
+[platform]
+url = "https://platform.deepharness.com"
+api_key = "secret-token"
+enabled = true
+report_interval_secs = 60
+sanitize = true
+"#;
+        let cfg: UnifiedConfig = toml::from_str(src).unwrap();
+        assert!(cfg.platform.is_active());
+        assert_eq!(
+            cfg.platform.url.as_deref(),
+            Some("https://platform.deepharness.com")
+        );
+        assert_eq!(cfg.platform.api_key.as_deref(), Some("secret-token"));
+        assert_eq!(cfg.platform.report_interval(), 60);
+        assert!(cfg.platform.sanitize);
+        assert!(!cfg.platform.is_empty());
+    }
+
+    #[test]
+    fn platform_defaults_to_inactive() {
+        let cfg = UnifiedConfig::default();
+        assert!(!cfg.platform.is_active());
+        assert!(cfg.platform.is_empty());
+        assert_eq!(cfg.platform.report_interval(), DEFAULT_REPORT_INTERVAL_SECS);
+        assert_eq!(cfg.platform.request_timeout(), DEFAULT_REQUEST_TIMEOUT_SECS);
     }
 }

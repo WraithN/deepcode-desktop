@@ -47,6 +47,7 @@ pub use placeholder::{
     expand, ExpandContext, InMemoryKeyringResolver, KeyringResolver, NoopKeyringResolver,
 };
 pub use schema::{
-    McpServerConfig, ModelConfig, ProviderConfig, RulesConfig, SkillsConfig, UnifiedConfig,
+    McpServerConfig, ModelConfig, PlatformConfig, ProviderConfig, RulesConfig, SkillsConfig,
+    UnifiedConfig,
 };
 pub use validate::{validate, Issue, ValidationReport};
