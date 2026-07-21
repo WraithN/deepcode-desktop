@@ -81,4 +81,12 @@ impl DbService {
     pub fn load_session_logs(&self, conversation_id: String) -> Result<Vec<Value>, String> {
         self.repository.load_session_logs(&conversation_id)
     }
+
+    pub fn get_workspace_path(&self) -> Result<Option<String>, String> {
+        self.repository.get_workspace_path()
+    }
+
+    pub fn set_workspace_path(&self, path: String) -> Result<(), String> {
+        self.repository.set_workspace_path(&path)
+    }
 }

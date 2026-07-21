@@ -127,6 +127,7 @@ pub struct MonitoringReport {
 #[derive(Clone, Debug, Serialize)]
 pub struct RuntimeStatusReport {
     pub workspace_id: String,
+    pub workspace_path: String,
     pub user_id: String,
     pub status: String,
     pub uptime_seconds: u64,

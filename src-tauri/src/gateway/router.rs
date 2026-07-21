@@ -50,6 +50,7 @@ impl GatewayRouter {
                 self.agent_service.clone(),
                 self.session_manager.clone(),
                 req,
+                Some(self.db_service.clone()),
             ).await
         } else if req.method.starts_with("session.") {
             handle_session_request(req, self.db_service.clone()).await

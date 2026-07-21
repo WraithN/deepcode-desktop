@@ -46,7 +46,7 @@ impl RuntimeStatusCollector {
     ///
     /// Returns `None` when runtime reporting is not active (missing runtime id
     /// or tenant id) or when the instance list cannot be inspected.
-    pub fn build_report(&self, config: &PlatformConfig, instances: &[InstanceInfo]) -> Option<RuntimeStatusReport> {
+    pub fn build_report(&self, config: &PlatformConfig, instances: &[InstanceInfo], workspace_path: &str) -> Option<RuntimeStatusReport> {
         if !config.is_runtime_reporting_active() {
             return None;
         }
@@ -57,6 +57,7 @@ impl RuntimeStatusCollector {
 
         Some(RuntimeStatusReport {
             workspace_id: config.workspace_id.clone().unwrap_or_default(),
+            workspace_path: workspace_path.to_string(),
             user_id: config.user_id.clone().unwrap_or_default(),
             status: overall_status,
             uptime_seconds: self.start_time.elapsed().as_secs(),

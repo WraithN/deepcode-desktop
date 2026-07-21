@@ -338,7 +338,8 @@ impl Reporter {
         };
 
         let instances = self.agent_service.list_instances().await;
-        let Some(report) = self.runtime_collector.build_report(&self.platform_config, &instances) else {
+        let workspace_path = self.repository.get_workspace_path().unwrap_or(None).unwrap_or_default();
+        let Some(report) = self.runtime_collector.build_report(&self.platform_config, &instances, &workspace_path) else {
             return;
         };
 

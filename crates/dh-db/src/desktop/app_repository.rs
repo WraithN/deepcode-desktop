@@ -352,6 +352,33 @@ impl AppRepository {
         )?;
         Ok(conn.last_insert_rowid())
     }
+
+    // ------------------------------------------------------------------
+    // Workspace Path (persisted globally)
+    // ------------------------------------------------------------------
+
+    pub fn get_workspace_path(&self) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT value FROM configs WHERE key = 'workspace_path'")
+            .map_err(|e| e.to_string())?;
+        let row = stmt
+            .query_row([], |row| row.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(row)
+    }
+
+    pub fn set_workspace_path(&self, path: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO configs (key, value, updated_at) VALUES ('workspace_path', ?1, ?2)",
+            params![path, &now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 /// Shared row mapper for the `conversations` table SELECT query.
