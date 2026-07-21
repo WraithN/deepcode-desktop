@@ -387,6 +387,14 @@ impl AgentInstance for CodexInstance {
         PLUGIN_KEY
     }
 
+    fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    fn work_directory(&self) -> &str {
+        &self.config.work_directory
+    }
+
     fn send_message(
         &self,
         conversation_id: &str,

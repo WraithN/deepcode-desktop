@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
@@ -38,9 +39,28 @@ impl StdioTransport {
 #[async_trait]
 impl Transport for StdioTransport {
     async fn start(&self) -> Result<Box<dyn TransportHandle>, TransportError> {
+        // Validate and canonicalize the working directory before spawning the
+        // child process.  This prevents path traversal via relative paths or
+        // symlinks in `cwd` and gives a clear error if the directory does not
+        // exist.
+        let cwd = fs::canonicalize(&self.cwd)
+            .await
+            .map_err(|e| {
+                TransportError::ProcessStart(format!(
+                    "invalid working directory '{}': {}",
+                    self.cwd, e
+                ))
+            })?;
+        if !cwd.is_dir() {
+            return Err(TransportError::ProcessStart(format!(
+                "working directory '{}' is not a directory",
+                cwd.display()
+            )));
+        }
+
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args)
-            .current_dir(&self.cwd)
+            .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

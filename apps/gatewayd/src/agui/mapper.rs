@@ -24,6 +24,8 @@ const KEY_MESSAGE: &str = "message";
 pub struct AguiMapper {
     current_message_id: Option<String>,
     current_tool_call_id: Option<String>,
+    /// 是否已发送 THINKING_START，用于避免每个 thinking delta 都重复开启/关闭。
+    current_thinking_active: bool,
 }
 
 impl AguiMapper {
@@ -70,7 +72,9 @@ impl AguiMapper {
             return vec![];
         }
 
-        let mut events = Vec::new();
+        // 从 thinking 过渡到文本输出时，先关闭 thinking
+        let mut events = self.close_thinking();
+
         if self.current_message_id.is_none() {
             let id = new_id();
             self.current_message_id = Some(id.clone());
@@ -105,24 +109,47 @@ impl AguiMapper {
                 if delta.is_empty() {
                     return vec![];
                 }
-                // AG-UI client 要求 thinking 事件必须以 THINKING_START 开始、
-                // THINKING_END 结束，中间包裹 THINKING_TEXT_MESSAGE_* 序列。
-                vec![
-                    Event::ThinkingStart { base: base.clone() },
-                    Event::ThinkingTextMessageStart { base: base.clone() },
-                    Event::ThinkingTextMessageContent {
+                let mut events = Vec::new();
+                // 仅在首个 thinking delta 时发送 Start，后续仅发送 Content
+                if !self.current_thinking_active {
+                    self.current_thinking_active = true;
+                    events.push(Event::ThinkingStart {
                         base: base.clone(),
-                        delta,
-                    },
-                    Event::ThinkingTextMessageEnd { base: base.clone() },
-                    Event::ThinkingEnd {
-                        base: BaseEvent {
-                            timestamp: Some(now()),
-                            raw_event: None,
-                        },
-                    },
-                ]
+                    });
+                    events.push(Event::ThinkingTextMessageStart {
+                        base: base.clone(),
+                    });
+                }
+                events.push(Event::ThinkingTextMessageContent {
+                    base: base.clone(),
+                    delta,
+                });
+                events
             }
+        }
+    }
+
+    /// 如果 thinking 处于活跃状态，发送 THINKING_TEXT_MESSAGE_END 和 THINKING_END 关闭它。
+    fn close_thinking(&mut self) -> Vec<Event> {
+        if self.current_thinking_active {
+            self.current_thinking_active = false;
+            let now_ts = Some(now());
+            vec![
+                Event::ThinkingTextMessageEnd {
+                    base: BaseEvent {
+                        timestamp: now_ts,
+                        raw_event: None,
+                    },
+                },
+                Event::ThinkingEnd {
+                    base: BaseEvent {
+                        timestamp: now_ts,
+                        raw_event: None,
+                    },
+                },
+            ]
+        } else {
+            vec![]
         }
     }
 
@@ -174,7 +201,7 @@ impl AguiMapper {
     }
 
     fn map_done(&mut self, base: BaseEvent) -> Vec<Event> {
-        let mut events = Vec::new();
+        let mut events = self.close_thinking();
         if let Some(id) = self.current_message_id.take() {
             events.push(Event::TextMessageEnd {
                 base: base.clone(),
@@ -283,17 +310,51 @@ mod tests {
     #[test]
     fn test_map_thinking() {
         let mut mapper = AguiMapper::new();
+        // 首个 thinking delta：应产生 Start + Content（3 个事件）
         let events = mapper.map(
             METHOD_THINKING,
             &json!({ "content": "planning", "type": "thinking" }),
         );
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], Event::ThinkingTextMessageStart { .. }));
+        assert_eq!(events.len(), 3, "first thinking delta should emit 3 events");
+        assert!(matches!(events[0], Event::ThinkingStart { .. }));
         assert!(matches!(
             events[1],
+            Event::ThinkingTextMessageStart { .. }
+        ));
+        assert!(matches!(
+            events[2],
             Event::ThinkingTextMessageContent { .. }
         ));
-        assert!(matches!(events[2], Event::ThinkingTextMessageEnd { .. }));
+
+        // 后续 thinking delta：仅应产生 1 个 Content 事件
+        let events = mapper.map(
+            METHOD_THINKING,
+            &json!({ "content": "more thinking", "type": "thinking" }),
+        );
+        assert_eq!(events.len(), 1, "subsequent thinking delta should emit 1 event");
+        assert!(matches!(
+            events[0],
+            Event::ThinkingTextMessageContent { .. }
+        ));
+
+        // 首个 token 应关闭 thinking 并开始文本输出
+        let events = mapper.map(METHOD_TOKEN, &json!({ "text": "hello" }));
+        assert!(
+            events.iter().any(|e| matches!(e, Event::ThinkingTextMessageEnd { .. })),
+            "should close thinking"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, Event::ThinkingEnd { .. })),
+            "should end thinking"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, Event::TextMessageStart { .. })),
+            "should start text"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, Event::TextMessageContent { .. })),
+            "should have text content"
+        );
     }
 
     #[test]

@@ -8,14 +8,14 @@ use super::exporter::{AuditLogExporter, ExportError};
 use dh_db::DbManager;
 
 pub struct RetryWorker {
-    db: Arc<std::sync::Mutex<DbManager>>,
+    db: Arc<tokio::sync::Mutex<DbManager>>,
     config: ReporterConfig,
     exporter: AuditLogExporter,
 }
 
 impl RetryWorker {
     pub fn new(
-        db: Arc<std::sync::Mutex<DbManager>>,
+        db: Arc<tokio::sync::Mutex<DbManager>>,
         config: ReporterConfig,
         exporter: AuditLogExporter,
     ) -> Self {
@@ -46,7 +46,7 @@ impl RetryWorker {
     async fn process_pending(&self) -> Result<(), Box<dyn std::error::Error>> {
         let now = Utc::now().to_rfc3339();
         let items = {
-            let db = self.db.lock().unwrap();
+            let db = self.db.lock().await;
             db.fetch_pending_queue_items(&now, 50)?
         };
 
@@ -54,7 +54,7 @@ impl RetryWorker {
             let payload: serde_json::Value = match serde_json::from_str(&item.payload) {
                 Ok(v) => v,
                 Err(_) => {
-                    let mut db = self.db.lock().unwrap();
+                    let mut db = self.db.lock().await;
                     db.delete_queue_item(item.id)?;
                     continue;
                 }
@@ -62,23 +62,23 @@ impl RetryWorker {
 
             match self.exporter.export(payload).await {
                 Ok(()) => {
-                    let mut db = self.db.lock().unwrap();
+                    let mut db = self.db.lock().await;
                     db.delete_queue_item(item.id)?;
                 }
                 Err(ExportError::ClientError(code, _)) => {
-                    let mut db = self.db.lock().unwrap();
+                    let mut db = self.db.lock().await;
                     db.mark_queue_item_dead(item.id, item.failures + 1)?;
                     eprintln!("[reporter] dead letter ({}): queue item {}", code, item.id);
                 }
                 Err(_) => {
                     let failures = item.failures + 1;
                     if failures as u32 >= self.config.max_retries {
-                        let mut db = self.db.lock().unwrap();
+                        let mut db = self.db.lock().await;
                         db.mark_queue_item_dead(item.id, failures)?;
                     } else {
                         let next_retry = calc_backoff(failures);
                         let next_retry_at = (Utc::now() + next_retry).to_rfc3339();
-                        let mut db = self.db.lock().unwrap();
+                        let mut db = self.db.lock().await;
                         db.update_queue_item_retry(item.id, failures, &next_retry_at)?;
                     }
                 }

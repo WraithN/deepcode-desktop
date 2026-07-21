@@ -41,6 +41,71 @@ impl std::fmt::Debug for McpClientEntry {
     }
 }
 
+const ENV_MCP_BIN_DIR: &str = "GATEWAYD_MCP_BIN_DIR";
+
+/// Allowed command names and absolute-path binary directory for MCP servers.
+/// These are intentionally conservative to prevent arbitrary shell execution.
+const MCP_ALLOWED_COMMANDS: &[&str] = &[
+    "npx",
+    "node",
+    "python",
+    "python3",
+    "uv",
+    "bun",
+    "deno",
+];
+
+/// Argument patterns that are rejected from MCP server command lines.
+const MCP_ARG_BLACKLIST: &[&str] = &["--eval", "-e", ">", "|", "$", "`"];
+
+/// Errors that can occur when validating an MCP server configuration.
+#[derive(Debug, thiserror::Error)]
+pub enum McpValidationError {
+    #[error("MCP command '{0}' is not in the allowed list")]
+    DisallowedCommand(String),
+    #[error("MCP command '{0}' must be an absolute path inside GATEWAYD_MCP_BIN_DIR")]
+    OutsideBinDir(String),
+    #[error("MCP command '{0}' references a forbidden shell pattern")]
+    ForbiddenArgPattern(String),
+}
+
+impl McpServerConfig {
+    /// Validate the command and arguments before spawning the server.
+    /// Returns Ok(()) if the command is safe to execute.
+    pub fn validate(&self) -> Result<(), McpValidationError> {
+        let cmd = self.command.trim();
+
+        // If it's a bare command name, it must be in the allow list.
+        if !cmd.contains(std::path::MAIN_SEPARATOR) {
+            if !MCP_ALLOWED_COMMANDS.contains(&cmd) {
+                return Err(McpValidationError::DisallowedCommand(cmd.to_string()));
+            }
+        } else {
+            // Absolute paths must be inside the configured bin directory.
+            let path = std::path::Path::new(cmd);
+            let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let bin_dir = std::env::var(ENV_MCP_BIN_DIR)
+                .ok()
+                .and_then(|s| std::fs::canonicalize(s).ok());
+            match bin_dir {
+                Some(dir) if canonical.starts_with(&dir) => {}
+                _ => {
+                    return Err(McpValidationError::OutsideBinDir(cmd.to_string()));
+                }
+            }
+        }
+
+        // Reject dangerous argument patterns.
+        for arg in &self.args {
+            if MCP_ARG_BLACKLIST.iter().any(|bad| arg.contains(bad)) {
+                return Err(McpValidationError::ForbiddenArgPattern(arg.clone()));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// MCP 聚合注册表
 pub struct McpRegistry {
     clients: HashMap<String, McpClientEntry>,
@@ -90,6 +155,10 @@ impl McpRegistry {
         for config_result in rows {
             let config = config_result?;
             let name = config.name.clone();
+            if let Err(e) = config.validate() {
+                error!("MCP server '{}' configuration rejected: {}", name, e);
+                continue;
+            }
             match Self::spawn_client(&config).await {
                 Ok(client) => {
                     info!("MCP server '{}' initialized", name);
@@ -179,6 +248,18 @@ impl McpRegistry {
             false
         }
     }
+
+    /// Shut down all connected MCP clients and terminate their child processes.
+    /// Should be called before the gatewayd process exits.
+    pub async fn shutdown(&self) {
+        for (name, entry) in &self.clients {
+            if let Err(e) = entry.client.shutdown().await {
+                error!("Failed to shutdown MCP server '{}': {}", name, e);
+            } else {
+                info!("MCP server '{}' shut down", name);
+            }
+        }
+    }
 }
 
 // ── Interceptor ──
@@ -204,10 +285,8 @@ impl McpInterceptor {
 
     fn scan_value(value: &Value, urls: &mut Vec<String>) {
         match value {
-            Value::String(s) => {
-                if Self::looks_like_url(s) {
-                    urls.push(s.clone());
-                }
+            Value::String(s) if Self::looks_like_url(s) => {
+                urls.push(s.clone());
             }
             Value::Array(arr) => {
                 for item in arr {

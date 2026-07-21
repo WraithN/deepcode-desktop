@@ -117,6 +117,7 @@ pub struct RulesConfig {
 /// When `enabled` is true and `url` is set, the desktop app will:
 /// - Fetch remote platform config at startup
 /// - Report session info, agent status, and monitoring data to the platform
+/// - Report Agent Runtime status to the DH Backend
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlatformConfig {
@@ -136,6 +137,15 @@ pub struct PlatformConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report_interval_secs: Option<u64>,
 
+    /// Maximum interval between periodic batch reports, in seconds.
+    ///
+    /// When set and greater than [`report_interval_secs`], the reporter will
+    /// pick a random interval within `[report_interval_secs, report_interval_max_secs]`
+    /// for each cycle. This helps prevent thundering herd when many runtimes
+    /// are started simultaneously.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_interval_max_secs: Option<u64>,
+
     /// Per-request HTTP timeout for platform API calls, in seconds.
     /// Falls back to [`DEFAULT_REQUEST_TIMEOUT_SECS`] when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,17 +154,49 @@ pub struct PlatformConfig {
     /// When true, session message content is hashed before reporting
     /// to avoid sending raw user/agent text to the platform.
     pub sanitize: bool,
+
+    /// Runtime ID used for Agent Runtime status reporting
+    /// (`POST /api/v1/agent-runtimes/{runtimeId}/status`).
+    ///
+    /// If unset, the desktop application will auto-generate a UUID and
+    /// persist it in the application data directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
+
+    /// Workspace identifier for the runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+
+    /// User identifier for the runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 impl PlatformConfig {
     /// Returns the effective report interval, falling back to the default.
     pub fn report_interval(&self) -> u64 {
-        self.report_interval_secs.unwrap_or(DEFAULT_REPORT_INTERVAL_SECS)
+        self.report_interval_secs
+            .unwrap_or(DEFAULT_REPORT_INTERVAL_SECS)
+    }
+
+    /// Returns the effective maximum report interval.
+    ///
+    /// Returns `None` when randomization is disabled (no max set or max is
+    /// not greater than the base interval).
+    pub fn report_interval_max(&self) -> Option<u64> {
+        let max = self.report_interval_max_secs?;
+        let base = self.report_interval();
+        if max > base {
+            Some(max)
+        } else {
+            None
+        }
     }
 
     /// Returns the effective request timeout, falling back to the default.
     pub fn request_timeout(&self) -> u64 {
-        self.request_timeout_secs.unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS)
+        self.request_timeout_secs
+            .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS)
     }
 
     /// Returns true when the platform integration is ready to operate:
@@ -169,8 +211,28 @@ impl PlatformConfig {
             && self.api_key.is_none()
             && !self.enabled
             && self.report_interval_secs.is_none()
+            && self.report_interval_max_secs.is_none()
             && self.request_timeout_secs.is_none()
             && !self.sanitize
+            && self.runtime_id.is_none()
+            && self.workspace_id.is_none()
+            && self.user_id.is_none()
+    }
+
+    /// Returns true when the runtime status endpoint can be used.
+    ///
+    /// Requires a runtime id and a workspace id. The tenant id is derived
+    /// from the workspace id on the platform side.
+    pub fn is_runtime_reporting_active(&self) -> bool {
+        self.is_active()
+            && self
+                .runtime_id
+                .as_ref()
+                .is_some_and(|id| !id.trim().is_empty())
+            && self
+                .workspace_id
+                .as_ref()
+                .is_some_and(|id| !id.trim().is_empty())
     }
 }
 
@@ -271,5 +333,23 @@ sanitize = true
         assert!(cfg.platform.is_empty());
         assert_eq!(cfg.platform.report_interval(), DEFAULT_REPORT_INTERVAL_SECS);
         assert_eq!(cfg.platform.request_timeout(), DEFAULT_REQUEST_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn parses_runtime_reporting_section() {
+        let src = r#"
+[platform]
+url = "https://platform.deepharness.com"
+api_key = "secret-token"
+enabled = true
+runtime_id = "desktop-01"
+workspace_id = "w1"
+user_id = "u1"
+"#;
+        let cfg: UnifiedConfig = toml::from_str(src).unwrap();
+        assert!(cfg.platform.is_runtime_reporting_active());
+        assert_eq!(cfg.platform.runtime_id.as_deref(), Some("desktop-01"));
+        assert_eq!(cfg.platform.workspace_id.as_deref(), Some("w1"));
+        assert_eq!(cfg.platform.user_id.as_deref(), Some("u1"));
     }
 }

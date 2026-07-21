@@ -31,7 +31,7 @@ impl ReporterHandle {
 }
 
 pub fn start(
-    db: Arc<std::sync::Mutex<DbManager>>,
+    db: Arc<tokio::sync::Mutex<DbManager>>,
     config: ReporterConfig,
 ) -> Option<ReporterHandle> {
     if !config.enabled {

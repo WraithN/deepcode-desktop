@@ -5,6 +5,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json},
 };
+use agent_core::error::PluginError;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -16,19 +17,25 @@ pub struct CreateAgentRequest {
     pub force: Option<bool>,
 }
 
-/// `POST /sessions` 可选请求体，用于指定空闲超时时间。
+/// `POST /sessions` 可选请求体，用于指定空闲超时时间或预设 session ID。
 #[derive(Deserialize, Default)]
 pub struct CreateSessionRequest {
     #[serde(default)]
     pub expired_time: Option<u64>,
+    /// 可选：backend 传入的预定义线程 ID；若提供则 gatewayd 使用此 ID（复用已有 session）
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 pub async fn create_session_handler(
     State(state): State<crate::ApiState>,
     body: Option<Json<CreateSessionRequest>>,
 ) -> impl IntoResponse {
-    let expired = body.and_then(|Json(b)| b.expired_time);
-    let session_id = state.session_manager.create_session(expired);
+    let (expired, preferred_id) = match body {
+        Some(Json(ref b)) => (b.expired_time, b.id.clone()),
+        None => (None, None),
+    };
+    let session_id = state.session_manager.create_session(preferred_id, expired).await;
     (
         StatusCode::CREATED,
         Json(serde_json::json!({ "sessionId": session_id })),
@@ -76,6 +83,16 @@ pub async fn create_agent_handler(
                 "name": info.name,
                 "status": info.status,
             })),
+        )
+            .into_response(),
+        Err(PluginError::NotFound(msg)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": msg })),
+        )
+            .into_response(),
+        Err(PluginError::CreateInstanceFailed(msg)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": msg })),
         )
             .into_response(),
         Err(e) => (

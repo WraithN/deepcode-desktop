@@ -209,7 +209,7 @@ impl McpClient {
     }
 
     pub async fn shutdown(&self) -> Result<(), McpError> {
-        // Send exit notification or just drop
-        Ok(())
+        let mut transport = self.transport.lock().await;
+        transport.close().await
     }
 }

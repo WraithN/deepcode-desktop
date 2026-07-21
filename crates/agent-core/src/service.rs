@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Mutex;
 
@@ -150,19 +151,24 @@ impl AgentService {
             .ok_or(PluginError::NotFound(req.agent_key.clone()))?;
 
         // When force is not requested, reuse an existing instance that matches
-        // the requested agent key.
+        // the requested agent key, name and work directory. This prevents
+        // returning a stale instance that points to a different workspace.
         if !req.force {
             let registry = self.instances.lock().await;
             if let Some((id, existing)) = registry
                 .list()
                 .into_iter()
-                .find(|(_, i)| i.agent_key() == req.agent_key)
+                .find(|(_, i)| {
+                    i.agent_key() == req.agent_key
+                        && i.work_directory() == req.work_directory
+                        && i.name() == req.name
+                })
             {
                 return Ok(InstanceInfo {
                     id: id.to_string(),
                     agent_key: req.agent_key.clone(),
-                    name: req.name.clone(),
-                    work_directory: req.work_directory.clone(),
+                    name: existing.name().to_string(),
+                    work_directory: existing.work_directory().to_string(),
                     status: existing.status(),
                     endpoint: existing.endpoint(),
                 });
@@ -207,13 +213,7 @@ impl AgentService {
             .get(instance_id)
             .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
 
-        let message = message.to_string();
-        let conversation_id = conversation_id.to_string();
-        tokio::spawn(async move {
-            let _ = instance.send_message(&conversation_id, &message).await;
-        });
-
-        Ok(())
+        instance.send_message(conversation_id, message).await
     }
 
     pub async fn respond_to_instance(
@@ -256,14 +256,48 @@ impl AgentService {
         Ok(())
     }
 
+    /// 使用 graceful shutdown 停止并移除实例，等待最多 `timeout` 让进程退出。
+    /// 用于 gatewayd 优雅关闭与 session 过期回收，避免僵尸进程。
+    pub async fn stop_and_remove_instance_with_timeout(
+        &self,
+        instance_id: &str,
+        timeout: Duration,
+    ) -> Result<(), InstanceError> {
+        let instance = {
+            let registry = self.instances.lock().await;
+            registry
+                .get(instance_id)
+                .ok_or(InstanceError::NotFound(instance_id.to_string()))?
+        };
+        instance.graceful_shutdown(timeout).await?;
+        self.instances.lock().await.remove(instance_id);
+        Ok(())
+    }
+
+    /// Gracefully stop all running instances and remove them from the registry.
+    /// Timeouts are applied per-instance; individual failures are logged but do
+    /// not prevent the remaining instances from being stopped.
+    pub async fn stop_all_instances_with_timeout(&self, timeout: Duration) {
+        let ids: Vec<String> = {
+            let registry = self.instances.lock().await;
+            registry.list().into_iter().map(|(id, _)| id.clone()).collect()
+        };
+
+        for id in ids {
+            if let Err(e) = self.stop_and_remove_instance_with_timeout(&id, timeout).await {
+                log::warn!("failed to gracefully stop instance {}: {}", id, e);
+            }
+        }
+    }
+
     pub async fn get_instance(&self, instance_id: &str) -> Option<InstanceInfo> {
         let registry = self.instances.lock().await;
         let instance = registry.get(instance_id)?;
         Some(InstanceInfo {
             id: instance.id().to_string(),
             agent_key: instance.agent_key().to_string(),
-            name: instance.id().to_string(),
-            work_directory: String::new(),
+            name: instance.name().to_string(),
+            work_directory: instance.work_directory().to_string(),
             status: instance.status(),
             endpoint: instance.endpoint(),
         })
@@ -277,8 +311,8 @@ impl AgentService {
             .map(|(id, instance)| InstanceInfo {
                 id: id.clone(),
                 agent_key: instance.agent_key().to_string(),
-                name: instance.id().to_string(),
-                work_directory: String::new(),
+                name: instance.name().to_string(),
+                work_directory: instance.work_directory().to_string(),
                 status: instance.status(),
                 endpoint: instance.endpoint(),
             })

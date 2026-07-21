@@ -13,14 +13,12 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::mapper::{detect_interaction_from_parts, InteractionRequest};
-use crate::transport::{connect_opencode_sse, find_available_port, start_opencode_process, OpenCodeClient};
+use crate::transport::{connect_opencode_sse, port_allocator, start_opencode_process, OpenCodeClient};
 
 const LOG_SOURCE: &str = "opencode-plugin";
 const LOCALHOST: &str = "http://127.0.0.1";
 const STARTUP_WAIT_COUNT: u32 = 20;
 const STARTUP_WAIT_MS: u64 = 500;
-const READY_POLL_COUNT: u32 = 20;
-const READY_POLL_MS: u64 = 200;
 const SSE_CHANNEL_CAPACITY: usize = 1000;
 
 const METHOD_QUESTION: &str = "agent.question";
@@ -38,7 +36,6 @@ const PLUGIN_KEY: &str = "opencode";
 
 const ERR_SERVE_NOT_READY: &str = "opencode serve did not become ready";
 const ERR_SERVE_NOT_STARTED: &str = "opencode serve not started";
-const ERR_SERVE_NOT_READY_PORT_PREFIX: &str = "opencode serve did not become ready on port ";
 const LOG_SERVE_STARTED_PREFIX: &str = "opencode serve started on ";
 
 pub struct OpencodeInstance {
@@ -51,6 +48,7 @@ pub struct OpencodeInstance {
     started: Arc<AtomicBool>,
     session_map: ConversationSessionMap,
     transport_handle: Arc<TokioMutex<Option<Box<dyn TransportHandle>>>>,
+    startup_lock: Arc<TokioMutex<()>>,
 }
 
 impl OpencodeInstance {
@@ -65,6 +63,7 @@ impl OpencodeInstance {
             started: Arc::new(AtomicBool::new(false)),
             session_map: ConversationSessionMap::new(),
             transport_handle: Arc::new(TokioMutex::new(None)),
+            startup_lock: Arc::new(TokioMutex::new(())),
         }
     }
 
@@ -76,45 +75,71 @@ impl OpencodeInstance {
         self.base_url.lock().unwrap().clone()
     }
 
+    /// Attempt to start `opencode serve` on a port allocated by the global
+    /// allocator.  Retries a few times if the port is occupied or the server
+    /// does not become healthy, reducing the impact of the TOCTOU race in
+    /// port allocation.
+    async fn start_opencode_with_retry(
+        work_directory: &str,
+    ) -> Result<(u16, tokio::process::Child, OpenCodeClient), InstanceError> {
+        const MAX_RETRIES: u32 = 5;
+
+        for attempt in 0..MAX_RETRIES {
+            let port = port_allocator().allocate();
+            let base_url = format!("{}:{}", LOCALHOST, port);
+            let client = OpenCodeClient::new(&base_url);
+
+            match start_opencode_process(port, work_directory) {
+                Ok(mut child) => {
+                    let mut ready = false;
+                    for _ in 0..STARTUP_WAIT_COUNT {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(STARTUP_WAIT_MS))
+                            .await;
+                        if client.health_check().await {
+                            ready = true;
+                            break;
+                        }
+                    }
+
+                    if ready {
+                        return Ok((port, child, client));
+                    }
+
+                    log::warn!(
+                        "opencode serve did not become healthy on port {} (attempt {}), retrying",
+                        port,
+                        attempt + 1
+                    );
+                    let _ = child.start_kill();
+                }
+                Err(e) => {
+                    log::warn!(
+                        "failed to start opencode on port {} (attempt {}): {}",
+                        port,
+                        attempt + 1,
+                        e
+                    );
+                }
+            }
+        }
+
+        Err(InstanceError::ProcessError(format!(
+            "{} after {} attempts",
+            ERR_SERVE_NOT_READY, MAX_RETRIES
+        )))
+    }
+
     /// Starts `opencode serve` and the SSE listener (idempotent).
     async fn ensure_started(&self) -> Result<(), InstanceError> {
-        if self
-            .started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            for _ in 0..READY_POLL_COUNT {
-                if self.base_url().is_some() {
-                    return Ok(());
-                }
-                tokio::time::sleep(tokio::time::Duration::from_millis(READY_POLL_MS)).await;
-            }
-            return Err(InstanceError::NotRunning(ERR_SERVE_NOT_READY.into()));
+        let _guard = self.startup_lock.lock().await;
+
+        if self.base_url().is_some() {
+            return Ok(());
         }
 
-        let port = find_available_port().map_err(InstanceError::ProcessError)?;
+        let (port, child, client) =
+            Self::start_opencode_with_retry(&self.config.work_directory).await?;
         let base_url = format!("{}:{}", LOCALHOST, port);
-
-        let mut child = start_opencode_process(port, &self.config.work_directory)?;
-
-        let client = OpenCodeClient::new(&base_url);
-        let mut ready = false;
-        for _ in 0..STARTUP_WAIT_COUNT {
-            tokio::time::sleep(tokio::time::Duration::from_millis(STARTUP_WAIT_MS)).await;
-            if client.health_check().await {
-                ready = true;
-                break;
-            }
-        }
-
-        if !ready {
-            let _ = child.start_kill();
-            self.started.store(false, Ordering::SeqCst);
-            return Err(InstanceError::ProcessError(format!(
-                "{}{}",
-                ERR_SERVE_NOT_READY_PORT_PREFIX, port
-            )));
-        }
 
         *self.base_url.lock().unwrap() = Some(base_url.clone());
         *self.serve_process.lock().await = Some(child);
@@ -140,15 +165,18 @@ impl OpencodeInstance {
         let session_map = self.session_map.clone();
         tokio::spawn(async move {
             while let Some(payload) = rx.recv().await {
+                let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if let Some(event) = crate::mapper::map_opencode_sse(&payload) {
                     let session_id = crate::mapper::extract_session_id(&payload).unwrap_or_default();
                     let conversation_id = session_map
                         .conversation_for_session(&session_id)
                         .unwrap_or_default();
+                    log::info!("[relay-loop] ev={event_type} oc_sid={session_id} gw_sid={conversation_id}");
                     let mapper = EventMapper::new(instance_id.clone(), conversation_id);
                     mapper.map(event, &event_sink);
                 }
             }
+            log::warn!("[relay-loop] exited instance={instance_id}");
         });
 
         Ok(())
@@ -256,6 +284,14 @@ impl AgentInstance for OpencodeInstance {
 
     fn agent_key(&self) -> &'static str {
         PLUGIN_KEY
+    }
+
+    fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    fn work_directory(&self) -> &str {
+        &self.config.work_directory
     }
 
     fn endpoint(&self) -> Option<String> {

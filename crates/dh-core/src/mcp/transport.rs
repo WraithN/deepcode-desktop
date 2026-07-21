@@ -78,6 +78,26 @@ impl StdioTransport {
         }
     }
 
+    /// Gracefully terminate the child process.  First tries to kill it, then
+    /// waits up to `SHUTDOWN_TIMEOUT_SECS` seconds for it to exit.
+    pub async fn close(&mut self) -> Result<(), McpError> {
+        const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+
+        let _ = self.child.start_kill();
+        match tokio::time::timeout(
+            tokio::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECS),
+            self.child.wait(),
+        )
+        .await
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(McpError::ProcessError(e.to_string())),
+            Err(_) => Err(McpError::ProcessError(
+                "MCP child process did not exit within shutdown timeout".to_string(),
+            )),
+        }
+    }
+
     pub fn subscribe(&self) -> mpsc::UnboundedSender<String> {
         self.stdout_tx.clone()
     }

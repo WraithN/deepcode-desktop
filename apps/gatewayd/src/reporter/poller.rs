@@ -8,14 +8,14 @@ use super::transform::{build_otlp_request, transform_audit_log};
 use dh_db::DbManager;
 
 pub struct Poller {
-    db: Arc<std::sync::Mutex<DbManager>>,
+    db: Arc<tokio::sync::Mutex<DbManager>>,
     config: ReporterConfig,
     exporter: AuditLogExporter,
 }
 
 impl Poller {
     pub fn new(
-        db: Arc<std::sync::Mutex<DbManager>>,
+        db: Arc<tokio::sync::Mutex<DbManager>>,
         config: ReporterConfig,
         exporter: AuditLogExporter,
     ) -> Self {
@@ -61,7 +61,7 @@ impl Poller {
 
     async fn poll_once(&self, batch: &mut Vec<serde_json::Value>, last_rowids: &mut Vec<i64>) {
         let (last_rowid, logs) = {
-            let db = self.db.lock().unwrap();
+            let db = self.db.lock().await;
             let cursor = match db.get_reporter_cursor() {
                 Ok(c) => c,
                 Err(_) => return,
@@ -80,7 +80,7 @@ impl Poller {
 
         if !last_rowids.is_empty() {
             let max_rowid = *last_rowids.iter().max().unwrap_or(&last_rowid);
-            let mut db = self.db.lock().unwrap();
+            let mut db = self.db.lock().await;
             let _ = db.set_reporter_cursor(max_rowid);
         }
 
@@ -105,14 +105,14 @@ impl Poller {
                 Ok(())
             }
             Err(ExportError::ClientError(code, _)) => {
-                self.enqueue_batch(batch, last_rowids)?;
+                self.enqueue_batch(batch, last_rowids).await?;
                 batch.clear();
                 last_rowids.clear();
                 eprintln!("[reporter] client error {}, enqueued to dead letter", code);
                 Ok(())
             }
             Err(_) => {
-                self.enqueue_batch(batch, last_rowids)?;
+                self.enqueue_batch(batch, last_rowids).await?;
                 batch.clear();
                 last_rowids.clear();
                 Ok(())
@@ -120,14 +120,14 @@ impl Poller {
         }
     }
 
-    fn enqueue_batch(
+    async fn enqueue_batch(
         &self,
         batch: &[serde_json::Value],
         rowids: &[i64],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let payload = serde_json::to_string(&build_otlp_request(batch.to_vec()))?;
         let rowid = rowids.first().copied().unwrap_or(0);
-        let mut db = self.db.lock().unwrap();
+        let mut db = self.db.lock().await;
         db.enqueue_reporter_item(rowid, &payload)?;
         Ok(())
     }

@@ -40,6 +40,7 @@ pub async fn chat_handler(
     let rx = state
         .session_manager
         .subscribe(&session_id)
+        .await
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
@@ -52,7 +53,7 @@ pub async fn chat_handler(
 
     // 若 session 下尚无 agent 实例，且请求未携带 agent_key，则报错；
     // 若携带了 agent_key，start_run 内部会自动挂载对应插件实例。
-    let session = state.session_manager.get_session(&session_id).ok_or_else(|| {
+    let session = state.session_manager.get_session(&session_id).await.ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({ "error": "session not found" })),
@@ -117,7 +118,15 @@ impl AguiEventStream {
                     let sse_event = SseEvent::default().data(data);
                     Some((Ok(sse_event), (rx, first_event, run_id, start)))
                 }
-                Err(_) => None,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        "[sse] run={} consumer lagged, dropped {} events; closing stream",
+                        run_id,
+                        skipped
+                    );
+                    None
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
             }
         });
         Self {

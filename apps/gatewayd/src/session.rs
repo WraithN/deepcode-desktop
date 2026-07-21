@@ -1,18 +1,24 @@
 #![allow(dead_code)]
 
 use crate::agui::types::{BaseEvent, Event, Message, RunAgentInput};
+use crate::workspace::WorkspaceValidator;
 use agent_core::error::InstanceError;
+use agent_core::error::PluginError;
 use agent_core::models::CreateInstanceRequest;
 use agent_core::service::AgentService;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tokio::sync::broadcast;
-use uuid;
 
 const DEFAULT_BROADCAST_CAPACITY: usize = 1024;
 const DEFAULT_EXPIRED_TIME_SECS: u64 = 600;
+const INSTANCE_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
+const SESSIONS_FILE: &str = "sessions.json";
 
 /// Errors that can occur when starting a run.
 #[derive(Debug, thiserror::Error)]
@@ -86,45 +92,201 @@ impl Session {
     }
 }
 
+/// 持久化到 sessions.json 的单条记录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceEntry {
+    pub session_id: String,
+    pub workspace_path: String,
+    pub last_used: u64,
+}
+
+/// On-disk representation of the sessions persistence file.  The version field
+/// allows us to evolve the schema and detect legacy files in the future.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionsFile {
+    version: u32,
+    entries: Vec<WorkspaceEntry>,
+}
+
+impl SessionsFile {
+    const CURRENT_VERSION: u32 = 1;
+
+    fn new(entries: Vec<WorkspaceEntry>) -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            entries,
+        }
+    }
+}
+
+/// 获取数据存储目录：优先使用 GATEWAYD_DATA_DIR 环境变量，否则使用 ~/.dh-gatewayd。
+fn data_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("GATEWAYD_DATA_DIR") {
+        return PathBuf::from(d);
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".dh-gatewayd")
+}
+
+fn sessions_file_path() -> PathBuf {
+    data_dir().join(SESSIONS_FILE)
+}
+
+fn save_workspaces(workspaces: &HashMap<String, WorkspaceEntry>) {
+    let path = sessions_file_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::error!("[session_manager] failed to create data dir: {}", e);
+            return;
+        }
+    }
+
+    let file = SessionsFile::new(workspaces.values().cloned().collect());
+    let json = match serde_json::to_string_pretty(&file) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("[session_manager] failed to serialize sessions: {}", e);
+            return;
+        }
+    };
+
+    // Write to a temporary file and rename atomically so the on-disk state is
+    // never a partially written JSON file.
+    let temp_path = path.with_extension("tmp");
+    if let Err(e) = std::fs::write(&temp_path, json) {
+        tracing::error!("[session_manager] failed to write sessions temp file: {}", e);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&temp_path, &path) {
+        tracing::error!("[session_manager] failed to persist sessions file: {}", e);
+        let _ = std::fs::remove_file(&temp_path);
+    }
+}
+
+fn load_workspaces() -> HashMap<String, WorkspaceEntry> {
+    let path = sessions_file_path();
+    if !path.exists() {
+        return HashMap::new();
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("[session_manager] failed to read sessions file: {}", e);
+            return HashMap::new();
+        }
+    };
+
+    // First try the new versioned format...
+    if let Ok(file) = serde_json::from_str::<SessionsFile>(&content) {
+        if file.version != SessionsFile::CURRENT_VERSION {
+            tracing::warn!(
+                "[session_manager] sessions file version {} does not match current {}, resetting",
+                file.version,
+                SessionsFile::CURRENT_VERSION
+            );
+            return HashMap::new();
+        }
+        return file
+            .entries
+            .into_iter()
+            .map(|e| (e.session_id.clone(), e))
+            .collect();
+    }
+
+    // ...then fall back to the legacy flat-array format for backwards compatibility.
+    match serde_json::from_str::<Vec<WorkspaceEntry>>(&content) {
+        Ok(entries) => entries.into_iter().map(|e| (e.session_id.clone(), e)).collect(),
+        Err(e) => {
+            tracing::error!("[session_manager] failed to parse sessions file: {}", e);
+            HashMap::new()
+        }
+    }
+}
+
 /// Manages AG-UI sessions and routes agent events to the right session.
 #[derive(Clone)]
 pub struct SessionManager {
-    inner: Arc<Mutex<HashMap<String, Session>>>,
+    inner: Arc<RwLock<HashMap<String, Session>>>,
+    workspaces: Arc<RwLock<HashMap<String, WorkspaceEntry>>>,
+    workspace_validator: WorkspaceValidator,
+}
+
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SessionManager {
     pub fn new() -> Self {
+        let workspaces = load_workspaces();
+        let mut inner = HashMap::new();
+        // 从持久化记录恢复 Session（仅创建空 Session，不启动 agent）
+        for sid in workspaces.keys() {
+            inner.insert(
+                sid.clone(),
+                Session::new(sid.clone(), Duration::from_secs(DEFAULT_EXPIRED_TIME_SECS)),
+            );
+        }
+        tracing::info!(
+            "[session_manager] loaded {} persisted sessions",
+            workspaces.len()
+        );
         Self {
-            inner: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::new(RwLock::new(inner)),
+            workspaces: Arc::new(RwLock::new(workspaces)),
+            workspace_validator: WorkspaceValidator::from_env(),
         }
     }
 
     /// Create a new session and return its id.
+    /// `preferred_id` 若提供且不与已有 session 冲突，则直接使用该 ID；
+    /// 若冲突（session 已存在）则直接返回已有 session 的 ID（幂等）。
     /// `expired_time_secs` 为空闲超时秒数，None 则使用默认值 600。
-    pub fn create_session(&self, expired_time_secs: Option<u64>) -> String {
+    pub async fn create_session(
+        &self,
+        preferred_id: Option<String>,
+        expired_time_secs: Option<u64>,
+    ) -> String {
+        if let Some(ref pid) = preferred_id {
+            let guard = self.inner.read().await;
+            if guard.contains_key(pid) {
+                return pid.clone();
+            }
+        }
+        let session_id = preferred_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let secs = expired_time_secs.unwrap_or(DEFAULT_EXPIRED_TIME_SECS);
-        let session_id = uuid::Uuid::new_v4().to_string();
         let session = Session::new(session_id.clone(), Duration::from_secs(secs));
         self.inner
-            .lock()
-            .unwrap()
+            .write()
+            .await
             .insert(session_id.clone(), session);
         session_id
     }
 
     /// Get a session by id.
-    pub fn get_session(&self, session_id: &str) -> Option<Session> {
-        self.inner.lock().unwrap().get(session_id).cloned()
+    pub async fn get_session(&self, session_id: &str) -> Option<Session> {
+        self.inner.read().await.get(session_id).cloned()
     }
 
     /// 更新 session 的最近用户输入时间。
-    pub fn touch_session(&self, session_id: &str) {
-        if let Some(session) = self.get_session(session_id) {
+    pub async fn touch_session(&self, session_id: &str) {
+        if let Some(session) = self.get_session(session_id).await {
             session.touch();
         }
     }
 
     /// Create an agent instance under the given session.
+    ///
+    /// If the session already has an agent instance and `force` is false, the
+    /// requested agent key / workspace / name must match the existing instance.
+    /// This keeps the session-level semantics aligned with `AgentService` reuse
+    /// rules and prevents silently attaching a mismatched agent to a session.
+    ///
+    /// The workspace mapping is persisted before creating the instance so that a
+    /// failure can be rolled back; the instance is stopped and removed if the
+    /// session disappears before the instance can be attached.
     pub async fn create_agent(
         &self,
         session_id: &str,
@@ -133,16 +295,49 @@ impl SessionManager {
         work_directory: &str,
         force: bool,
         agent_service: &AgentService,
-    ) -> Result<agent_core::models::InstanceInfo, agent_core::error::PluginError> {
-        let session = self.get_session(session_id).ok_or_else(|| {
-            agent_core::error::PluginError::NotFound(format!("session {session_id}"))
-        })?;
+    ) -> Result<agent_core::models::InstanceInfo, PluginError> {
+        // Validate workspace path before any persistence or process creation.
+        if let Err(e) = self.workspace_validator.validate(work_directory) {
+            return Err(PluginError::CreateInstanceFailed(e.to_string()));
+        }
 
-        if !session.instances().is_empty() && !force {
-            return Err(agent_core::error::PluginError::CreateInstanceFailed(
-                "session already has an agent instance".to_string(),
+        // Check whether the session already has an instance that we can reuse.
+        let existing_id = {
+            let guard = self.inner.read().await;
+            let session = guard.get(session_id).ok_or_else(|| {
+                PluginError::NotFound(format!("session {session_id}"))
+            })?;
+            let instances = session.instances();
+            if !instances.is_empty() && !force {
+                Some(instances.first().unwrap().clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(existing_id) = existing_id {
+            let existing = agent_service
+                .get_instance(&existing_id)
+                .await
+                .ok_or_else(|| {
+                    PluginError::CreateInstanceFailed(
+                        "existing instance not found in agent service".to_string(),
+                    )
+                })?;
+            if existing.agent_key == agent_key
+                && existing.work_directory == work_directory
+                && existing.name == name
+            {
+                return Ok(existing);
+            }
+            return Err(PluginError::CreateInstanceFailed(
+                "session already has an agent instance with different config".to_string(),
             ));
         }
+
+        // Persist the workspace mapping first. If instance creation fails we can
+        // roll this back so the on-disk state stays consistent with the runtime.
+        self.persist_workspace(session_id, work_directory).await;
 
         let req = CreateInstanceRequest {
             agent_key: agent_key.to_string(),
@@ -151,9 +346,86 @@ impl SessionManager {
             force,
         };
 
-        let info = agent_service.create_instance(req).await?;
-        session.add_instance(info.id.clone());
-        Ok(info)
+        let info = match agent_service.create_instance(req).await {
+            Ok(info) => info,
+            Err(e) => {
+                self.remove_workspace(session_id).await;
+                return Err(e);
+            }
+        };
+
+        // Attach the instance to the session. If the session has disappeared,
+        // stop the newly created instance and roll back the persistence.
+        {
+            let guard = self.inner.write().await;
+            if let Some(session) = guard.get(session_id) {
+                session.add_instance(info.id.clone());
+                return Ok(info);
+            }
+        }
+
+        tracing::warn!(
+            "[session_manager] session {} disappeared during create_agent, rolling back instance {}",
+            session_id,
+            info.id
+        );
+        let _ = agent_service
+            .stop_and_remove_instance_with_timeout(
+                &info.id,
+                std::time::Duration::from_secs(INSTANCE_SHUTDOWN_TIMEOUT_SECS),
+            )
+            .await;
+        self.remove_workspace(session_id).await;
+        Err(PluginError::CreateInstanceFailed(
+            "session disappeared while creating agent".to_string(),
+        ))
+    }
+
+    /// Persist the workspace mapping for a session to disk.
+    async fn persist_workspace(&self, session_id: &str, work_directory: &str) {
+        let mut ws = self.workspaces.write().await;
+        ws.insert(
+            session_id.to_string(),
+            WorkspaceEntry {
+                session_id: session_id.to_string(),
+                workspace_path: work_directory.to_string(),
+                last_used: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            },
+        );
+        save_workspaces(&ws);
+    }
+
+    /// Remove the workspace mapping for a session and persist the change.
+    /// Used for rollback when instance creation fails.
+    async fn remove_workspace(&self, session_id: &str) {
+        let mut ws = self.workspaces.write().await;
+        ws.remove(session_id);
+        save_workspaces(&ws);
+    }
+
+    /// 根据 session_id 获取已记录的 workspace 路径。
+    pub async fn workspace_for_session(&self, session_id: &str) -> Option<String> {
+        self.workspaces
+            .read()
+            .await
+            .get(session_id)
+            .map(|e| e.workspace_path.clone())
+    }
+
+    /// 返回最近使用的 N 个 session 及其 workspace，按 last_used 降序排列。
+    /// 用于 gatewayd 启动后的预加热。
+    pub async fn recent_sessions(&self, limit: usize) -> Vec<(String, String)> {
+        let ws = self.workspaces.read().await;
+        let mut entries: Vec<_> = ws.values().cloned().collect();
+        entries.sort_by_key(|b| std::cmp::Reverse(b.last_used));
+        entries
+            .into_iter()
+            .take(limit)
+            .map(|e| (e.session_id, e.workspace_path))
+            .collect()
     }
 
     /// 如果 session 没有 agent 实例且 run 请求携带了 agent_key，则自动挂载对应插件。
@@ -227,6 +499,7 @@ impl SessionManager {
 
         let session = self
             .get_session(session_id)
+            .await
             .ok_or(RunError::SessionNotFound)?;
 
         // 收到用户输入，刷新空闲计时器，防止 session 被回收。
@@ -239,6 +512,10 @@ impl SessionManager {
             if let Some(agent_key) = input.agent_key.as_deref().filter(|s| !s.is_empty()) {
                 self.ensure_agent_for_run(session_id, agent_key, &run_id, agent_service)
                     .await?;
+                let session = self
+                    .get_session(session_id)
+                    .await
+                    .ok_or(RunError::SessionNotFound)?;
                 instances = session.instances();
             }
         }
@@ -302,20 +579,20 @@ impl SessionManager {
     }
 
     /// Subscribe to events for a session.
-    pub fn subscribe(&self, session_id: &str) -> Option<broadcast::Receiver<Event>> {
-        self.get_session(session_id).map(|s| s.event_tx.subscribe())
+    pub async fn subscribe(&self, session_id: &str) -> Option<broadcast::Receiver<Event>> {
+        self.get_session(session_id).await.map(|s| s.event_tx.subscribe())
     }
 
     /// Broadcast an event to all subscribers of a session.
-    pub fn broadcast(&self, session_id: &str, event: Event) {
-        if let Some(session) = self.get_session(session_id) {
+    pub async fn broadcast(&self, session_id: &str, event: Event) {
+        if let Some(session) = self.get_session(session_id).await {
             let _ = session.event_tx.send(event);
         }
     }
 
     /// Find the session id that owns the given instance.
-    pub fn session_for_instance(&self, instance_id: &str) -> Option<String> {
-        let guard = self.inner.lock().unwrap();
+    pub async fn session_for_instance(&self, instance_id: &str) -> Option<String> {
+        let guard = self.inner.read().await;
         for (sid, session) in guard.iter() {
             if session.instances().contains(&instance_id.to_string()) {
                 return Some(sid.clone());
@@ -328,7 +605,7 @@ impl SessionManager {
     /// 回收操作会停止底层进程并从 session 与 AgentService 注册表中移除实例。
     pub async fn reap_expired(&self, agent_service: &AgentService) {
         let expired: Vec<(String, Vec<String>)> = {
-            let guard = self.inner.lock().unwrap();
+            let guard = self.inner.read().await;
             guard
                 .iter()
                 .filter(|(_, session)| session.is_expired() && !session.instances().is_empty())
@@ -343,7 +620,13 @@ impl SessionManager {
                     instance_id,
                     session_id
                 );
-                if let Err(e) = agent_service.stop_and_remove_instance(instance_id).await {
+                if let Err(e) = agent_service
+                    .stop_and_remove_instance_with_timeout(
+                        instance_id,
+                        std::time::Duration::from_secs(INSTANCE_SHUTDOWN_TIMEOUT_SECS),
+                    )
+                    .await
+                {
                     tracing::warn!(
                         "[session_manager] failed to stop instance={}: {}",
                         instance_id,
@@ -351,7 +634,7 @@ impl SessionManager {
                     );
                 }
             }
-            if let Some(session) = self.get_session(&session_id) {
+            if let Some(session) = self.get_session(&session_id).await {
                 session.clear_instances();
             }
         }

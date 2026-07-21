@@ -2,6 +2,7 @@ use crate::error::InstanceError;
 use serde::Serialize;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,10 +39,16 @@ impl InstanceConfig {
     }
 }
 
+/// Default polling interval used by `graceful_shutdown` while waiting for the
+/// instance to report `InstanceStatus::Stopped`.
+const GRACEFUL_SHUTDOWN_POLL_INTERVAL_MS: u64 = 100;
+
 pub trait AgentInstance: Send + Sync {
     fn id(&self) -> &str;
     fn status(&self) -> InstanceStatus;
     fn agent_key(&self) -> &'static str;
+    fn name(&self) -> &str;
+    fn work_directory(&self) -> &str;
 
     /// Optional endpoint URL for this instance (e.g. opencode serve URL).
     fn endpoint(&self) -> Option<String> {
@@ -62,6 +69,28 @@ pub trait AgentInstance: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
 
     fn stop(&self) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
+
+    /// Gracefully stop the instance, waiting up to `timeout` for the process to
+    /// report `Stopped`.  The default implementation calls `stop()` and polls the
+    /// instance status until it stops or the timeout expires.
+    fn graceful_shutdown(
+        &self,
+        timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>> {
+        Box::pin(async move {
+            self.stop().await?;
+            let deadline = std::time::Instant::now() + timeout;
+            while std::time::Instant::now() < deadline {
+                if matches!(self.status(), InstanceStatus::Stopped) {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(GRACEFUL_SHUTDOWN_POLL_INTERVAL_MS)).await;
+            }
+            Err(InstanceError::ProcessError(
+                "instance did not stop within graceful shutdown timeout".to_string(),
+            ))
+        })
+    }
 }
 
 #[cfg(test)]

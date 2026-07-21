@@ -11,6 +11,8 @@ const KEY_SESSION_ID: &str = "sessionID";
 const KEY_INPUT: &str = "input";
 const KEY_QUESTIONS: &str = "questions";
 const KEY_TODOS: &str = "todos";
+const KEY_MESSAGE: &str = "message";
+const KEY_ERROR: &str = "error";
 const KEY_TOOL_NAME: &str = "toolName";
 const KEY_TOOL_NAME_ALT: &str = "tool_name";
 const KEY_ACTION: &str = "action";
@@ -62,11 +64,43 @@ pub fn map_opencode_sse(payload: &Value) -> Option<ProcessEvent> {
             }
         }
         EVENT_TYPE_SESSION_IDLE => Some(ProcessEvent::Done),
-        EVENT_TYPE_SESSION_ERROR => Some(ProcessEvent::Error {
-            message: payload.to_string(),
-        }),
+        EVENT_TYPE_SESSION_ERROR => {
+            let message = extract_error_message(payload);
+            Some(ProcessEvent::Error { message })
+        }
         _ => None,
     }
+}
+
+/// 从 session.error 的 JSON payload 中提取有意义的错误信息。
+///
+/// OpenCode 的 session.error 格式通常为：
+/// ```json
+/// { "type": "session.error", "message": "...", "error": { "code": "...", "message": "..." } }
+/// ```
+///
+/// 提取优先级：
+/// 1. `error.message` — 嵌套的具体错误消息
+/// 2. `message` — 顶层错误消息
+/// 3. `error` 字符串 — 如果 error 不是对象而是字符串值
+/// 4. 整段 JSON 原文作为兜底
+fn extract_error_message(payload: &Value) -> String {
+    if let Some(msg) = payload.get(KEY_ERROR).and_then(|e| e.get(KEY_MESSAGE)).and_then(|v| v.as_str()) {
+        if !msg.is_empty() {
+            return msg.to_string();
+        }
+    }
+    if let Some(msg) = payload.get(KEY_MESSAGE).and_then(|v| v.as_str()) {
+        if !msg.is_empty() {
+            return msg.to_string();
+        }
+    }
+    if let Some(msg) = payload.get(KEY_ERROR).and_then(|v| v.as_str()) {
+        if !msg.is_empty() {
+            return msg.to_string();
+        }
+    }
+    payload.to_string()
 }
 
 /// Interaction request extracted from an OpenCode message response.
@@ -218,7 +252,45 @@ mod tests {
 
     #[test]
     fn test_map_session_error() {
+        // 场景1：顶层 message 字段
         let payload = json!({ "type": "session.error", "message": "boom" });
+        let ev = map_opencode_sse(&payload).unwrap();
+        assert_eq!(
+            ev,
+            ProcessEvent::Error {
+                message: "boom".to_string()
+            }
+        );
+
+        // 场景2：嵌套 error.message 优先级更高
+        let payload = json!({
+            "type": "session.error",
+            "message": "外层消息",
+            "error": { "code": "api_key_invalid", "message": "API 密钥无效" }
+        });
+        let ev = map_opencode_sse(&payload).unwrap();
+        assert_eq!(
+            ev,
+            ProcessEvent::Error {
+                message: "API 密钥无效".to_string()
+            }
+        );
+
+        // 场景3：error 为字符串值
+        let payload = json!({
+            "type": "session.error",
+            "error": "网络连接失败"
+        });
+        let ev = map_opencode_sse(&payload).unwrap();
+        assert_eq!(
+            ev,
+            ProcessEvent::Error {
+                message: "网络连接失败".to_string()
+            }
+        );
+
+        // 场景4：无 message/error 字段，回退到完整 JSON
+        let payload = json!({ "type": "session.error", "raw": "unknown error" });
         let ev = map_opencode_sse(&payload).unwrap();
         assert_eq!(
             ev,

@@ -26,7 +26,7 @@ impl AguiEventSink {
             .lock()
             .unwrap()
             .entry(instance_id.to_string())
-            .or_insert_with(AguiMapper::new)
+            .or_default()
             .clone()
     }
 
@@ -46,16 +46,41 @@ impl EventSink for AguiEventSink {
             .unwrap_or("")
             .to_string();
 
-        let Some(session_id) = self.session_manager.session_for_instance(&instance_id) else {
-            return;
-        };
+        let conversation_id = payload
+            .get("conversation_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let mut mapper = self.mapper_for(&instance_id);
         let events = mapper.map(event_type, &payload);
         self.update_mapper(&instance_id, mapper);
 
-        for event in events {
-            self.session_manager.broadcast(&session_id, event);
-        }
+        let session_manager = self.session_manager.clone();
+        let event_type = event_type.to_string();
+        tokio::spawn(async move {
+            let log_conversation_id = conversation_id.clone();
+            let session_id = if conversation_id.is_empty() {
+                match session_manager.session_for_instance(&instance_id).await {
+                    Some(sid) => sid,
+                    None => {
+                        tracing::warn!(
+                            "[agui-sink] DROPPING event={event_type} — no session for instance_id={instance_id}"
+                        );
+                        return;
+                    }
+                }
+            } else {
+                conversation_id
+            };
+
+            tracing::info!(
+                "[agui-sink] event={event_type} instance={instance_id} conv_id={log_conversation_id} routing_to={session_id}"
+            );
+
+            for event in events {
+                session_manager.broadcast(&session_id, event).await;
+            }
+        });
     }
 }

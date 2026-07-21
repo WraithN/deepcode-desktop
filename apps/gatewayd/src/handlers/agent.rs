@@ -41,7 +41,7 @@ pub async fn update_agent_config_handler(
             .into_response();
     };
 
-    let Some(session) = state.session_manager.get_session(&session_id) else {
+    let Some(session) = state.session_manager.get_session(&session_id).await else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "session not found"})),

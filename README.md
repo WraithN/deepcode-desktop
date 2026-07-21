@@ -301,6 +301,45 @@ dh-gatewayd --daemon --agent-type opencode
 
 > **注意**：旧版 Agent 接口（`/agents`、`/agents/{id}/message`、`/agents/events`）已废弃，请使用以 `/sessions` 为入口的 AG-UI 接口。`/mcp/*` 仅在配置了 MCP server 时启用。
 
+#### 向 DeepHarness 平台上报运行时状态
+
+`dh-gatewayd` 启动后会读取 `~/.config/dh/config.toml` 中的 `[platform]` 配置，并按配置周期把自身运行时状态上报到 DeepHarness Enterprise Platform：
+
+```text
+POST {platform.url}/api/v1/agent-runtimes/{runtime_id}/status
+Authorization: Bearer {platform.api_key}
+```
+
+上报内容包含当前进程 CPU/内存、运行时长、Sandbox 规格以及挂载的 Agent 实例列表。服务端会根据 `workspace_id` 自动反查租户/工作空间名称，根据 `user_id` 反查用户名称，因此上报端只需要提供 ID 即可。
+
+**本地开发配置示例（`~/.config/dh/config.toml`）：**
+
+```toml
+[platform]
+url = "http://localhost:8080"
+api_key = "<agent-runtime-bearer-token>"
+enabled = true
+workspace_id = "<workspace-id>"
+user_id = "<user-id>"
+report_interval_secs = 10
+```
+
+若未配置 `runtime_id`，`dh-gatewayd` 会自动使用本机 hostname 作为运行时 ID。
+
+**K8s / 容器化部署推荐通过环境变量注入**（不依赖宿主机的 `~/.config/dh/config.toml`）：
+
+| 环境变量 | 说明 | 必填 |
+|----------|------|:----:|
+| `DH_PLATFORM_ENABLED` | 是否启用上报 | 是 |
+| `DH_PLATFORM_URL` | DeepHarness 平台地址，如 `https://platform.deepharness.com` | 是 |
+| `DH_PLATFORM_API_KEY` | Agent Runtime bearer token | 是 |
+| `DH_PLATFORM_WORKSPACE_ID` | 运行时所属 workspace ID | 是 |
+| `DH_PLATFORM_USER_ID` | 运行时负责人 user ID | 否（建议填） |
+| `DH_PLATFORM_RUNTIME_ID` | 运行时唯一 ID，未设置则使用 Pod hostname | 否 |
+| `DH_PLATFORM_REPORT_INTERVAL_SECS` | 上报周期（秒），默认 30 | 否 |
+
+环境变量优先级高于配置文件，便于同一镜像在不同 namespace 中接入不同平台实例。
+
 #### AG-UI 协议接口详情
 
 dh-gatewayd 的 Agent 对外交互已统一为 [AG-UI](https://docs.ag-ui.com/introduction) 事件协议。所有事件均为 JSON，通过 `type` 字段区分，采用 `SCREAMING_SNAKE_CASE` 命名。下文逐一列出各接口的请求/响应参数。

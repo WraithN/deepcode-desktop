@@ -2,6 +2,8 @@ use agent_core::error::InstanceError;
 use agent_core::process::http::HttpTransport;
 use agent_core::process::transport::TransportHandle;
 use serde_json::json;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::process::Child;
 use tokio::sync::mpsc;
@@ -130,13 +132,28 @@ impl OpenCodeClient {
 /// 显式设置子进程 CWD 为目标工作区，避免继承 gatewayd 自身目录。
 /// 若不设置，opencode serve 会以 gatewayd 的 CWD 为工作区，导致
 /// 文件操作落到错误目录（与 claude-plugin 的 StdioTransport 行为对齐）。
+///
+/// 对 `work_directory` 做规范化并检查存在性，避免路径遍历或指向不存在的目录。
 pub fn start_opencode_process(port: u16, work_directory: &str) -> Result<Child, InstanceError> {
+    let cwd = std::fs::canonicalize(work_directory).map_err(|e| {
+        InstanceError::ProcessError(format!(
+            "invalid work_directory '{}': {}",
+            work_directory, e
+        ))
+    })?;
+    if !cwd.is_dir() {
+        return Err(InstanceError::ProcessError(format!(
+            "work_directory '{}' is not a directory",
+            cwd.display()
+        )));
+    }
+
     let mut cmd = tokio::process::Command::new(OPCODE_BINARY);
     cmd.arg(ARG_SERVE)
         .arg(ARG_PORT)
         .arg(port.to_string())
         .arg(ARG_PURE)
-        .current_dir(work_directory)
+        .current_dir(&cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -144,7 +161,63 @@ pub fn start_opencode_process(port: u16, work_directory: &str) -> Result<Child, 
         .map_err(|e| InstanceError::ProcessError(prefixed(ERR_START_OPCODE_SERVE_PREFIX, e)))
 }
 
+/// Thread-safe allocator for OpenCode ports in the configured range.
+///
+/// Instead of the previous "bind-and-release" check which has a TOCTOU race,
+/// this allocator hands out a monotonically increasing port (wrapping around
+/// at the end of the range).  If the chosen port is actually occupied, the
+/// caller retries with the next allocation.  This eliminates the window where
+/// another process could grab the port between check and use.
+pub struct PortAllocator {
+    next: AtomicU16,
+    start: u16,
+    end: u16,
+}
+
+impl PortAllocator {
+    pub fn new(start: u16, end: u16) -> Self {
+        Self {
+            next: AtomicU16::new(start),
+            start,
+            end,
+        }
+    }
+
+    /// Returns the next candidate port in the range.  The caller is responsible
+    /// for verifying the port is actually usable (e.g. by spawning the child
+    /// and checking health).  If it is not, allocate again and retry.
+    pub fn allocate(&self) -> u16 {
+        loop {
+            let current = self.next.load(Ordering::Relaxed);
+            let next_port = if current >= self.end {
+                self.start
+            } else {
+                current + 1
+            };
+            match self.next.compare_exchange(
+                current,
+                next_port,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return current,
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
+/// Global OpenCode port allocator.  The range is shared across all
+/// OpencodeInstance instances in the process.
+static PORT_ALLOCATOR: OnceLock<PortAllocator> = OnceLock::new();
+
+pub fn port_allocator() -> &'static PortAllocator {
+    PORT_ALLOCATOR.get_or_init(|| PortAllocator::new(PORT_RANGE_START, PORT_RANGE_END))
+}
+
 /// Finds an available TCP port in the default OpenCode range.
+///
+/// Deprecated: prefer `port_allocator().allocate()` + retry on bind failure.
 pub fn find_available_port() -> Result<u16, String> {
     for port in PORT_RANGE_START..=PORT_RANGE_END {
         if std::net::TcpListener::bind(join_url(LOCALHOST_BIND_PREFIX, &port.to_string())).is_ok() {
