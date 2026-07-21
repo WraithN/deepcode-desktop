@@ -52,6 +52,12 @@ fn main() {
             let db_path = db_path(app);
             log::info!("[main.rs] Database path: {:?}", db_path);
 
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            log::info!("[main.rs] App data dir: {:?}", app_data_dir);
+
             let db_manager = dh_db::DbManager::open_desktop(&db_path).expect("打开数据库失败");
             let shared_conn = Arc::new(Mutex::new(db_manager.into_inner()));
             app.manage(DbState(Arc::clone(&shared_conn)));
@@ -87,7 +93,7 @@ fn main() {
             let logger_conn = dh_db::DbManager::open_desktop(&logger_db_path)
                 .expect("打开日志数据库失败")
                 .into_inner();
-            let log_file_path = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("session.log");
+            let log_file_path = app_data_dir.join("session.log");
             let logger = std::sync::Arc::new(agent_core::logger::SessionLogger::new(
                 event_sink.clone(),
                 logger_conn,
@@ -112,7 +118,13 @@ fn main() {
 
             // Phase 2: 启动平台 reporter 后台任务（需要 AgentService 句柄）
             if let (Some(cfg), Some(rx)) = (platform_config, reporter_rx) {
-                platform::start_reporter(&cfg, rx, Arc::clone(&shared_conn), agent_service.clone());
+                platform::start_reporter(
+                    &cfg,
+                    &app_data_dir,
+                    rx,
+                    Arc::clone(&shared_conn),
+                    agent_service.clone(),
+                );
             }
 
             // 初始化 DbService（复用同一个数据库连接）

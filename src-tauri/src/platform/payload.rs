@@ -118,3 +118,32 @@ pub struct MonitoringReport {
     pub source: String,
     pub message: String,
 }
+
+// ───── Agent Runtime status report (POST /api/v1/agent-runtimes/{runtimeId}/status) ─────
+
+/// Runtime-level status report sent to the DeepHarness Enterprise Platform.
+///
+/// Mirrors the request body documented in the enterprise platform README.
+#[derive(Clone, Debug, Serialize)]
+pub struct RuntimeStatusReport {
+    pub workspace_id: String,
+    pub user_id: String,
+    pub status: String,
+    pub uptime_seconds: u64,
+    pub cpu_percent: f64,
+    pub mem_percent: f64,
+    pub sandbox_spec: String,
+    pub agents: Vec<RuntimeAgentStatus>,
+}
+
+/// Status of a single agent instance inside a runtime.
+#[derive(Clone, Debug, Serialize)]
+pub struct RuntimeAgentStatus {
+    #[serde(rename = "type")]
+    pub agent_type: String,
+    pub name: String,
+    pub status: String,
+    pub calls_today: u64,
+    pub version: String,
+    pub last_active: String,
+}

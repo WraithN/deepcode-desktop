@@ -8,7 +8,7 @@
 //! - `POST /api/report/monitoring`
 
 use crate::platform::payload::{
-    AgentReportBatch, MonitoringReportBatch, PlatformRemoteConfig, SessionReportBatch,
+    AgentReportBatch, MonitoringReportBatch, PlatformRemoteConfig, RuntimeStatusReport, SessionReportBatch,
 };
 use dh_config::PlatformConfig;
 use reqwest::Client;
@@ -21,6 +21,7 @@ const API_PATH_CONFIG: &str = "/api/platform/config";
 const API_PATH_REPORT_SESSIONS: &str = "/api/report/sessions";
 const API_PATH_REPORT_AGENTS: &str = "/api/report/agents";
 const API_PATH_REPORT_MONITORING: &str = "/api/report/monitoring";
+const API_PATH_AGENT_RUNTIMES: &str = "/api/v1/agent-runtimes";
 
 /// HTTP client for platform API calls with Bearer-token auth.
 pub struct PlatformClient {
@@ -114,22 +115,26 @@ impl PlatformClient {
         ensure_success(resp, API_PATH_REPORT_MONITORING).await?;
         Ok(())
     }
+
+    /// Reports the runtime status for a given runtime id.
+    ///
+    /// Endpoint: `POST /api/v1/agent-runtimes/{runtimeId}/status`
+    pub async fn report_runtime_status(&self, runtime_id: &str, report: &RuntimeStatusReport) -> Result<(), String> {
+        let path = format!("{API_PATH_AGENT_RUNTIMES}/{runtime_id}/status");
+        let resp = self.post(&path, report).await?;
+        ensure_success(resp, &path).await?;
+        Ok(())
+    }
 }
 
 /// Verifies the HTTP response status is 2xx. On success, returns the
 /// response so the caller can consume the body. On failure, returns an
 /// error message with the response body for diagnostics.
-async fn ensure_success(
-    resp: reqwest::Response,
-    path: &str,
-) -> Result<reqwest::Response, String> {
+async fn ensure_success(resp: reqwest::Response, path: &str) -> Result<reqwest::Response, String> {
     let status = resp.status();
     if status.is_success() {
         return Ok(resp);
     }
-    let body = resp
-        .text()
-        .await
-        .unwrap_or_else(|_| "<no response body>".to_string());
+    let body = resp.text().await.unwrap_or_else(|_| "<no response body>".to_string());
     Err(format!("{path} returned {status}: {body}"))
 }

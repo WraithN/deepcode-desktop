@@ -18,11 +18,14 @@
 
 use crate::platform::client::PlatformClient;
 use crate::platform::payload::{
-    AgentReport, AgentReportBatch, MessageReport, MonitoringReport, MonitoringReportBatch,
-    SessionReport, SessionReportBatch,
+    AgentReport, AgentReportBatch, MessageReport, MonitoringReport, MonitoringReportBatch, SessionReport,
+    SessionReportBatch,
 };
+use crate::platform::runtime_status::RuntimeStatusCollector;
 use crate::service::agent_service::AgentService;
+use dh_config::PlatformConfig;
 use dh_db::desktop::AppRepository;
+use rand::Rng;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,6 +68,8 @@ pub struct Reporter {
     monitoring_buffer: Vec<MonitoringReport>,
     report_interval: Duration,
     sanitize: bool,
+    platform_config: PlatformConfig,
+    runtime_collector: RuntimeStatusCollector,
 }
 
 impl Reporter {
@@ -75,6 +80,7 @@ impl Reporter {
         rx: mpsc::UnboundedReceiver<ReportEvent>,
         report_interval: Duration,
         sanitize: bool,
+        platform_config: PlatformConfig,
     ) -> Self {
         Self {
             client,
@@ -84,6 +90,8 @@ impl Reporter {
             monitoring_buffer: Vec::new(),
             report_interval,
             sanitize,
+            platform_config,
+            runtime_collector: RuntimeStatusCollector::new(),
         }
     }
 
@@ -92,18 +100,30 @@ impl Reporter {
     /// On startup, a best-effort fetch of the remote platform config is
     /// performed. Failures are logged but do not prevent reporting.
     pub async fn run(mut self) {
-        log::info!(
-            "[Reporter] Starting - interval={}s sanitize={}",
-            self.report_interval.as_secs(),
-            self.sanitize
-        );
+        let max_interval = self.platform_config.report_interval_max();
+        match max_interval {
+            Some(max) => {
+                log::info!(
+                    "[Reporter] Starting - interval={}s..{}s (jittered) sanitize={}",
+                    self.report_interval.as_secs(),
+                    max,
+                    self.sanitize
+                );
+            }
+            None => {
+                log::info!(
+                    "[Reporter] Starting - interval={}s sanitize={}",
+                    self.report_interval.as_secs(),
+                    self.sanitize
+                );
+            }
+        }
 
         self.fetch_platform_config().await;
 
-        let mut interval = tokio::time::interval(self.report_interval);
-        // Don't fire immediately on the first tick; the first flush happens
-        // after one full interval, giving the app time to initialise.
-        interval.tick().await;
+        // Don't fire immediately; the first flush happens after one
+        // random/fixed interval, giving the app time to initialise.
+        let mut next_deadline = tokio::time::Instant::now() + self.next_report_interval(max_interval);
 
         loop {
             tokio::select! {
@@ -119,11 +139,21 @@ impl Reporter {
                         return;
                     }
                 }
-                _ = interval.tick() => {
+                _ = tokio::time::sleep_until(next_deadline) => {
                     self.flush().await;
+                    next_deadline = tokio::time::Instant::now() + self.next_report_interval(max_interval);
                 }
             }
         }
+    }
+
+    /// Returns the duration to wait until the next periodic flush.
+    ///
+    /// When `report_interval_max_secs` is configured and greater than the base
+    /// interval, a random value in `[base, max]` is chosen for each cycle to
+    /// spread out reporting traffic and prevent thundering herd.
+    fn next_report_interval(&self, max_secs: Option<u64>) -> Duration {
+        Duration::from_secs(jittered_interval_seconds(self.report_interval.as_secs(), max_secs))
     }
 
     /// Best-effort fetch of the remote platform config at startup.
@@ -161,12 +191,14 @@ impl Reporter {
         let Some(report) = build_agent_report(payload) else {
             return;
         };
-        let batch = AgentReportBatch {
-            batch: vec![report],
-        };
+        let batch = AgentReportBatch { batch: vec![report] };
         if let Err(e) = self.client.report_agents(&batch).await {
             log::warn!("[Reporter] Agent status report failed: {e}");
         }
+
+        // Also push an updated runtime snapshot so the platform sees the
+        // runtime-level impact immediately.
+        self.flush_runtime_status().await;
     }
 
     /// Pushes a session log entry into the monitoring buffer for batch flush.
@@ -182,11 +214,13 @@ impl Reporter {
 
     // ───── Periodic flush (batch path) ─────
 
-    /// Flushes all accumulated data: sessions, agents, and monitoring logs.
+    /// Flushes all accumulated data: sessions, agents, monitoring logs, and
+    /// runtime status.
     async fn flush(&mut self) {
         self.flush_sessions().await;
         self.flush_agents().await;
         self.flush_monitoring().await;
+        self.flush_runtime_status().await;
     }
 
     /// Queries the DB for recent conversations + messages, then POSTs them.
@@ -220,10 +254,7 @@ impl Reporter {
     /// Builds a [`SessionReport`] from a conversation JSON row, including
     /// its messages.
     fn build_session_report(&self, conv: &Value) -> Result<SessionReport, String> {
-        let conv_id = conv["id"]
-            .as_str()
-            .ok_or("conversation missing id")?
-            .to_string();
+        let conv_id = conv["id"].as_str().ok_or("conversation missing id")?.to_string();
 
         let messages = self
             .repository
@@ -295,6 +326,27 @@ impl Reporter {
         }
     }
 
+    /// Queries the current agent instances, aggregates runtime metrics, and
+    /// POSTs the runtime status to the DH Backend.
+    async fn flush_runtime_status(&self) {
+        if !self.platform_config.is_runtime_reporting_active() {
+            return;
+        }
+
+        let Some(runtime_id) = self.platform_config.runtime_id.as_ref() else {
+            return;
+        };
+
+        let instances = self.agent_service.list_instances().await;
+        let Some(report) = self.runtime_collector.build_report(&self.platform_config, &instances) else {
+            return;
+        };
+
+        if let Err(e) = self.client.report_runtime_status(runtime_id, &report).await {
+            log::warn!("[Reporter] Runtime status report failed: {e}");
+        }
+    }
+
     // ───── Helpers ─────
 
     /// Returns the content as-is, or a redaction placeholder when
@@ -325,10 +377,7 @@ fn build_agent_report(payload: &Value) -> Option<AgentReport> {
         .or_else(|| payload.get("instance_id"))
         .and_then(|v| v.as_str())?;
     // If status isn't inline, we still report with a null status.
-    let status = payload
-        .get("status")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let status = payload.get("status").cloned().unwrap_or(Value::Null);
 
     Some(AgentReport {
         id: id.to_string(),
@@ -336,10 +385,7 @@ fn build_agent_report(payload: &Value) -> Option<AgentReport> {
         name: str_field(payload, &["name"]),
         work_directory: str_field(payload, &["workDirectory", "work_directory"]),
         status,
-        endpoint: payload
-            .get("endpoint")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        endpoint: payload.get("endpoint").and_then(|v| v.as_str()).map(String::from),
     })
 }
 
@@ -372,4 +418,42 @@ fn str_field(value: &Value, keys: &[&str]) -> String {
         }
     }
     String::new()
+}
+
+/// Returns a jittered interval in seconds.
+///
+/// When `max_secs` is `Some(max)` and `max > base`, returns a random value in
+/// `[base, max]`. Otherwise returns `base`.
+fn jittered_interval_seconds(base: u64, max_secs: Option<u64>) -> u64 {
+    match max_secs {
+        Some(max) if max > base => {
+            let mut rng = rand::thread_rng();
+            rng.gen_range(base..=max)
+        }
+        _ => base,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jittered_interval_returns_base_when_no_max() {
+        assert_eq!(jittered_interval_seconds(30, None), 30);
+    }
+
+    #[test]
+    fn jittered_interval_returns_base_when_max_not_greater() {
+        assert_eq!(jittered_interval_seconds(30, Some(30)), 30);
+        assert_eq!(jittered_interval_seconds(30, Some(10)), 30);
+    }
+
+    #[test]
+    fn jittered_interval_stays_within_bounds() {
+        for _ in 0..100 {
+            let value = jittered_interval_seconds(30, Some(60));
+            assert!(value >= 30 && value <= 60, "value out of bounds: {value}");
+        }
+    }
 }
