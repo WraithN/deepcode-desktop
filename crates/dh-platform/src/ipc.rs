@@ -1,5 +1,7 @@
-use std::path::PathBuf;
 use thiserror::Error;
+
+#[cfg(unix)]
+use std::path::PathBuf;
 
 #[derive(Error, Debug)]
 pub enum IpcError {

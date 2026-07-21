@@ -21,6 +21,7 @@ use crate::platform::payload::{
     AgentReport, AgentReportBatch, MessageReport, MonitoringReport, MonitoringReportBatch, SessionReport,
     SessionReportBatch,
 };
+use crate::platform::ready_state::WorkspacePathReadiness;
 use crate::platform::runtime_status::RuntimeStatusCollector;
 use crate::service::agent_service::AgentService;
 use dh_config::PlatformConfig;
@@ -70,9 +71,14 @@ pub struct Reporter {
     sanitize: bool,
     platform_config: PlatformConfig,
     runtime_collector: RuntimeStatusCollector,
+    /// Shared with the gateway; updated every time a runtime status report
+    /// completes. Read by request handlers to decide whether to gate
+    /// user-facing operations.
+    readiness: Arc<WorkspacePathReadiness>,
 }
 
 impl Reporter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: PlatformClient,
         repository: AppRepository,
@@ -81,6 +87,7 @@ impl Reporter {
         report_interval: Duration,
         sanitize: bool,
         platform_config: PlatformConfig,
+        readiness: Arc<WorkspacePathReadiness>,
     ) -> Self {
         Self {
             client,
@@ -92,6 +99,7 @@ impl Reporter {
             sanitize,
             platform_config,
             runtime_collector: RuntimeStatusCollector::new(),
+            readiness,
         }
     }
 
@@ -328,6 +336,13 @@ impl Reporter {
 
     /// Queries the current agent instances, aggregates runtime metrics, and
     /// POSTs the runtime status to the DH Backend.
+    ///
+    /// On a successful response the server-composed `workspacePath` is
+    /// persisted to the local SQLite `configs` table so that:
+    /// 1. Agent instances created on the desktop use the platform-assigned
+    ///    path as their `workDirectory` (via `db.get_workspace_path`).
+    /// 2. The `resolve_workspace_path` sandbox accepts that path.
+    /// 3. The readiness gate in the gateway can open.
     async fn flush_runtime_status(&self) {
         if !self.platform_config.is_runtime_reporting_active() {
             return;
@@ -343,9 +358,44 @@ impl Reporter {
             return;
         };
 
-        if let Err(e) = self.client.report_runtime_status(runtime_id, &report).await {
-            log::warn!("[Reporter] Runtime status report failed: {e}");
+        match self.client.report_runtime_status(runtime_id, &report).await {
+            Ok(response) => {
+                self.handle_runtime_status_response(&response);
+            }
+            Err(e) => {
+                log::warn!("[Reporter] Runtime status report failed: {e}");
+                self.readiness.mark_failed();
+            }
         }
+    }
+
+    /// Persists the platform-assigned `workspacePath` and updates the
+    /// readiness gate.
+    ///
+    /// The path is only written when the platform returns a non-empty
+    /// value, so a single bad response cannot blank out the desktop's
+    /// sandbox. Failures of the local write do not fail the report — the
+    /// readiness gate still updates from the in-memory response so the
+    /// next successful flush retries the DB write.
+    fn handle_runtime_status_response(&self, response: &crate::platform::payload::AgentRuntimeResponse) {
+        let path = response.workspace_path.trim();
+        if path.is_empty() {
+            log::debug!(
+                "[Reporter] Runtime status response carried no workspacePath; \
+                 keeping current local value"
+            );
+            // Do not mark failed: the report itself succeeded; only the
+            // path is missing. Stay in current readiness state.
+            return;
+        }
+
+        if let Err(e) = self.repository.set_workspace_path(path) {
+            log::warn!(
+                "[Reporter] Failed to persist platform-assigned workspacePath '{path}': {e}"
+            );
+        }
+
+        self.readiness.mark_reported(path);
     }
 
     // ───── Helpers ─────

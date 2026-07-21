@@ -4,6 +4,7 @@ use super::handlers::agent::handle_agent_request;
 use super::handlers::db::handle_db_request;
 use super::handlers::session::handle_session_request;
 use super::session_manager::SessionManager;
+use crate::platform::WorkspacePathReadiness;
 use crate::service::agent_service::AgentService;
 use crate::service::db_service::DbService;
 
@@ -18,6 +19,10 @@ pub struct GatewayRouter {
     db_service: Arc<DbService>,
 
     session_manager: Arc<SessionManager>,
+    /// Shared with the platform reporter. Read by agent handlers to gate
+    /// user-facing operations until the platform has confirmed a workspace
+    /// path for this runtime.
+    workspace_readiness: Arc<WorkspacePathReadiness>,
 }
 
 impl GatewayRouter {
@@ -25,12 +30,14 @@ impl GatewayRouter {
         agent_service: Arc<AgentService>,
         db_service: Arc<DbService>,
         session_manager: Arc<SessionManager>,
+        workspace_readiness: Arc<WorkspacePathReadiness>,
     ) -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             agent_service,
             db_service,
             session_manager,
+            workspace_readiness,
         }
     }
 
@@ -51,6 +58,7 @@ impl GatewayRouter {
                 self.session_manager.clone(),
                 req,
                 Some(self.db_service.clone()),
+                self.workspace_readiness.clone(),
             ).await
         } else if req.method.starts_with("session.") {
             handle_session_request(req, self.db_service.clone()).await

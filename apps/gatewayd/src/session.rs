@@ -210,6 +210,11 @@ pub struct SessionManager {
     inner: Arc<RwLock<HashMap<String, Session>>>,
     workspaces: Arc<RwLock<HashMap<String, WorkspaceEntry>>>,
     workspace_validator: WorkspaceValidator,
+    /// Optional readiness gate. When present, `create_agent` is held
+    /// until the platform has confirmed a `workspacePath` for this
+    /// runtime, and an empty caller-provided `work_directory` is
+    /// resolved to the platform-assigned path.
+    readiness: Option<Arc<crate::readiness::WorkspacePathReadiness>>,
 }
 
 impl Default for SessionManager {
@@ -219,6 +224,7 @@ impl Default for SessionManager {
 }
 
 impl SessionManager {
+    /// Creates a session manager in local mode (no readiness gate).
     pub fn new() -> Self {
         let workspaces = load_workspaces();
         let mut inner = HashMap::new();
@@ -237,7 +243,26 @@ impl SessionManager {
             inner: Arc::new(RwLock::new(inner)),
             workspaces: Arc::new(RwLock::new(workspaces)),
             workspace_validator: WorkspaceValidator::from_env(),
+            readiness: None,
         }
+    }
+
+    /// Creates a session manager wired to a platform readiness gate.
+    ///
+    /// In platform mode `create_agent` is held until the first successful
+    /// status sync, and an empty caller-provided `work_directory` is
+    /// resolved to the platform-assigned path before the agent starts.
+    pub fn with_readiness(readiness: Arc<crate::readiness::WorkspacePathReadiness>) -> Self {
+        let mut s = Self::new();
+        s.readiness = Some(readiness);
+        s
+    }
+
+    /// Returns the platform-assigned workspace path, if the readiness
+    /// gate is open. Returns `None` in local mode or before the first
+    /// successful sync.
+    pub fn platform_workspace_path(&self) -> Option<String> {
+        self.readiness.as_ref()?.current_path()
     }
 
     /// Create a new session and return its id.
@@ -287,6 +312,18 @@ impl SessionManager {
     /// The workspace mapping is persisted before creating the instance so that a
     /// failure can be rolled back; the instance is stopped and removed if the
     /// session disappears before the instance can be attached.
+    ///
+    /// ## Readiness gate (platform mode)
+    ///
+    /// When a `WorkspacePathReadiness` is wired in (i.e. platform reporting is
+    /// configured):
+    /// - `create_agent` is **held** until the gate opens. Until then the
+    ///   caller gets `PluginError::CreateInstanceFailed` with a clear
+    ///   "waiting for platform sync" message.
+    /// - An empty `work_directory` (`""`) is resolved to the
+    ///   platform-assigned path. This is the recommended way to call us from
+    ///   prewarm / auto-attach flows so the runtime always picks up the
+    ///   canonical path.
     pub async fn create_agent(
         &self,
         session_id: &str,
@@ -296,10 +333,44 @@ impl SessionManager {
         force: bool,
         agent_service: &AgentService,
     ) -> Result<agent_core::models::InstanceInfo, PluginError> {
+        // Readiness gate: hold the call until platform has confirmed a
+        // workspace path. The caller gets a clear "wait" error so the UI
+        // can surface a friendly message instead of starting an agent
+        // against a stale or missing sandbox.
+        if let Some(readiness) = &self.readiness {
+            if !readiness.is_ready() {
+                return Err(PluginError::CreateInstanceFailed(
+                    "workspace_path not ready: waiting for platform to confirm a workspace path. \
+                     请稍候再试，或检查 platform 服务可达性。"
+                        .to_string(),
+                ));
+            }
+        }
+
+        // Resolve an empty caller-provided work_directory:
+        // 1. If a readiness gate is wired and is open, use the
+        //    platform-assigned path.
+        // 2. Otherwise fall back to the process CWD.
+        // This keeps prewarm and auto-attach flows working without hard-
+        // coding a path, and ensures new agent instances always run inside
+        // the platform-assigned sandbox when one is available.
+        let resolved_work_dir: String = if work_directory.trim().is_empty() {
+            if let Some(path) = self.platform_workspace_path() {
+                path
+            } else {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            }
+        } else {
+            work_directory.to_string()
+        };
+
         // Validate workspace path before any persistence or process creation.
-        if let Err(e) = self.workspace_validator.validate(work_directory) {
+        if let Err(e) = self.workspace_validator.validate(&resolved_work_dir) {
             return Err(PluginError::CreateInstanceFailed(e.to_string()));
         }
+        let work_directory = resolved_work_dir.as_str();
 
         // Check whether the session already has an instance that we can reuse.
         let existing_id = {

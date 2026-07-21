@@ -70,8 +70,32 @@ pub(crate) async fn create_state(
 
     let gateway_router = Arc::new(GatewayRouter::new());
 
-    // AG-UI session manager.
-    let session_manager = crate::session::SessionManager::new();
+    // Determine whether platform reporting will be enabled *before*
+    // building the session manager, so we can wire the readiness gate
+    // into the manager up front (no later swap, no risk of stale
+    // references in the event_sink / agent_service).
+    let platform_active =
+        crate::runtime_reporter::is_platform_reporting_configured();
+    let shared_readiness: Arc<crate::readiness::WorkspacePathReadiness> = if platform_active {
+        info!(
+            "[server] Platform reporting enabled; \
+             workspace_path readiness gate starts CLOSED; \
+             create_agent will be held until the first successful sync"
+        );
+        Arc::new(crate::readiness::WorkspacePathReadiness::new(true))
+    } else {
+        info!(
+            "[server] Platform reporting not configured; \
+             workspace_path readiness gate is OPEN (local mode)"
+        );
+        Arc::new(crate::readiness::WorkspacePathReadiness::local_mode())
+    };
+
+    // AG-UI session manager — wired to the shared readiness gate so it
+    // holds `create_agent` calls when the platform has not yet confirmed
+    // a workspace path.
+    let session_manager =
+        crate::session::SessionManager::with_readiness(shared_readiness.clone());
 
     // Initialize agent runtime with AG-UI event sink.
     let event_sink = Arc::new(crate::agui_sink::AguiEventSink::new(session_manager.clone()));
@@ -87,8 +111,14 @@ pub(crate) async fn create_state(
     };
 
     // Start the DeepHarness platform runtime status reporter if configured.
-    let _runtime_reporter_handle =
-        crate::runtime_reporter::start_runtime_reporter(agent_service.clone(), Some(db_path.clone()));
+    // The reporter is given the *same* readiness tracker so the session
+    // manager and the reporter share one source of truth for "have we
+    // received a workspace path yet?".
+    let _runtime_reporter_handle = crate::runtime_reporter::start_runtime_reporter_with_readiness(
+        agent_service.clone(),
+        Some(db_path.clone()),
+        shared_readiness,
+    );
 
     // Auto-attach agents requested via --attach or --agent-type into a default session.
     let attach_types: Vec<String> = args

@@ -8,7 +8,8 @@
 //! - `POST /api/report/monitoring`
 
 use crate::platform::payload::{
-    AgentReportBatch, MonitoringReportBatch, PlatformRemoteConfig, RuntimeStatusReport, SessionReportBatch,
+    AgentReportBatch, AgentRuntimeResponse, MonitoringReportBatch, PlatformRemoteConfig, RuntimeStatusReport,
+    SessionReportBatch,
 };
 use dh_config::PlatformConfig;
 use reqwest::Client;
@@ -116,14 +117,43 @@ impl PlatformClient {
         Ok(())
     }
 
-    /// Reports the runtime status for a given runtime id.
+    /// Reports the runtime status for a given runtime id and returns the
+    /// platform's response.
     ///
     /// Endpoint: `POST /api/v1/agent-runtimes/{runtimeId}/status`
-    pub async fn report_runtime_status(&self, runtime_id: &str, report: &RuntimeStatusReport) -> Result<(), String> {
+    ///
+    /// The platform responds with the upserted [`AgentRuntimeResponse`],
+    /// including the server-side `workspacePath` composed from
+    /// `${workspace_root}/${workspace_id}/${user_id}`. Callers use that path
+    /// as the canonical working directory for agent instances and as the
+    /// readiness signal that gates user-facing operations.
+    ///
+    /// If the platform returns a non-2xx status the response body is included
+    /// in the error message for diagnostics. A successful HTTP response whose
+    /// body cannot be parsed as JSON is **not** an error — the response
+    /// object is returned with empty fields so the caller can decide whether
+    /// to treat it as "no workspace path assigned".
+    pub async fn report_runtime_status(
+        &self,
+        runtime_id: &str,
+        report: &RuntimeStatusReport,
+    ) -> Result<AgentRuntimeResponse, String> {
         let path = format!("{API_PATH_AGENT_RUNTIMES}/{runtime_id}/status");
         let resp = self.post(&path, report).await?;
-        ensure_success(resp, &path).await?;
-        Ok(())
+        let resp = ensure_success(resp, &path).await?;
+
+        match resp.json::<AgentRuntimeResponse>().await {
+            Ok(parsed) => Ok(parsed),
+            Err(e) => {
+                // Body present but not in the expected shape — log and let the
+                // caller proceed with an empty response so reporting does not
+                // get stuck on a single bad payload.
+                log::warn!(
+                    "[Platform] Failed to parse AgentRuntimeResponse from {path}: {e}"
+                );
+                Ok(AgentRuntimeResponse::default())
+            }
+        }
     }
 }
 

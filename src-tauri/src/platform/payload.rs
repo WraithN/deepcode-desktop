@@ -148,3 +148,33 @@ pub struct RuntimeAgentStatus {
     pub version: String,
     pub last_active: String,
 }
+
+// ───── Agent Runtime status response (from POST /api/v1/agent-runtimes/{runtimeId}/status) ─────
+
+/// Response returned by the DeepHarness Enterprise Platform after a successful
+/// Agent Runtime status report.
+///
+/// The platform composes `workspacePath` from `${workspace_root}/${workspace_id}/${user_id}`
+/// on the server side. The desktop app uses this value as the canonical
+/// working directory for agent instances and to gate operations until the
+/// first successful sync lands.
+///
+/// All fields are deserialized leniently (`#[serde(default)]`) so a partial
+/// response does not break status reporting. A missing or empty `workspacePath`
+/// is treated as "platform did not assign a workspace" and the readiness gate
+/// stays closed.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct AgentRuntimeResponse {
+    #[serde(default)]
+    pub runtime_id: String,
+    #[serde(default)]
+    pub workspace_id: String,
+    /// camelCase to match `object.AgentRuntime.WorkspacePath` in the
+    /// enterprise platform's `ReportStatus` JSON response.
+    #[serde(default, alias = "workspace_path")]
+    pub workspace_path: String,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub status: String,
+}

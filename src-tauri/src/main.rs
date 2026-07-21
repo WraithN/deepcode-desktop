@@ -77,6 +77,19 @@ fn main() {
             // （两阶段初始化：Phase 1 在 AgentService 创建前包装 sink，
             //   Phase 2 在 AgentService 创建后启动 reporter 后台任务）
             let platform_config = platform::load_platform_config();
+            // readiness 跟踪 platform 是否已配置 + 是否已收到 workspacePath。
+            // 在 platform 未配置时，readiness 永远 ready（本地模式）。
+            // 在 platform 已配置时，readiness 需要等首次 status 上报成功才能 ready。
+            let workspace_readiness = match &platform_config {
+                Some(cfg) => {
+                    log::info!("[main.rs] Platform reporting enabled; workspace_path readiness gate starts CLOSED");
+                    std::sync::Arc::new(platform::WorkspacePathReadiness::new(cfg.is_active()))
+                }
+                None => {
+                    log::info!("[main.rs] Platform reporting disabled; workspace_path readiness gate is OPEN (local mode)");
+                    std::sync::Arc::new(platform::WorkspacePathReadiness::local_mode())
+                }
+            };
             let (event_sink, reporter_rx) = match &platform_config {
                 Some(cfg) => match platform::create_reporting_sink(cfg, ws_event_sink.clone()) {
                     Some((sink, rx)) => {
@@ -124,6 +137,7 @@ fn main() {
                     rx,
                     Arc::clone(&shared_conn),
                     agent_service.clone(),
+                    workspace_readiness.clone(),
                 );
             }
 
@@ -136,6 +150,7 @@ fn main() {
                 agent_service,
                 db_service,
                 session_manager,
+                workspace_readiness,
             ));
             let ws_server = dh_desktop::gateway::server::WebSocketServer::new(router.clone());
             let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);

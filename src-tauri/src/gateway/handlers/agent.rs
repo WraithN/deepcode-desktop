@@ -1,6 +1,11 @@
-use crate::gateway::codec::{JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR, INVALID_PARAMS, INSTANCE_NOT_FOUND};
+use crate::commands::workspace::resolve_workspace_path;
+use crate::gateway::codec::{
+    JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR, INVALID_PARAMS, INSTANCE_NOT_FOUND, METHOD_NOT_FOUND,
+    WORKSPACE_PATH_INVALID, WORKSPACE_PATH_NOT_READY,
+};
 use crate::gateway::session_manager::SessionManager;
 use crate::models::agent::{CreateInstanceRequest, UpdateModelConfigRequest};
+use crate::platform::WorkspacePathReadiness;
 use crate::service::agent_service::AgentService;
 use crate::service::db_service::DbService;
 use serde_json::json;
@@ -11,7 +16,28 @@ pub async fn handle_agent_request(
     _session_manager: Arc<SessionManager>,
     req: JsonRpcRequest,
     db_service: Option<Arc<DbService>>,
+    readiness: Arc<WorkspacePathReadiness>,
 ) -> JsonRpcResponse {
+    // Operations that actually drive an agent (create / run / send / respond)
+    // must be held until the platform has confirmed a workspace path. We
+    // check this **before** any other work so a misconfigured platform
+    // surfaces a clear "waiting for sync" message instead of a half-started
+    // instance.
+    let readiness_gated = matches!(
+        req.method.as_str(),
+        "agent.createInstance" | "agent.sendMessage" | "agent.run" | "agent.respond"
+    );
+    if readiness_gated && !readiness.is_ready() {
+        return JsonRpcResponse::error(
+            req.id,
+            WORKSPACE_PATH_NOT_READY,
+            "工作目录尚未从平台同步，请稍候再试（platform 正在初始化 workspace_path）",
+            Some(json!({
+                "hint": "等待 platform 同步工作目录后重试。如果长时间未就绪，请检查 platform 服务的可达性。",
+            })),
+        );
+    }
+
     match req.method.as_str() {
         "agent.createInstance" => handle_create_instance(service, req, db_service).await,
         "agent.sendMessage" => handle_send_message(service, req).await,
@@ -26,7 +52,7 @@ pub async fn handle_agent_request(
         "agent.getWorkspacePath" => handle_get_workspace_path(req, db_service).await,
         _ => JsonRpcResponse::error(
             req.id,
-            crate::gateway::codec::METHOD_NOT_FOUND,
+            METHOD_NOT_FOUND,
             &format!("Method '{}' not found", req.method),
             None,
         ),
@@ -55,10 +81,54 @@ async fn handle_create_instance(service: Arc<AgentService>, req: JsonRpcRequest,
         return JsonRpcResponse::error(req.id, INVALID_PARAMS, "No workspace_path found. Please provide workDirectory or set it first.", None);
     };
 
+    // Validate the resolved directory before handing it to the plugin:
+    // 1. The path must exist on disk (canonicalize succeeds) — this catches
+    //    typos, deleted directories, and bad symlinks.
+    // 2. The path must be a directory, not a file.
+    // `resolve_workspace_path` also enforces the in-workspace boundary, but
+    // for the agent working directory we only require a real directory —
+    // the sandbox boundary is enforced separately by the workspace file /
+    // git commands and by the plugin's own working-directory canonicalize.
+    match std::fs::metadata(&work_dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return JsonRpcResponse::error(
+                req.id,
+                WORKSPACE_PATH_INVALID,
+                &format!("工作目录不是有效的目录: {work_dir}"),
+                Some(json!({ "workDirectory": work_dir })),
+            );
+        }
+        Err(e) => {
+            return JsonRpcResponse::error(
+                req.id,
+                WORKSPACE_PATH_INVALID,
+                &format!("工作目录不可访问: {work_dir} ({e})"),
+                Some(json!({ "workDirectory": work_dir })),
+            );
+        }
+    }
+
+    // Use resolve_workspace_path for a final canonicalize pass so the agent
+    // process receives a clean absolute path (e.g. resolves `..` segments).
+    // The path is already validated as a directory above, so this only
+    // surfaces canonicalize errors.
+    let canonical_work_dir = match resolve_workspace_path(&work_dir, None) {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(e) => {
+            return JsonRpcResponse::error(
+                req.id,
+                WORKSPACE_PATH_INVALID,
+                &format!("工作目录解析失败: {e}"),
+                Some(json!({ "workDirectory": work_dir })),
+            );
+        }
+    };
+
     let create_req = CreateInstanceRequest {
         agent_key: agent_key.unwrap().to_string(),
         name: name.unwrap().to_string(),
-        work_directory: work_dir,
+        work_directory: canonical_work_dir,
         force,
     };
 

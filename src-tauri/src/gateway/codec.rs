@@ -84,3 +84,15 @@ pub const INSTANCE_LIMIT_EXCEEDED: i64 = -32003;
 pub const PROCESS_SPAWN_FAILED: i64 = -32004;
 pub const MCP_INIT_FAILED: i64 = -32005;
 pub const WEBSOCKET_NOT_CONNECTED: i64 = -32006;
+
+/// The platform is configured but has not yet confirmed a workspace path for
+/// this runtime. The caller should retry after the next successful
+/// status-report cycle. UI should surface a "waiting for platform sync"
+/// message rather than treating this as a hard error.
+pub const WORKSPACE_PATH_NOT_READY: i64 = -32010;
+
+/// An explicit work directory was provided (or resolved from local state)
+/// that is not a real directory on disk, or is outside the configured
+/// sandbox root. The agent instance cannot be started until the caller
+/// fixes the path.
+pub const WORKSPACE_PATH_INVALID: i64 = -32011;

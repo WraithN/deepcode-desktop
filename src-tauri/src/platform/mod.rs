@@ -37,11 +37,13 @@
 
 pub mod client;
 pub mod payload;
+pub mod ready_state;
 pub mod reporter;
 pub mod runtime_status;
 pub mod sink;
 
 pub use client::PlatformClient;
+pub use ready_state::WorkspacePathReadiness;
 pub use reporter::{ReportEvent, Reporter};
 pub use runtime_status::RuntimeStatusCollector;
 pub use sink::ReportingEventSink;
@@ -94,12 +96,17 @@ pub fn create_reporting_sink(
 ///
 /// The reporter fetches the remote platform config on startup (best-effort),
 /// then enters the event-driven + periodic-batch loop.
+///
+/// The shared `readiness` tracker is updated every time a runtime status
+/// report completes (success or failure) and is read by the gateway to gate
+/// user-facing operations.
 pub fn start_reporter(
     config: &PlatformConfig,
     app_data_dir: &Path,
     rx: mpsc::UnboundedReceiver<ReportEvent>,
     db_conn: Arc<Mutex<rusqlite::Connection>>,
     agent_service: Arc<crate::service::agent_service::AgentService>,
+    readiness: Arc<WorkspacePathReadiness>,
 ) {
     let sanitize = config.sanitize;
     let report_interval = std::time::Duration::from_secs(config.report_interval());
@@ -119,7 +126,16 @@ pub fn start_reporter(
     config.runtime_id = Some(runtime_id);
 
     let repository = dh_db::desktop::AppRepository::new(db_conn);
-    let reporter = Reporter::new(client, repository, agent_service, rx, report_interval, sanitize, config);
+    let reporter = Reporter::new(
+        client,
+        repository,
+        agent_service,
+        rx,
+        report_interval,
+        sanitize,
+        config,
+        readiness,
+    );
 
     tauri::async_runtime::spawn(async move {
         reporter.run().await;

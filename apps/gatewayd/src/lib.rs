@@ -17,6 +17,7 @@ pub mod audit;
 pub mod gateway;
 pub mod handlers;
 pub mod mcp_aggregator;
+pub mod readiness;
 pub mod reporter;
 pub mod runtime_reporter;
 pub mod rtk;

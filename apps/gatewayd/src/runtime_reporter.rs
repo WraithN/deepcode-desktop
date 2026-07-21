@@ -13,14 +13,23 @@
 //!
 //! This allows a k8s-deployed `dh-gatewayd` to be monitored from the
 //! DeepHarness Enterprise Platform without running the desktop application.
+//!
+//! ## Workspace path handling
+//!
+//! On a successful status report the platform returns a server-composed
+//! `workspacePath` (currently `${workspace_root}/${workspace_id}/${user_id}`).
+//! This module parses the response and caches the path in a shared
+//! [`Arc<Mutex<Option<String>>>`] returned to the caller. Downstream code
+//! (session manager, prewarm) can use the cached path as the default
+//! `workDirectory` for new agent instances.
 
 use agent_core::models::InstanceInfo;
 use agent_core::service::AgentService;
 use chrono::{DateTime, Utc};
 use rusqlite::OpenFlags;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, System};
 use tracing::{info, warn};
@@ -59,6 +68,27 @@ pub(crate) struct RuntimeAgentStatus {
     calls_today: u64,
     version: String,
     last_active: String,
+}
+
+/// Response shape returned by `POST /api/v1/agent-runtimes/{runtime_id}/status`.
+///
+/// Mirrors `object.AgentRuntime` in the enterprise platform's
+/// `ReportStatus` JSON response (camelCase fields). All fields are
+/// `#[serde(default)]` so a partial response does not break reporting —
+/// `workspacePath` being empty simply means "platform did not assign a
+/// workspace" and is treated as such by the caller.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(crate) struct AgentRuntimeResponse {
+    #[serde(default)]
+    pub runtime_id: String,
+    #[serde(default)]
+    pub workspace_id: String,
+    #[serde(default, alias = "workspace_path")]
+    pub workspace_path: String,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub status: String,
 }
 
 /// Effective reporter configuration after merging file + env overrides.
@@ -151,13 +181,39 @@ pub(crate) fn load_config() -> Option<Config> {
     })
 }
 
-/// Starts the background runtime status reporter.
+/// Shared handle returned by [`start_runtime_reporter`] alongside the
+/// background task. Holds the most recently platform-confirmed workspace
+/// path and a readiness gate that downstream code (session manager,
+/// prewarm) consults before starting new agent instances.
+#[derive(Clone)]
+pub struct RuntimeReporterHandle {
+    /// Cached `workspacePath` returned by the platform on the last
+    /// successful status report. `None` until the first successful sync.
+    pub workspace_path: Arc<Mutex<Option<String>>>,
+    /// Readiness gate. Open in local mode (platform not configured);
+    /// closed until the first successful sync in platform mode.
+    pub readiness: Arc<crate::readiness::WorkspacePathReadiness>,
+}
+
+/// Returns true if platform reporting would be enabled (config + env vars
+/// resolve to a usable `[platform]` block). Used by the server bootstrap
+/// to decide whether to construct a closed-gate [`WorkspacePathReadiness`]
+/// (platform mode) or an open one (local mode) before wiring the
+/// session manager and runtime reporter.
+pub fn is_platform_reporting_configured() -> bool {
+    load_config().is_some()
+}
+
+/// Starts the background runtime status reporter using a caller-supplied
+/// readiness tracker. The session manager and the reporter share the
+/// same tracker so they agree on whether `create_agent` may proceed.
 ///
 /// Returns `None` when platform reporting is not configured/enabled.
-pub fn start_runtime_reporter(
+pub fn start_runtime_reporter_with_readiness(
     agent_service: Option<Arc<AgentService>>,
     db_path: Option<PathBuf>,
-) -> Option<tokio::task::JoinHandle<()>> {
+    readiness: Arc<crate::readiness::WorkspacePathReadiness>,
+) -> Option<RuntimeReporterHandle> {
     let cfg = match load_config() {
         Some(c) => c,
         None => {
@@ -171,7 +227,11 @@ pub fn start_runtime_reporter(
         cfg.runtime_id, cfg.url
     );
 
-    let handle = tokio::spawn(async move {
+    let workspace_path = Arc::new(Mutex::new(None));
+
+    let cached_path = workspace_path.clone();
+    let readiness_for_task = readiness.clone();
+    let _ = tokio::spawn(async move {
         let start_time = Instant::now();
         let client = reqwest::Client::new();
 
@@ -181,32 +241,93 @@ pub fn start_runtime_reporter(
             let report = build_report(&cfg, agent_service.as_ref(), db_path.as_ref(), start_time).await;
             let url = format!("{}/api/v1/agent-runtimes/{}/status", cfg.url, cfg.runtime_id);
 
-            match client
+            let send_result = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", cfg.api_key))
                 .header("Content-Type", "application/json")
                 .json(&report)
                 .timeout(Duration::from_secs(30))
                 .send()
-                .await
-            {
+                .await;
+
+            match send_result {
                 Ok(resp) => {
-                    if resp.status().is_success() {
-                        info!("[RuntimeReporter] Status reported successfully");
-                    } else {
-                        let status = resp.status();
+                    let status = resp.status();
+                    if !status.is_success() {
                         let body = resp.text().await.unwrap_or_default();
                         warn!("[RuntimeReporter] Report failed: {} {}", status, body);
+                        // Treat a non-2xx as a failure: the platform has
+                        // not re-confirmed the path this cycle, so close
+                        // the gate. The cached value is cleared (we no
+                        // longer know if the previous path is still in
+                        // effect after a sustained platform-side error).
+                        readiness_for_task.mark_failed();
+                        continue;
+                    }
+
+                    // Parse the response body for the server-composed
+                    // `workspacePath`. A parse failure is non-fatal — the
+                    // report itself succeeded; we just lose this cycle's
+                    // path confirmation, so we still treat it as a
+                    // failure (no fresh confirmation = no readiness).
+                    match resp.json::<AgentRuntimeResponse>().await {
+                        Ok(parsed) => {
+                            if let Ok(mut g) = cached_path.lock() {
+                                let prev = g.clone();
+                                if !parsed.workspace_path.is_empty() {
+                                    if prev.as_deref() != Some(parsed.workspace_path.as_str()) {
+                                        info!(
+                                            "[RuntimeReporter] workspacePath updated: {} -> {}",
+                                            prev.as_deref().unwrap_or("<none>"),
+                                            parsed.workspace_path
+                                        );
+                                    }
+                                    *g = Some(parsed.workspace_path.clone());
+                                } else {
+                                    if prev.is_some() {
+                                        info!(
+                                            "[RuntimeReporter] workspacePath cleared by platform"
+                                        );
+                                    }
+                                    *g = None;
+                                }
+                            }
+                            readiness_for_task.mark_reported(&parsed.workspace_path);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[RuntimeReporter] Status report OK but failed to parse response: {e}"
+                            );
+                            readiness_for_task.mark_failed();
+                        }
                     }
                 }
                 Err(e) => {
                     warn!("[RuntimeReporter] Request failed: {}", e);
+                    readiness_for_task.mark_failed();
                 }
             }
         }
     });
 
-    Some(handle)
+    Some(RuntimeReporterHandle {
+        workspace_path,
+        readiness,
+    })
+}
+
+/// Convenience wrapper for callers that don't already hold a readiness
+/// tracker. Constructs a fresh one in platform mode and starts the
+/// reporter with it.
+pub fn start_runtime_reporter(
+    agent_service: Option<Arc<AgentService>>,
+    db_path: Option<PathBuf>,
+) -> Option<RuntimeReporterHandle> {
+    if load_config().is_none() {
+        return None;
+    }
+    let readiness = Arc::new(crate::readiness::WorkspacePathReadiness::new(true));
+    start_runtime_reporter_with_readiness(agent_service, db_path, readiness)
 }
 
 /// Builds the runtime status report from config, system metrics and agent instances.
