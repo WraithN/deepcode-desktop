@@ -13,7 +13,7 @@ const ARG_SERVE: &str = "serve";
 const ARG_PORT: &str = "--port";
 const ARG_PURE: &str = "--pure";
 
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const HEALTH_PATH: &str = "/health";
 const SESSION_PATH: &str = "/session";
 const MESSAGE_PATH_SUFFIX: &str = "/message";

@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use crate::agui::types::{BaseEvent, Event, Message, RunAgentInput};
-use crate::workspace::WorkspaceValidator;
 use agent_core::error::InstanceError;
 use agent_core::error::PluginError;
 use agent_core::models::CreateInstanceRequest;
@@ -209,7 +208,6 @@ fn load_workspaces() -> HashMap<String, WorkspaceEntry> {
 pub struct SessionManager {
     inner: Arc<RwLock<HashMap<String, Session>>>,
     workspaces: Arc<RwLock<HashMap<String, WorkspaceEntry>>>,
-    workspace_validator: WorkspaceValidator,
     /// Optional readiness gate. When present, `create_agent` is held
     /// until the platform has confirmed a `workspacePath` for this
     /// runtime, and an empty caller-provided `work_directory` is
@@ -242,7 +240,6 @@ impl SessionManager {
         Self {
             inner: Arc::new(RwLock::new(inner)),
             workspaces: Arc::new(RwLock::new(workspaces)),
-            workspace_validator: WorkspaceValidator::from_env(),
             readiness: None,
         }
     }
@@ -366,10 +363,6 @@ impl SessionManager {
             work_directory.to_string()
         };
 
-        // Validate workspace path before any persistence or process creation.
-        if let Err(e) = self.workspace_validator.validate(&resolved_work_dir) {
-            return Err(PluginError::CreateInstanceFailed(e.to_string()));
-        }
         let work_directory = resolved_work_dir.as_str();
 
         // Check whether the session already has an instance that we can reuse.
@@ -430,6 +423,20 @@ impl SessionManager {
         {
             let guard = self.inner.write().await;
             if let Some(session) = guard.get(session_id) {
+                // 新实例创建后，移除 session 中原有的旧实例引用，避免 start_run
+                // 仍通过 instances.first() 取到已失效的旧实例，导致消息转发到死进程。
+                let old_ids = session.instances();
+                if !old_ids.is_empty() {
+                    session.clear_instances();
+                    for old_id in &old_ids {
+                        let _ = agent_service
+                            .stop_and_remove_instance_with_timeout(
+                                old_id,
+                                std::time::Duration::from_secs(INSTANCE_SHUTDOWN_TIMEOUT_SECS),
+                            )
+                            .await;
+                    }
+                }
                 session.add_instance(info.id.clone());
                 return Ok(info);
             }
@@ -639,6 +646,16 @@ impl SessionManager {
             run_id,
             send_start.elapsed()
         );
+
+        let _ = session.event_tx.send(Event::RunFinished {
+            base: BaseEvent {
+                timestamp: Some(now()),
+                raw_event: None,
+            },
+            thread_id: session_id.to_string(),
+            run_id: run_id.clone(),
+            result: None,
+        });
 
         tracing::info!(
             "[session_manager] run={} start_run completed after {:?}",

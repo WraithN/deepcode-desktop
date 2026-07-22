@@ -11,13 +11,15 @@ use std::sync::{Arc, Mutex};
 pub struct AguiEventSink {
     session_manager: SessionManager,
     mappers: Arc<Mutex<HashMap<String, AguiMapper>>>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl AguiEventSink {
-    pub fn new(session_manager: SessionManager) -> Self {
+    pub fn new(session_manager: SessionManager, runtime: tokio::runtime::Handle) -> Self {
         Self {
             session_manager,
             mappers: Arc::new(Mutex::new(HashMap::new())),
+            runtime,
         }
     }
 
@@ -58,7 +60,7 @@ impl EventSink for AguiEventSink {
 
         let session_manager = self.session_manager.clone();
         let event_type = event_type.to_string();
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             let log_conversation_id = conversation_id.clone();
             let session_id = if conversation_id.is_empty() {
                 match session_manager.session_for_instance(&instance_id).await {

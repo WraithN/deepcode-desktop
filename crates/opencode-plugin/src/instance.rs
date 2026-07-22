@@ -102,15 +102,33 @@ impl OpencodeInstance {
                     }
 
                     if ready {
-                        return Ok((port, child, client));
+                        match child.try_wait() {
+                            Ok(None) => return Ok((port, child, client)),
+                            Ok(Some(status)) => {
+                                log::warn!(
+                                    "opencode on port {} exited during startup (status: {}), \
+                                     port may be occupied by another process, retrying (attempt {})",
+                                    port, status, attempt + 1
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "failed to check child status on port {}: {}, retrying (attempt {})",
+                                    port, e, attempt + 1
+                                );
+                                let _ = child.start_kill();
+                                let _ = child.wait().await;
+                            }
+                        }
+                    } else {
+                        log::warn!(
+                            "opencode serve did not become healthy on port {} (attempt {}), retrying",
+                            port,
+                            attempt + 1
+                        );
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
                     }
-
-                    log::warn!(
-                        "opencode serve did not become healthy on port {} (attempt {}), retrying",
-                        port,
-                        attempt + 1
-                    );
-                    let _ = child.start_kill();
                 }
                 Err(e) => {
                     log::warn!(
@@ -166,14 +184,17 @@ impl OpencodeInstance {
         tokio::spawn(async move {
             while let Some(payload) = rx.recv().await {
                 let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(event) = crate::mapper::map_opencode_sse(&payload) {
+                let events = crate::mapper::map_opencode_sse(&payload);
+                if !events.is_empty() {
                     let session_id = crate::mapper::extract_session_id(&payload).unwrap_or_default();
                     let conversation_id = session_map
                         .conversation_for_session(&session_id)
                         .unwrap_or_default();
-                    log::info!("[relay-loop] ev={event_type} oc_sid={session_id} gw_sid={conversation_id}");
-                    let mapper = EventMapper::new(instance_id.clone(), conversation_id);
-                    mapper.map(event, &event_sink);
+                    log::info!("[relay-loop] ev={event_type} oc_sid={session_id} gw_sid={conversation_id} mapped={}", events.len());
+                    for event in events {
+                        let mapper = EventMapper::new(instance_id.clone(), conversation_id.clone());
+                        mapper.map(event, &event_sink);
+                    }
                 }
             }
             log::warn!("[relay-loop] exited instance={instance_id}");
@@ -232,6 +253,7 @@ impl OpencodeInstance {
     async fn reset_and_restart(&self) -> Result<(), InstanceError> {
         if let Some(mut child) = self.serve_process.lock().await.take() {
             let _ = child.start_kill();
+            let _ = child.wait().await;
         }
         if let Some(mut handle) = self.transport_handle.lock().await.take() {
             let _ = handle.close().await;
@@ -361,6 +383,7 @@ impl AgentInstance for OpencodeInstance {
         Box::pin(async move {
             if let Some(mut child) = self.serve_process.lock().await.take() {
                 let _ = child.start_kill();
+                let _ = child.wait().await;
             }
             if let Some(mut handle) = self.transport_handle.lock().await.take() {
                 let _ = handle.close().await;

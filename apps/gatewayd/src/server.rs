@@ -98,7 +98,10 @@ pub(crate) async fn create_state(
         crate::session::SessionManager::with_readiness(shared_readiness.clone());
 
     // Initialize agent runtime with AG-UI event sink.
-    let event_sink = Arc::new(crate::agui_sink::AguiEventSink::new(session_manager.clone()));
+    let event_sink = Arc::new(crate::agui_sink::AguiEventSink::new(
+        session_manager.clone(),
+        tokio::runtime::Handle::current(),
+    ));
     let agent_service = match crate::agents::init_agent_service_with_sink(event_sink) {
         Ok(service) => {
             info!("AgentService initialized");

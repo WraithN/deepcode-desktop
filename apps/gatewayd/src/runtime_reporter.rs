@@ -83,7 +83,7 @@ pub(crate) struct AgentRuntimeResponse {
     pub runtime_id: String,
     #[serde(default)]
     pub workspace_id: String,
-    #[serde(default, alias = "workspace_path")]
+    #[serde(default, alias = "workspacePath")]
     pub workspace_path: String,
     #[serde(default)]
     pub user_id: String,

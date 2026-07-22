@@ -69,21 +69,26 @@ pub async fn chat_handler(
         ));
     }
 
-    state
-        .session_manager
-        .start_run(&session_id, input, service)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({ "error": e.to_string() })),
-            )
-        })?;
+    let session_mgr = state.session_manager.clone();
+    let agent_svc = service.clone();
+    let run_id_bg = run_id.clone();
+    let session_id_bg = session_id.clone();
+    tokio::spawn(async move {
+        match session_mgr.start_run(&session_id_bg, input, agent_svc.as_ref()).await {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(
+                    "[gatewayd] run={} start_run error: {:?}",
+                    run_id_bg,
+                    e
+                );
+            }
+        }
+    });
 
     tracing::info!(
-        "[gatewayd] run={} start_run completed after {:?}, returning SSE stream",
+        "[gatewayd] run={} returning SSE stream (start_run spawned in background)",
         run_id,
-        start.elapsed()
     );
 
     let stream = AguiEventStream::new(rx, run_id.clone(), start);
