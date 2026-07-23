@@ -5,6 +5,7 @@ use serde_json::json;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Child;
 use tokio::sync::mpsc;
 
@@ -13,7 +14,17 @@ const ARG_SERVE: &str = "serve";
 const ARG_PORT: &str = "--port";
 const ARG_PURE: &str = "--pure";
 
-const DEFAULT_TIMEOUT_SECS: u64 = 600;
+/// 消息 POST 会阻塞至 agent run 结束，PRD/原型生成等正常 run 可超过 10 分钟，
+/// 超时过短会中途取消 opencode 的 run 并触发重启重试（重复消耗 LLM 调用）。
+///
+/// 注意：真正的卡死检测由 instance 层的 SSE 活跃度看门狗负责
+///（`WATCHDOG_STALL_THRESHOLD_SECS`，无事件即重建重试）；本超时仅作为最终硬上限
+/// 兜底，防止 HTTP 永久挂起。两者配合：正常长任务由看门狗放行（有事件不触发），
+/// 异常挂起由看门狗在阈值内捕获，本超时处理看门狗无法覆盖的极端场景。
+const DEFAULT_TIMEOUT_SECS: u64 = 1200;
+/// 健康检查的单次请求超时：挂起的探测必须快速失败，
+/// 否则启动重试循环（20 次 × 500ms）会被一次卡死的探测拖住。
+const HEALTH_CHECK_TIMEOUT_SECS: u64 = 2;
 const HEALTH_PATH: &str = "/health";
 const SESSION_PATH: &str = "/session";
 const MESSAGE_PATH_SUFFIX: &str = "/message";
@@ -74,7 +85,12 @@ impl OpenCodeClient {
     /// Performs a health check against `/health`.
     pub async fn health_check(&self) -> bool {
         let url = join_url(&self.base_url, HEALTH_PATH);
-        self.client.get(&url).send().await.is_ok()
+        self.client
+            .get(&url)
+            .timeout(Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS))
+            .send()
+            .await
+            .is_ok()
     }
 
     /// Creates a new OpenCode session and returns its id.
@@ -157,8 +173,61 @@ pub fn start_opencode_process(port: u16, work_directory: &str) -> Result<Child, 
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    cmd.spawn()
-        .map_err(|e| InstanceError::ProcessError(prefixed(ERR_START_OPCODE_SERVE_PREFIX, e)))
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| InstanceError::ProcessError(prefixed(ERR_START_OPCODE_SERVE_PREFIX, e)))?;
+
+    // 子进程 stdout/stderr 为 piped 但无人消费时，管道缓冲区（约 64KB）写满后
+    // 子进程会阻塞在 write() 上冻结（端口仍在监听，表现为假死）。
+    // 这里接管管道并持续读取，仅记录日志。
+    drain_child_pipes(&mut child, port);
+
+    Ok(child)
+}
+
+/// 子进程输出管道类型，用于区分日志级别。
+#[derive(Debug, Clone, Copy)]
+enum PipeKind {
+    Stdout,
+    Stderr,
+}
+
+/// 接管子进程的 stdout/stderr 并各启动一个后台任务持续排空。
+/// 注意：tokio::spawn 要求处于 runtime 上下文中，
+/// 当前所有调用方（start_opencode_with_retry）均在 async 环境内调用本函数。
+fn drain_child_pipes(child: &mut Child, port: u16) {
+    if let Some(stdout) = child.stdout.take() {
+        tokio::spawn(drain_pipe(stdout, PipeKind::Stdout, port));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(drain_pipe(stderr, PipeKind::Stderr, port));
+    }
+}
+
+/// 按行读取管道内容并记录日志，直到 EOF 或读取出错。
+async fn drain_pipe<R>(reader: R, kind: PipeKind, port: u16)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => log_pipe_line(kind, port, &line),
+            Ok(None) => break,
+            Err(e) => {
+                log::warn!("opencode[port={}] {:?} read error: {}", port, kind, e);
+                break;
+            }
+        }
+    }
+}
+
+/// stdout 记 debug（正常输出），stderr 记 warn（便于排查子进程异常）。
+fn log_pipe_line(kind: PipeKind, port: u16, line: &str) {
+    match kind {
+        PipeKind::Stdout => log::debug!("opencode[port={}] stdout: {}", port, line),
+        PipeKind::Stderr => log::warn!("opencode[port={}] stderr: {}", port, line),
+    }
 }
 
 /// Thread-safe allocator for OpenCode ports in the configured range.

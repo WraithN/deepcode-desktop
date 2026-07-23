@@ -10,6 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::mapper::{detect_interaction_from_parts, InteractionRequest};
@@ -20,6 +21,16 @@ const LOCALHOST: &str = "http://127.0.0.1";
 const STARTUP_WAIT_COUNT: u32 = 20;
 const STARTUP_WAIT_MS: u64 = 500;
 const SSE_CHANNEL_CAPACITY: usize = 1000;
+
+/// SSE 事件活跃度看门狗阈值:超过此时长未收到任何 agent 事件即判定卡死。
+/// agent 正常思考/工具执行期间 opencode 会流式推送 thinking/tool_use 等事件,
+/// 阈值需大于正常事件间隔。卡死(如 LLM API 挂起、死锁)时无事件,触发重建重试。
+const WATCHDOG_STALL_THRESHOLD_SECS: u64 = 120;
+/// 看门狗周期性检查 SSE 活跃度的时间间隔。
+const WATCHDOG_CHECK_INTERVAL_SECS: u64 = 10;
+/// 消息发送卡死/失败时的最大重试次数,每次重试会重建 agent 进程并新建 session。
+/// 总尝试次数 = 1 + MAX_SEND_RETRIES。
+const MAX_SEND_RETRIES: u32 = 2;
 
 const METHOD_QUESTION: &str = "agent.question";
 const METHOD_PERMISSION: &str = "agent.permission";
@@ -49,6 +60,8 @@ pub struct OpencodeInstance {
     session_map: ConversationSessionMap,
     transport_handle: Arc<TokioMutex<Option<Box<dyn TransportHandle>>>>,
     startup_lock: Arc<TokioMutex<()>>,
+    /// 最近一次收到 agent SSE 事件的时间,供看门狗判定卡死。
+    last_event_at: Arc<Mutex<Option<Instant>>>,
 }
 
 impl OpencodeInstance {
@@ -64,6 +77,7 @@ impl OpencodeInstance {
             session_map: ConversationSessionMap::new(),
             transport_handle: Arc::new(TokioMutex::new(None)),
             startup_lock: Arc::new(TokioMutex::new(())),
+            last_event_at: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -181,11 +195,14 @@ impl OpencodeInstance {
         let event_sink = self.event_sink.clone();
         let instance_id = self.config.id.clone();
         let session_map = self.session_map.clone();
+        let last_event_at = self.last_event_at.clone();
         tokio::spawn(async move {
             while let Some(payload) = rx.recv().await {
                 let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let events = crate::mapper::map_opencode_sse(&payload);
                 if !events.is_empty() {
+                    // 收到 agent 事件,刷新看门狗活跃时间戳。
+                    *last_event_at.lock().unwrap() = Some(Instant::now());
                     let session_id = crate::mapper::extract_session_id(&payload).unwrap_or_default();
                     let conversation_id = session_map
                         .conversation_for_session(&session_id)
@@ -293,6 +310,94 @@ impl OpencodeInstance {
             .to_string();
         self.emit_interaction(method, &session_id, conversation_id, &interaction);
     }
+
+    /// 发送一次 HTTP 消息并与 SSE 活跃度看门狗竞争。
+    ///
+    /// HTTP POST `/session/{id}/message` 会阻塞至 agent run 结束。正常情况下
+    /// agent 期间持续推送 SSE 事件;若 agent 卡死(LLM API 挂起、死锁等),
+    /// HTTP 既不返回也无事件。看门狗在阈值内无事件时中断本次请求。
+    async fn http_with_watchdog(
+        &self,
+        session_id: &str,
+        message: &str,
+    ) -> Result<serde_json::Value, InstanceError> {
+        // 从本次发送开始计时活跃度
+        *self.last_event_at.lock().unwrap() = Some(Instant::now());
+
+        tokio::select! {
+            r = self.send_message_http(session_id, message) => r,
+            _ = self.watchdog_until_stalled() => Err(InstanceError::ProcessError(format!(
+                "agent stalled: no SSE events for {WATCHDOG_STALL_THRESHOLD_SECS}s"
+            ))),
+        }
+    }
+
+    /// 看门狗 future:周期性检查 SSE 事件活跃度,直到判定卡死时返回。
+    /// 在 `select!` 中与 HTTP 请求竞争;HTTP 先完成则本 future 被 drop。
+    async fn watchdog_until_stalled(&self) {
+        let threshold = Duration::from_secs(WATCHDOG_STALL_THRESHOLD_SECS);
+        let interval = Duration::from_secs(WATCHDOG_CHECK_INTERVAL_SECS);
+        loop {
+            tokio::time::sleep(interval).await;
+            let stalled = self
+                .last_event_at
+                .lock()
+                .unwrap()
+                .map(|t| t.elapsed() > threshold)
+                .unwrap_or(false);
+            if stalled {
+                return;
+            }
+        }
+    }
+
+    /// 发送消息并带看门狗重试:卡死或失败时重建 agent 进程并新建 session 后重试。
+    /// 重试上限 `MAX_SEND_RETRIES`,每次重建都会刷新 opencode serve 进程。
+    async fn send_with_watchdog_retry(
+        &self,
+        session_id: &mut String,
+        message: &str,
+        conversation_id: &str,
+    ) -> Result<serde_json::Value, InstanceError> {
+        let mut attempt = 0u32;
+        loop {
+            match self.http_with_watchdog(session_id, message).await {
+                Ok(value) => return Ok(value),
+                Err(e) if attempt < MAX_SEND_RETRIES => {
+                    attempt += 1;
+                    log::warn!(
+                        "send_message attempt {attempt}/{} failed ({}), rebuilding agent and retrying",
+                        MAX_SEND_RETRIES + 1,
+                        e
+                    );
+                    self.reset_and_restart().await?;
+                    *session_id = self.create_opencode_session().await?;
+                    self.store_session(conversation_id, session_id);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// 响应交互(ask_permission/ask_user)并带看门狗。
+    ///
+    /// 与 `send_with_watchdog_retry` 不同,respond 只有 opencode session_id
+    /// 而无 conversation 映射,重建后旧 session 必然失效,因此不做自动重试;
+    /// 卡死/失败时重建 agent 进程,使后续交互可在新进程上重试。
+    async fn respond_with_watchdog(
+        &self,
+        session_id: &str,
+        message: &str,
+    ) -> Result<(), InstanceError> {
+        match self.http_with_watchdog(session_id, message).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                log::warn!("respond failed ({}), rebuilding agent", e);
+                let _ = self.reset_and_restart().await;
+                Err(e)
+            }
+        }
+    }
 }
 
 impl AgentInstance for OpencodeInstance {
@@ -340,16 +445,9 @@ impl AgentInstance for OpencodeInstance {
                 }
             };
 
-            let result = match self.send_message_http(&session_id, &message).await {
-                Ok(r) => r,
-                Err(e) => {
-                    log::warn!("send_message_http failed, resetting and retrying: {e}");
-                    self.reset_and_restart().await?;
-                    session_id = self.create_opencode_session().await?;
-                    self.store_session(&conversation_id, &session_id);
-                    self.send_message_http(&session_id, &message).await?
-                }
-            };
+            let result = self
+                .send_with_watchdog_retry(&mut session_id, &message, &conversation_id)
+                .await?;
 
             self.detect_and_emit_interaction(&result, &conversation_id, &session_id);
 
@@ -367,15 +465,7 @@ impl AgentInstance for OpencodeInstance {
         let message = message.to_string();
         Box::pin(async move {
             self.ensure_started().await?;
-            match self.send_message_http(&session_id, &message).await {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    log::warn!("respond send_message_http failed, resetting and retrying: {e}");
-                    self.reset_and_restart().await?;
-                    self.send_message_http(&session_id, &message).await?;
-                    Ok(())
-                }
-            }
+            self.respond_with_watchdog(&session_id, &message).await
         })
     }
 

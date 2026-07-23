@@ -34,6 +34,17 @@ let connectPromise: Promise<void> | null = null;
 const CIRCUIT_FAILURE_THRESHOLD = 5;
 const CIRCUIT_COOLDOWN_MS = 30000;
 
+// JSON-RPC 请求超时：默认 30s 用于短操作；agent.sendMessage / agent.respond
+// 会阻塞至 agent run 结束（后端由 SSE 活跃度看门狗保证最终返回，最长约
+// 20 分钟兜底），前端须用更长超时以避免误判超时。
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+const LONG_REQUEST_TIMEOUT_MS = 1200000;
+const LONG_RUNNING_METHODS = new Set(['agent.sendMessage', 'agent.respond']);
+
+function resolveRequestTimeout(method: string): number {
+  return LONG_RUNNING_METHODS.has(method) ? LONG_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
 interface WebSocketState {
   url: string | null;
   status: WebSocketStatus;
@@ -211,13 +222,13 @@ export const useWebSocketStore = create<WebSocketState>((set, get) => ({
       pendingRequests.set(id, { resolve: resolve as (value: unknown) => void, reject });
       ws.send(JSON.stringify(request));
 
-      // Timeout after 30 seconds
+      const timeoutMs = resolveRequestTimeout(method);
       setTimeout(() => {
         if (pendingRequests.has(id)) {
           pendingRequests.delete(id);
           reject(new Error(`Request timeout: ${method}`));
         }
-      }, 30000);
+      }, timeoutMs);
     });
   },
 

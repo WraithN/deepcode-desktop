@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::agui::types::{Event, RunAgentInput};
+use crate::agui::types::{BaseEvent, Event, RunAgentInput};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -16,11 +16,18 @@ use uuid;
 
 use crate::ApiState;
 
+/// SSE keepalive 间隔（秒）：agent 长时间无事件输出时，
+/// 每 15 秒发送一条注释行，避免下游客户端因空闲超时断开连接。
+const SSE_KEEPALIVE_INTERVAL_SECS: u64 = 15;
+
 pub async fn chat_handler(
     State(state): State<ApiState>,
     Path(session_id): Path<String>,
     axum::Json(input): axum::Json<RunAgentInput>,
-) -> Result<Sse<AguiEventStream>, (StatusCode, axum::Json<Value>)> {
+) -> Result<
+    Sse<impl Stream<Item = Result<SseEvent, Infallible>>>,
+    (StatusCode, axum::Json<Value>),
+> {
     let run_id = input.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let start = std::time::Instant::now();
     tracing::info!(
@@ -82,6 +89,21 @@ pub async fn chat_handler(
                     run_id_bg,
                     e
                 );
+                // 向 session 事件通道广播终态 RUN_ERROR，告知 SSE 客户端 run 已失败，
+                // 否则客户端会一直等待后续事件直到超时。
+                session_mgr
+                    .broadcast(
+                        &session_id_bg,
+                        Event::RunError {
+                            base: BaseEvent {
+                                timestamp: Some(crate::session::now()),
+                                raw_event: None,
+                            },
+                            message: format!("run={} start_run failed: {}", run_id_bg, e),
+                            code: None,
+                        },
+                    )
+                    .await;
             }
         }
     });
@@ -92,7 +114,11 @@ pub async fn chat_handler(
     );
 
     let stream = AguiEventStream::new(rx, run_id.clone(), start);
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(SSE_KEEPALIVE_INTERVAL_SECS))
+            .text("ping"),
+    ))
 }
 
 /// Wraps a broadcast receiver as an SSE stream.

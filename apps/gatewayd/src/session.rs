@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -44,6 +45,10 @@ pub struct Session {
     state: Arc<Mutex<Value>>,
     expired_time: Duration,
     last_input_at: Arc<Mutex<Instant>>,
+    /// 标记当前是否有 run 正在执行。Arc 共享保证 Session 被 clone 后
+    /// （如 reaper 通过 inner map 读取、start_run 通过 get_session 读取）
+    /// 看到的是同一个标志位。
+    run_active: Arc<AtomicBool>,
 }
 
 impl Session {
@@ -56,6 +61,7 @@ impl Session {
             state: Arc::new(Mutex::new(Value::Object(serde_json::Map::new()))),
             expired_time,
             last_input_at: Arc::new(Mutex::new(Instant::now())),
+            run_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -85,7 +91,11 @@ impl Session {
     }
 
     /// 判断 session 是否已超过 expired_time 没有用户输入。
+    /// run 执行期间不视为过期，避免 reaper 在长时间 run 中途杀掉 agent 进程。
     pub fn is_expired(&self) -> bool {
+        if self.run_active.load(Ordering::SeqCst) {
+            return false;
+        }
         let last = *self.last_input_at.lock().unwrap();
         Instant::now().duration_since(last) > self.expired_time
     }
@@ -637,10 +647,15 @@ impl SessionManager {
         );
 
         let send_start = std::time::Instant::now();
-        agent_service
+        // 标记 run 进行中，防止 reap_expired 在长时间 run 期间回收实例。
+        // 无论成功或失败，await 返回后立即复位标志位（先暂存结果再统一复位，
+        // 保证 Ok / Err 两条路径都会执行）。
+        session.run_active.store(true, Ordering::SeqCst);
+        let send_result = agent_service
             .send_message(&instance_id, session_id, &message)
-            .await
-            .map_err(RunError::AgentError)?;
+            .await;
+        session.run_active.store(false, Ordering::SeqCst);
+        send_result.map_err(RunError::AgentError)?;
         tracing::info!(
             "[session_manager] run={} agent_service.send_message returned after {:?}",
             run_id,
@@ -729,7 +744,7 @@ impl SessionManager {
     }
 }
 
-fn now() -> f64 {
+pub(crate) fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
