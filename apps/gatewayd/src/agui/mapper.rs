@@ -1,15 +1,16 @@
 use crate::agui::types::{BaseEvent, Event};
 use serde_json::Value;
+use std::collections::HashMap;
 
-const METHOD_TOKEN: &str = "agent.token";
-const METHOD_THINKING: &str = "agent.thinking";
-const METHOD_PERMISSION: &str = "agent.permission";
-const METHOD_QUESTION: &str = "agent.question";
-const METHOD_TODO_WRITE: &str = "agent.todowrite";
-const METHOD_DONE: &str = "agent.done";
-const METHOD_ERROR: &str = "agent.error";
-const METHOD_STATUS_CHANGED: &str = "agent:status_changed";
-const METHOD_SESSION_LOG: &str = "session.log";
+pub const METHOD_TOKEN: &str = "agent.token";
+pub const METHOD_THINKING: &str = "agent.thinking";
+pub const METHOD_PERMISSION: &str = "agent.permission";
+pub const METHOD_QUESTION: &str = "agent.question";
+pub const METHOD_TODO_WRITE: &str = "agent.todowrite";
+pub const METHOD_DONE: &str = "agent.done";
+pub const METHOD_ERROR: &str = "agent.error";
+pub const METHOD_STATUS_CHANGED: &str = "agent:status_changed";
+pub const METHOD_SESSION_LOG: &str = "session.log";
 
 const KEY_TYPE: &str = "type";
 const KEY_CONTENT: &str = "content";
@@ -23,7 +24,10 @@ const KEY_MESSAGE: &str = "message";
 #[derive(Debug, Default, Clone)]
 pub struct AguiMapper {
     current_message_id: Option<String>,
-    current_tool_call_id: Option<String>,
+    /// 待结算的工具调用 ID 队列（FIFO），用于无显式 ID 关联时的回退匹配。
+    pending_tool_call_ids: Vec<String>,
+    /// claude tool_use id -> AG-UI tool_call_id 映射，用于精确关联 tool_result。
+    tool_call_id_map: HashMap<String, String>,
     /// 是否已发送 THINKING_START，用于避免每个 thinking delta 都重复开启/关闭。
     current_thinking_active: bool,
 }
@@ -155,7 +159,12 @@ impl AguiMapper {
 
     fn map_tool_use(&mut self, base: BaseEvent, payload: &Value) -> Vec<Event> {
         let tool_call_id = new_id();
-        self.current_tool_call_id = Some(tool_call_id.clone());
+        // 提取 claude 的 tool_use id，用于后续 tool_result 精确关联。
+        if let Some(claude_id) = payload.get("id").and_then(|v| v.as_str()) {
+            self.tool_call_id_map
+                .insert(claude_id.to_string(), tool_call_id.clone());
+        }
+        self.pending_tool_call_ids.push(tool_call_id.clone());
         let raw_delta = payload
             .get(KEY_CONTENT)
             .and_then(|v| v.as_str())
@@ -190,14 +199,29 @@ impl AguiMapper {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let tool_call_id = self.current_tool_call_id.clone().unwrap_or_else(new_id);
+        // 优先用 claude 的 tool_use_id 精确关联；无 id 时回退到 FIFO 队列（最早未结算的调用）。
+        let tool_call_id = payload
+            .get("tool_use_id")
+            .or_else(|| payload.get("toolUseId"))
+            .and_then(|v| v.as_str())
+            .and_then(|id| self.tool_call_id_map.remove(id))
+            .or_else(|| self.pending_tool_call_ids.first().cloned())
+            .unwrap_or_else(new_id);
+        self.pending_tool_call_ids.retain(|id| *id != tool_call_id);
         let message_id = self.current_message_id.clone().unwrap_or_else(new_id);
-        vec![Event::ToolCallResult {
-            base,
-            tool_call_id,
-            message_id,
-            content,
-        }]
+        // AG-UI 协议要求 TOOL_CALL_END 在 TOOL_CALL_RESULT 之前发送。
+        vec![
+            Event::ToolCallEnd {
+                base: base.clone(),
+                tool_call_id: tool_call_id.clone(),
+            },
+            Event::ToolCallResult {
+                base,
+                tool_call_id,
+                message_id,
+                content,
+            },
+        ]
     }
 
     fn map_done(&mut self, base: BaseEvent) -> Vec<Event> {
@@ -208,7 +232,8 @@ impl AguiMapper {
                 message_id: id,
             });
         }
-        self.current_tool_call_id = None;
+        self.pending_tool_call_ids.clear();
+        self.tool_call_id_map.clear();
         events
     }
 
@@ -368,5 +393,68 @@ mod tests {
                 .any(|e| matches!(e, Event::TextMessageEnd { .. }))
         );
         assert!(events.iter().any(|e| matches!(e, Event::RunError { .. })));
+    }
+
+    #[test]
+    fn test_tool_call_emits_end_before_result() {
+        let mut mapper = AguiMapper::new();
+        // tool_use: START + ARGS
+        let events = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_use", "content": "bash", "toolName": "bash", "id": "toolu_1" }),
+        );
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], Event::ToolCallStart { .. }));
+        assert!(matches!(events[1], Event::ToolCallArgs { .. }));
+        let start_id = match &events[0] {
+            Event::ToolCallStart { tool_call_id, .. } => tool_call_id.clone(),
+            _ => unreachable!(),
+        };
+
+        // tool_result: END + RESULT，且 ID 与 START 一致
+        let events = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_result", "content": "ok", "tool_use_id": "toolu_1" }),
+        );
+        assert_eq!(events.len(), 2, "tool_result should emit END + RESULT");
+        let end_id = match &events[0] {
+            Event::ToolCallEnd { tool_call_id, .. } => tool_call_id.clone(),
+            _ => panic!("first event should be ToolCallEnd"),
+        };
+        let result_id = match &events[1] {
+            Event::ToolCallResult { tool_call_id, .. } => tool_call_id.clone(),
+            _ => panic!("second event should be ToolCallResult"),
+        };
+        assert_eq!(start_id, end_id, "END id must match START id");
+        assert_eq!(start_id, result_id, "RESULT id must match START id");
+    }
+
+    #[test]
+    fn test_parallel_tool_calls_correlate_by_id() {
+        let mut mapper = AguiMapper::new();
+        // 两个并行 tool_use
+        mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_use", "content": "bash", "id": "toolu_A" }),
+        );
+        let events_b = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_use", "content": "glob", "id": "toolu_B" }),
+        );
+        let id_b = match &events_b[0] {
+            Event::ToolCallStart { tool_call_id, .. } => tool_call_id.clone(),
+            _ => unreachable!(),
+        };
+
+        // tool_result 先返回 B（乱序），应通过 tool_use_id 精确匹配 B
+        let events = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_result", "content": "no files", "tool_use_id": "toolu_B" }),
+        );
+        let result_id = match &events[1] {
+            Event::ToolCallResult { tool_call_id, .. } => tool_call_id.clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(result_id, id_b, "RESULT must match B's START id, not A's");
     }
 }
