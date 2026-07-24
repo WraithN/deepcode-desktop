@@ -523,7 +523,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "deepharness-cli"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -556,7 +556,7 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
 name = "dh-config"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "dirs",
  "serde",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "dh-config-adapter"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "chrono",
  "dh-config",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "dh-core"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "chrono",
  "log",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "dh-db"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "chrono",
  "dh-core",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "dh-gatewayd"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "dh-platform"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "dirs",
  "notify-rust",
