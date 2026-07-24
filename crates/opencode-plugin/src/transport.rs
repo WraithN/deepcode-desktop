@@ -12,7 +12,6 @@ use tokio::sync::mpsc;
 const OPCODE_BINARY: &str = "opencode";
 const ARG_SERVE: &str = "serve";
 const ARG_PORT: &str = "--port";
-const ARG_PURE: &str = "--pure";
 
 /// 消息 POST 会阻塞至 agent run 结束，PRD/原型生成等正常 run 可超过 10 分钟，
 /// 超时过短会中途取消 opencode 的 run 并触发重启重试（重复消耗 LLM 调用）。
@@ -168,7 +167,6 @@ pub fn start_opencode_process(port: u16, work_directory: &str) -> Result<Child, 
     cmd.arg(ARG_SERVE)
         .arg(ARG_PORT)
         .arg(port.to_string())
-        .arg(ARG_PURE)
         .current_dir(&cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
