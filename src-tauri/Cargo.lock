@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "dh-config"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "dirs",
  "serde",
@@ -706,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "dh-core"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "chrono",
  "log",
@@ -720,7 +720,7 @@ dependencies = [
 
 [[package]]
 name = "dh-db"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "chrono",
  "dh-core",
