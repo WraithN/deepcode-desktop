@@ -339,7 +339,10 @@ pub fn to_process_event(raw: &ClaudeRawEvent) -> Option<ProcessEvent> {
             // 过滤 thinking 流式片段：避免每个 token 都产生一组 AG-UI thinking 事件。
             // 前端通过 isRunning 状态展示“思考中...”占位符即可。
             ClaudeStreamEvent::ThinkingDelta { .. } => None,
-            ClaudeStreamEvent::MessageStop {} => Some(ProcessEvent::Done),
+            // message_stop 仅表示一条 assistant 消息结束（工具调用循环中每轮
+            // 都会出现），不能作为回合结束信号，否则 RUN_FINISHED 会提前发出。
+            // 回合结束以 result 事件为准。
+            ClaudeStreamEvent::MessageStop {} => Some(ProcessEvent::MessageEnd),
         },
         // stream-json 模式下文本增量已由 StreamEvent::TextDelta 输出，
         // 忽略 Assistant 事件中的完整文本，避免在流末尾再发一遍重复内容。
@@ -395,5 +398,17 @@ mod tests {
         let raw = parse_claude_line(RESULT_LINE).unwrap();
         let ev = to_process_event(&raw).unwrap();
         assert!(matches!(ev, ProcessEvent::Done));
+    }
+
+    #[test]
+    fn test_message_stop_maps_to_message_end_not_done() {
+        let raw = parse_claude_line(
+            r#"{"type":"stream_event","event":{"type":"message_stop"}}"#,
+        )
+        .unwrap();
+        let ev = to_process_event(&raw).unwrap();
+        // message_stop 只是消息边界，必须映射为 MessageEnd 而非 Done，
+        // 否则工具调用循环中 RUN_FINISHED 会被提前发出。
+        assert!(matches!(ev, ProcessEvent::MessageEnd));
     }
 }

@@ -14,6 +14,12 @@ pub enum ProcessEvent {
     Permission { tool_name: String, action: String },
     Question { questions: Vec<QuestionItem> },
     TodoWrite { todos: Vec<TodoItem> },
+    /// 一条 assistant 消息结束（如 claude 的 message_stop）。
+    /// 一个回合内可能出现多次（工具调用循环），仅用于关闭当前文本消息，
+    /// 不代表整个回合结束。
+    MessageEnd,
+    /// 整个回合结束（如 claude 的 result、opencode 的 session.idle、
+    /// codex 的 turn/completed）。RUN_FINISHED 等终态事件必须以此为准。
     Done,
     Error { message: String },
 }

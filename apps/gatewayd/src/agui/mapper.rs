@@ -8,6 +8,7 @@ pub const METHOD_PERMISSION: &str = "agent.permission";
 pub const METHOD_QUESTION: &str = "agent.question";
 pub const METHOD_TODO_WRITE: &str = "agent.todowrite";
 pub const METHOD_DONE: &str = "agent.done";
+pub const METHOD_MESSAGE_END: &str = "agent.message_end";
 pub const METHOD_ERROR: &str = "agent.error";
 pub const METHOD_STATUS_CHANGED: &str = "agent:status_changed";
 pub const METHOD_SESSION_LOG: &str = "session.log";
@@ -50,7 +51,10 @@ impl AguiMapper {
                 name: method.to_string(),
                 value: payload.clone(),
             }],
-            METHOD_DONE => self.map_done(base),
+            // message_end 仅表示一条 assistant 消息结束（如 claude 工具调用循环
+            // 中的 message_stop），只关闭当前文本消息；done 才表示回合结束，
+            // RUN_FINISHED 由 sink 消费者在广播完本批事件后补发。
+            METHOD_MESSAGE_END | METHOD_DONE => self.map_done(base),
             METHOD_ERROR => self.map_error(base, payload),
             METHOD_STATUS_CHANGED => vec![Event::Custom {
                 base,
@@ -393,6 +397,21 @@ mod tests {
                 .any(|e| matches!(e, Event::TextMessageEnd { .. }))
         );
         assert!(events.iter().any(|e| matches!(e, Event::RunError { .. })));
+    }
+
+    #[test]
+    fn test_message_end_closes_message_without_run_finished() {
+        let mut mapper = AguiMapper::new();
+        mapper.map(METHOD_TOKEN, &json!({ "text": "x" }));
+        // message_end（如 claude message_stop）只关闭当前文本消息，
+        // 不能产生 RUN_FINISHED（终态由 sink 消费者基于 agent.done 补发）。
+        let events = mapper.map(METHOD_MESSAGE_END, &json!({}));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::TextMessageEnd { .. }))
+        );
+        assert!(!events.iter().any(|e| matches!(e, Event::RunFinished { .. })));
     }
 
     #[test]

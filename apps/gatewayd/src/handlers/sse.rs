@@ -83,6 +83,15 @@ pub async fn chat_handler(
     tokio::spawn(async move {
         match session_mgr.start_run(&session_id_bg, input, agent_svc.as_ref()).await {
             Ok(_) => {}
+            // 并发 run 被拒绝时不广播 RUN_ERROR：session 上还有正在执行的 run，
+            // 广播会混入它的事件流造成误报，这里仅记录日志。
+            Err(crate::session::RunError::RunAlreadyActive) => {
+                tracing::warn!(
+                    "[gatewayd] run={} rejected: session={} already has an active run",
+                    run_id_bg,
+                    session_id_bg
+                );
+            }
             Err(e) => {
                 tracing::error!(
                     "[gatewayd] run={} start_run error: {:?}",

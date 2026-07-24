@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::agui::mapper::AguiMapper;
-use crate::agui::types::Event;
+use crate::agui::mapper::{AguiMapper, METHOD_DONE, METHOD_ERROR};
+use crate::agui::types::{BaseEvent, Event};
 use crate::session::SessionManager;
 use agent_core::event_sink::EventSink;
 use serde_json::Value;
@@ -95,7 +95,10 @@ impl EventSink for AguiEventSink {
         let events = mapper.map(event_type, &payload);
         self.update_mapper(&instance_id, mapper);
 
-        if events.is_empty() {
+        // done/error 是回合终态信号：即使 mapper 没有产出事件（例如本轮未产生
+        // 任何文本，map_done 返回空），也必须送达消费者，由它补发 RUN_FINISHED
+        // 或复位 run 登记，否则该 run 会永远悬挂。
+        if events.is_empty() && event_type != METHOD_DONE && event_type != METHOD_ERROR {
             return;
         }
 
@@ -158,13 +161,55 @@ async fn consumer_loop(
         for event in events {
             session_manager.broadcast(&session_id, event).await;
         }
+
+        // agent.done 表示回合真正结束：在本批事件（含 TextMessageEnd）广播完毕
+        // 之后补发 RUN_FINISHED，保证终态事件严格排在内容事件之后；
+        // agent.error 也是回合终态（RUN_ERROR 已由 mapper 产生），需复位 run 登记。
+        if event_type == METHOD_DONE {
+            finish_run_on_done(&session_manager, &session_id).await;
+        } else if event_type == METHOD_ERROR {
+            end_run_on_error(&session_manager, &session_id).await;
+        }
+    }
+}
+
+/// 回合正常结束处理：若 session 有在途 run，补发 RUN_FINISHED 并复位 run 登记。
+/// 无在途 run（如游离的 done 事件）时不发 RUN_FINISHED，避免产生无主终态。
+async fn finish_run_on_done(session_manager: &SessionManager, session_id: &str) {
+    let Some(session) = session_manager.get_session(session_id).await else {
+        return;
+    };
+    let Some(run_id) = session.end_run() else {
+        return;
+    };
+    session_manager
+        .broadcast(
+            session_id,
+            Event::RunFinished {
+                base: BaseEvent {
+                    timestamp: Some(crate::session::now()),
+                    raw_event: None,
+                },
+                thread_id: session_id.to_string(),
+                run_id,
+                result: None,
+            },
+        )
+        .await;
+}
+
+/// 回合失败处理：RUN_ERROR 事件已由 mapper 产生，这里只复位 run 登记，
+/// 避免残留的 run_active 导致后续 run 被拒绝、空闲回收失效。
+async fn end_run_on_error(session_manager: &SessionManager, session_id: &str) {
+    if let Some(session) = session_manager.get_session(session_id).await {
+        session.end_run();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agui::mapper::{METHOD_DONE, METHOD_TOKEN};
+    use crate::agui::mapper::{METHOD_DONE, METHOD_MESSAGE_END, METHOD_TOKEN};
     use crate::agui::types::Event;
     use serde_json::json;
 
@@ -254,5 +299,173 @@ mod tests {
             "deltas must arrive in emit order; any reordering indicates the \
              per-emit spawn regression returned"
         );
+    }
+
+    /// 提取广播事件的 AG-UI type 字段（SCREAMING_SNAKE_CASE）。
+    fn event_type_of(event: &Event) -> String {
+        serde_json::to_value(event)
+            .ok()
+            .and_then(|v| v.get("type").cloned())
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    }
+
+    /// 回归测试：RUN_FINISHED 必须由 agent.done 驱动，排在 TextMessageEnd 之后，
+    /// 而不是在消息写入 agent 进程后立即发出。
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_done_with_active_run_emits_run_finished_last() {
+        let session_manager = SessionManager::new();
+        let session_id = session_manager
+            .create_session(Some("run-finish-session".to_string()), None)
+            .await;
+        // 模拟 start_run 的 run 登记。
+        let session = session_manager
+            .get_session(&session_id)
+            .await
+            .expect("session should exist");
+        assert!(session.begin_run("run-1".to_string()));
+
+        let sink = AguiEventSink::new(
+            session_manager.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        let mut rx = session_manager
+            .subscribe(&session_id)
+            .await
+            .expect("session should exist");
+
+        sink.emit(
+            METHOD_TOKEN,
+            json!({ "instance_id": "inst-1", "conversation_id": session_id, "text": "hi" }),
+        );
+        sink.emit(
+            METHOD_DONE,
+            json!({ "instance_id": "inst-1", "conversation_id": session_id }),
+        );
+
+        let mut types: Vec<String> = Vec::new();
+        let collect = async {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        let finished = matches!(event, Event::RunFinished { .. });
+                        types.push(event_type_of(&event));
+                        if finished {
+                            break;
+                        }
+                    }
+                    Err(e) => panic!("broadcast ended before RUN_FINISHED: {e}"),
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), collect)
+            .await
+            .expect("timed out waiting for RUN_FINISHED");
+
+        assert_eq!(
+            types,
+            vec![
+                "TEXT_MESSAGE_START",
+                "TEXT_MESSAGE_CONTENT",
+                "TEXT_MESSAGE_END",
+                "RUN_FINISHED"
+            ],
+            "RUN_FINISHED must be emitted after TextMessageEnd"
+        );
+        // run 登记已被消费者复位。
+        assert!(session.end_run().is_none());
+    }
+
+    /// 无在途 run 的游离 done 不得产生 RUN_FINISHED。
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_done_without_active_run_emits_no_run_finished() {
+        let session_manager = SessionManager::new();
+        let session_id = session_manager
+            .create_session(Some("stray-done-session".to_string()), None)
+            .await;
+        let sink = AguiEventSink::new(
+            session_manager.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        let mut rx = session_manager
+            .subscribe(&session_id)
+            .await
+            .expect("session should exist");
+
+        sink.emit(
+            METHOD_DONE,
+            json!({ "instance_id": "inst-1", "conversation_id": session_id }),
+        );
+
+        let got = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+        assert!(got.is_err(), "stray done must not broadcast RUN_FINISHED");
+    }
+
+    /// message_end（如 claude message_stop）只关闭当前文本消息，不得结束 run；
+    /// 随后的 agent.done 才补发 RUN_FINISHED。
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_message_end_closes_message_but_run_continues() {
+        let session_manager = SessionManager::new();
+        let session_id = session_manager
+            .create_session(Some("message-end-session".to_string()), None)
+            .await;
+        let session = session_manager
+            .get_session(&session_id)
+            .await
+            .expect("session should exist");
+        assert!(session.begin_run("run-2".to_string()));
+
+        let sink = AguiEventSink::new(
+            session_manager.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        let mut rx = session_manager
+            .subscribe(&session_id)
+            .await
+            .expect("session should exist");
+
+        sink.emit(
+            METHOD_TOKEN,
+            json!({ "instance_id": "inst-1", "conversation_id": session_id, "text": "a" }),
+        );
+        sink.emit(
+            METHOD_MESSAGE_END,
+            json!({ "instance_id": "inst-1", "conversation_id": session_id }),
+        );
+
+        let collect = async {
+            loop {
+                match rx.recv().await {
+                    Ok(Event::TextMessageEnd { .. }) => break,
+                    Ok(_) => {}
+                    Err(e) => panic!("broadcast ended before TEXT_MESSAGE_END: {e}"),
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), collect)
+            .await
+            .expect("timed out waiting for TEXT_MESSAGE_END");
+
+        // message_end 后不得出现 RUN_FINISHED，run 应仍在途。
+        let got = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+        assert!(got.is_err(), "message_end must not emit RUN_FINISHED");
+
+        sink.emit(
+            METHOD_DONE,
+            json!({ "instance_id": "inst-1", "conversation_id": session_id }),
+        );
+        let collect = async {
+            loop {
+                match rx.recv().await {
+                    Ok(Event::RunFinished { run_id, .. }) => break run_id,
+                    Ok(_) => {}
+                    Err(e) => panic!("broadcast ended before RUN_FINISHED: {e}"),
+                }
+            }
+        };
+        let run_id = tokio::time::timeout(std::time::Duration::from_secs(5), collect)
+            .await
+            .expect("timed out waiting for RUN_FINISHED");
+        assert_eq!(run_id, "run-2");
     }
 }

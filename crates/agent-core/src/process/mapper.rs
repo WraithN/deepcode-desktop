@@ -10,6 +10,7 @@ const METHOD_THINKING: &str = "agent.thinking";
 const METHOD_PERMISSION: &str = "agent.permission";
 const METHOD_QUESTION: &str = "agent.question";
 const METHOD_TODO_WRITE: &str = "agent.todowrite";
+const METHOD_MESSAGE_END: &str = "agent.message_end";
 const METHOD_DONE: &str = "agent.done";
 const METHOD_ERROR: &str = "agent.error";
 
@@ -194,6 +195,9 @@ impl EventMapper {
                     json!({ KEY_TODOS: todos }),
                 );
             }
+            ProcessEvent::MessageEnd => {
+                sink.emit(METHOD_MESSAGE_END, self.base_payload());
+            }
             ProcessEvent::Done => {
                 sink.emit(METHOD_DONE, self.base_payload());
             }
@@ -328,6 +332,13 @@ mod tests {
         let events = map_event(ProcessEvent::Done);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, METHOD_DONE);
+    }
+
+    #[test]
+    fn test_map_message_end() {
+        let events = map_event(ProcessEvent::MessageEnd);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, METHOD_MESSAGE_END);
     }
 
     #[test]

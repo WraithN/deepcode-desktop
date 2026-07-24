@@ -31,6 +31,8 @@ pub enum RunError {
     NoUserMessage,
     #[error("session already has an agent instance")]
     InstanceAlreadyExists,
+    #[error("session already has an active run")]
+    RunAlreadyActive,
     #[error("agent error: {0}")]
     AgentError(#[from] InstanceError),
 }
@@ -49,6 +51,10 @@ pub struct Session {
     /// （如 reaper 通过 inner map 读取、start_run 通过 get_session 读取）
     /// 看到的是同一个标志位。
     run_active: Arc<AtomicBool>,
+    /// 当前在途 run 的 ID（None 表示无 run 在途）。由 start_run 置位，
+    /// 由事件消费者在收到 agent.done / agent.error 终态时复位，
+    /// 用于让消费者补发的 RUN_FINISHED 携带正确的 run_id。
+    current_run_id: Arc<Mutex<Option<String>>>,
 }
 
 impl Session {
@@ -62,6 +68,7 @@ impl Session {
             expired_time,
             last_input_at: Arc::new(Mutex::new(Instant::now())),
             run_active: Arc::new(AtomicBool::new(false)),
+            current_run_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -88,6 +95,28 @@ impl Session {
     /// 更新最近一次用户输入时间，用于空闲回收判定。
     pub fn touch(&self) {
         *self.last_input_at.lock().unwrap() = Instant::now();
+    }
+
+    /// 标记一个 run 开始并记录其 run_id。
+    /// AG-UI 同一 thread 同一时间只允许一个 run 在途：已有 run 时返回 false，
+    /// 调用方应拒绝本次请求，否则回合结束信号（agent.done）会被错误归属。
+    pub fn begin_run(&self, run_id: String) -> bool {
+        let mut guard = self.current_run_id.lock().unwrap();
+        if guard.is_some() {
+            return false;
+        }
+        *guard = Some(run_id);
+        self.run_active.store(true, Ordering::SeqCst);
+        true
+    }
+
+    /// 结束当前在途 run 并返回其 run_id；无在途 run 时返回 None。
+    pub fn end_run(&self) -> Option<String> {
+        let run_id = self.current_run_id.lock().unwrap().take();
+        if run_id.is_some() {
+            self.run_active.store(false, Ordering::SeqCst);
+        }
+        run_id
     }
 
     /// 判断 session 是否已超过 expired_time 没有用户输入。
@@ -612,6 +641,21 @@ impl SessionManager {
             return Err(RunError::NoAgent);
         }
 
+        let instance_id = instances.first().cloned().unwrap();
+        let message = input
+            .messages
+            .into_iter()
+            .rev()
+            .find(|m| matches!(m, Message::User { .. }))
+            .and_then(|m| m.content().map(|s| s.to_string()))
+            .ok_or(RunError::NoUserMessage)?;
+
+        // 登记当前 run。已有 run 在途时拒绝（AG-UI 同一 thread 同一时间只允许
+        // 一个 run），否则回合结束信号（agent.done）会被错误归属到新 run。
+        if !session.begin_run(run_id.clone()) {
+            return Err(RunError::RunAlreadyActive);
+        }
+
         let _ = session.event_tx.send(Event::RunStarted {
             base: BaseEvent {
                 timestamp: Some(now()),
@@ -630,15 +674,6 @@ impl SessionManager {
             snapshot: input.state,
         });
 
-        let instance_id = instances.first().cloned().unwrap();
-        let message = input
-            .messages
-            .into_iter()
-            .rev()
-            .find(|m| matches!(m, Message::User { .. }))
-            .and_then(|m| m.content().map(|s| s.to_string()))
-            .ok_or(RunError::NoUserMessage)?;
-
         tracing::info!(
             "[session_manager] run={} sending user message to instance={} after {:?}",
             run_id,
@@ -647,35 +682,23 @@ impl SessionManager {
         );
 
         let send_start = std::time::Instant::now();
-        // 标记 run 进行中，防止 reap_expired 在长时间 run 期间回收实例。
-        // 无论成功或失败，await 返回后立即复位标志位（先暂存结果再统一复位，
-        // 保证 Ok / Err 两条路径都会执行）。
-        session.run_active.store(true, Ordering::SeqCst);
-        let send_result = agent_service
+        // send_message 仅保证消息已写入 agent 进程，回合在后台异步执行。
+        // RUN_FINISHED 不在此发出：它由事件消费者在收到 agent.done（回合真正
+        // 结束）时补发，保证排在 TextMessageEnd 等内容事件之后。
+        // run_active 由 begin_run/end_run 管理，覆盖回合的整个生命周期，
+        // 防止 reap_expired 在长时间 run 期间回收实例。
+        if let Err(e) = agent_service
             .send_message(&instance_id, session_id, &message)
-            .await;
-        session.run_active.store(false, Ordering::SeqCst);
-        send_result.map_err(RunError::AgentError)?;
+            .await
+        {
+            // 消息未能送达，回合不会开始：立即复位 run 登记。
+            session.end_run();
+            return Err(RunError::AgentError(e));
+        }
         tracing::info!(
-            "[session_manager] run={} agent_service.send_message returned after {:?}",
+            "[session_manager] run={} agent_service.send_message accepted after {:?}",
             run_id,
             send_start.elapsed()
-        );
-
-        let _ = session.event_tx.send(Event::RunFinished {
-            base: BaseEvent {
-                timestamp: Some(now()),
-                raw_event: None,
-            },
-            thread_id: session_id.to_string(),
-            run_id: run_id.clone(),
-            result: None,
-        });
-
-        tracing::info!(
-            "[session_manager] run={} start_run completed after {:?}",
-            run_id,
-            start.elapsed()
         );
 
         Ok(run_id)
@@ -749,4 +772,39 @@ pub(crate) fn now() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn begin_run_rejects_second_concurrent_run() {
+        let session = Session::new("s-1".to_string(), Duration::from_secs(60));
+        assert!(session.begin_run("run-1".to_string()));
+        // 已有 run 在途时拒绝新 run，且原 run 的登记不被覆盖。
+        assert!(!session.begin_run("run-2".to_string()));
+        assert_eq!(session.end_run(), Some("run-1".to_string()));
+    }
+
+    #[test]
+    fn end_run_clears_active_flag_and_returns_none_when_idle() {
+        let session = Session::new("s-1".to_string(), Duration::from_secs(60));
+        assert!(session.end_run().is_none());
+        session.begin_run("run-1".to_string());
+        assert!(session.run_active.load(Ordering::SeqCst));
+        assert_eq!(session.end_run(), Some("run-1".to_string()));
+        assert!(!session.run_active.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn active_run_prevents_expiry() {
+        // expired_time 为 0：无 run 的 session 立即过期；
+        // 有 run 在途时不得过期（reaper 在长时间 run 期间不得回收实例）。
+        let session = Session::new("s-1".to_string(), Duration::from_secs(0));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        assert!(session.is_expired());
+        session.begin_run("run-1".to_string());
+        assert!(!session.is_expired());
+    }
 }

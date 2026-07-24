@@ -33,6 +33,7 @@ pub(crate) const RECEIVE_TIMEOUT_MS: u64 = 200;
 // Error messages.
 pub(crate) const ERR_SEND_FAILED: &str = "failed to send message to claude";
 pub(crate) const ERR_START_FAILED: &str = "failed to start claude process";
+pub(crate) const ERR_PROCESS_DIED: &str = "claude process exited unexpectedly during an active turn";
 
 // Lifecycle log messages.
 pub(crate) const LOG_STARTED: &str = "claude process started";

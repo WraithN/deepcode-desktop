@@ -37,6 +37,9 @@ pub struct ClaudeInstance {
     run_start: Arc<Mutex<Option<std::time::Instant>>>,
     first_raw_event: Arc<AtomicBool>,
     first_token_event: Arc<AtomicBool>,
+    /// 回合在途标志：send_message 写入成功后置位，收到 Done/Error 后复位。
+    /// 用于识别子进程是否在回合执行中途死亡（此时需补发错误事件终止回合）。
+    turn_active: Arc<AtomicBool>,
 }
 
 impl Clone for ClaudeInstance {
@@ -56,6 +59,7 @@ impl Clone for ClaudeInstance {
             run_start: self.run_start.clone(),
             first_raw_event: self.first_raw_event.clone(),
             first_token_event: self.first_token_event.clone(),
+            turn_active: self.turn_active.clone(),
         }
     }
 }
@@ -79,6 +83,7 @@ impl ClaudeInstance {
             run_start: Arc::new(Mutex::new(None)),
             first_raw_event: Arc::new(AtomicBool::new(false)),
             first_token_event: Arc::new(AtomicBool::new(false)),
+            turn_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -249,6 +254,13 @@ impl ClaudeInstance {
                     );
                     drop(guard);
                     instance.set_status(InstanceStatus::Stopped);
+                    // 进程在回合在途期间死亡：补发错误事件作为回合终态，
+                    // 否则下游永远等不到 Done，前端会一直停在运行中状态。
+                    if instance.turn_active.swap(false, Ordering::SeqCst) {
+                        instance.emit_to_frontend(ProcessEvent::Error {
+                            message: ERR_PROCESS_DIED.to_string(),
+                        });
+                    }
                     break;
                 }
 
@@ -424,6 +436,19 @@ impl ClaudeInstance {
             );
         }
 
+        // Done（result 事件）/ Error 代表回合真正结束，复位在途标志。
+        // 注意：message_stop 映射的 MessageEnd 不在此列 —— 工具调用循环中
+        // 一条 assistant 消息结束并不代表整个回合结束。
+        if matches!(event, ProcessEvent::Done | ProcessEvent::Error { .. }) {
+            self.turn_active.store(false, Ordering::SeqCst);
+        }
+        self.emit_to_frontend(event);
+    }
+
+    /// 将 ProcessEvent 映射为前端事件并经 event_sink 发出。
+    /// conversation_id 由当前活跃 session 反查得到，保证事件路由到正确会话；
+    /// 查不到时置空，由下游 sink 回退为按 instance 反查会话。
+    fn emit_to_frontend(&self, event: ProcessEvent) {
         let active_session_id = self.active_session().clone();
         let conversation_id = active_session_id
             .and_then(|sid| self.session_map.conversation_for_session(&sid))
@@ -475,7 +500,14 @@ impl AgentInstance for ClaudeInstance {
             );
             self.session_map.insert(&conversation_id, &conversation_id);
             self.ensure_started().await?;
-            self.do_send(Self::build_user_message_payload(&message))?;
+            // 先置位在途标志再写入消息，避免极快返回的 result 在置位前到达
+            // 导致标志残留；写入失败则立即复位。
+            self.turn_active.store(true, Ordering::SeqCst);
+            let send_result = self.do_send(Self::build_user_message_payload(&message));
+            if send_result.is_err() {
+                self.turn_active.store(false, Ordering::SeqCst);
+            }
+            send_result?;
             log::info!(
                 "[claude-plugin] instance={} user message sent after {:?}",
                 self.config.id,
