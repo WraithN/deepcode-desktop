@@ -254,10 +254,14 @@ async fn forward_values(
     external_tx: &mpsc::Sender<Value>,
 ) {
     for value in values {
+        // 内部通道（receive() 拉取端）对部分消费者可能永不读取（如 opencode
+        // 插件只消费外部通道），若用阻塞式 send，通道写满后 SSE 读取任务会
+        // 永久卡死、后续事件全部丢失。因此内部通道必须 try_send 满则丢弃，
+        // 与上方注释的设计意图一致。
         // A send error means the consumer has dropped; the loop will exit on
         // the next receive or reconnection. Dropping the event is intentional
         // to avoid backpressure blocking the SSE reader.
-        let _ = internal_tx.send(value.clone()).await;
+        let _ = internal_tx.try_send(value.clone());
         let _ = external_tx.send(value).await;
     }
 }
