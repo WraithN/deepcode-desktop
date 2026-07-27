@@ -554,10 +554,20 @@ impl SessionManager {
         run_id: &str,
         agent_service: &AgentService,
     ) -> Result<(), RunError> {
-        let work_directory = std::env::current_dir()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+        // 优先使用 session 持久化记录的 workspace 路径，避免使用 gatewayd 进程的 cwd
+        // 导致 agent 在错误目录下执行。回退顺序：
+        // 1. workspace_for_session —— sessions.json 中记录的正确路径
+        // 2. platform_workspace_path —— 平台同步分配的沙箱路径
+        // 3. current_dir —— 兜底，仅在前两者均不可用时使用
+        let work_directory = self
+            .workspace_for_session(session_id)
+            .await
+            .or_else(|| self.platform_workspace_path())
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string())
+            });
         tracing::info!(
             "[session_manager] run={} session={} has no agent, auto-attaching agent_key={}",
             run_id,
