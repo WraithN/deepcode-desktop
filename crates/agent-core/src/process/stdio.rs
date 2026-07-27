@@ -43,14 +43,9 @@ impl Transport for StdioTransport {
         // child process.  This prevents path traversal via relative paths or
         // symlinks in `cwd` and gives a clear error if the directory does not
         // exist.
-        let cwd = fs::canonicalize(&self.cwd)
-            .await
-            .map_err(|e| {
-                TransportError::ProcessStart(format!(
-                    "invalid working directory '{}': {}",
-                    self.cwd, e
-                ))
-            })?;
+        let cwd = fs::canonicalize(&self.cwd).await.map_err(|e| {
+            TransportError::ProcessStart(format!("invalid working directory '{}': {}", self.cwd, e))
+        })?;
         if !cwd.is_dir() {
             return Err(TransportError::ProcessStart(format!(
                 "working directory '{}' is not a directory",
@@ -119,7 +114,10 @@ impl StdioHandle {
     /// Write all bytes to the underlying writer, mapping errors to
     /// [`TransportError::SendFailed`].
     async fn write_all_bytes(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        self.writer.write_all(bytes).await.map_err(Self::map_send_err)
+        self.writer
+            .write_all(bytes)
+            .await
+            .map_err(Self::map_send_err)
     }
 
     /// Write a complete NDJSON line: payload, delimiter, and flush.
@@ -179,7 +177,10 @@ mod tests {
     async fn test_stdio_echo() {
         let transport = StdioTransport::new("cat".to_string(), vec![], ".".to_string());
         let mut handle = transport.start().await.unwrap();
-        handle.send(serde_json::json!({"hello":"world"})).await.unwrap();
+        handle
+            .send(serde_json::json!({"hello":"world"}))
+            .await
+            .unwrap();
         let value = handle.receive().await.unwrap();
         assert_eq!(value["hello"], "world");
         handle.close().await.unwrap();

@@ -308,6 +308,10 @@ pub fn build_admin_router(state: ApiState) -> Router {
             .route(
                 "/sessions/{session_id}/agents/{agent_id}/config",
                 put(crate::handlers::agent::update_agent_config_handler),
+            )
+            .route(
+                "/sessions/{session_id}/agents/{agent_id}/respond",
+                post(crate::handlers::agent::respond_handler),
             );
     }
 

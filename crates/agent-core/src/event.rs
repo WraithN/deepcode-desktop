@@ -4,13 +4,31 @@ use serde_json::Value;
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    Thinking { content: String },
-    TextDelta { content: String },
-    ToolUse { tool_name: String, args: Value },
-    ToolResult { tool_name: String, result: String, failed: bool },
-    AskPermission { message: String, tool_name: String },
-    AskUser { questions: Vec<String> },
-    Error { message: String },
+    Thinking {
+        content: String,
+    },
+    TextDelta {
+        content: String,
+    },
+    ToolUse {
+        tool_name: String,
+        args: Value,
+    },
+    ToolResult {
+        tool_name: String,
+        result: String,
+        failed: bool,
+    },
+    AskPermission {
+        message: String,
+        tool_name: String,
+    },
+    AskUser {
+        questions: Vec<String>,
+    },
+    Error {
+        message: String,
+    },
     Done,
 }
 
@@ -21,7 +39,9 @@ mod tests {
 
     #[test]
     fn test_event_serde_thinking() {
-        let ev = AgentEvent::Thinking { content: "hello".into() };
+        let ev = AgentEvent::Thinking {
+            content: "hello".into(),
+        };
         let s = serde_json::to_string(&ev).unwrap();
         assert_eq!(s, r#"{"type":"thinking","content":"hello"}"#);
     }
@@ -33,7 +53,10 @@ mod tests {
             args: json!({"path": "/tmp/a.txt"}),
         };
         let s = serde_json::to_string(&ev).unwrap();
-        assert_eq!(s, r#"{"type":"tool_use","tool_name":"read_file","args":{"path":"/tmp/a.txt"}}"#);
+        assert_eq!(
+            s,
+            r#"{"type":"tool_use","tool_name":"read_file","args":{"path":"/tmp/a.txt"}}"#
+        );
     }
 
     #[test]

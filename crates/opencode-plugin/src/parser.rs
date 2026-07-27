@@ -4,8 +4,12 @@ use serde_json::Value;
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OpencodeRawEvent {
-    Thinking { content: String },
-    TextDelta { content: String },
+    Thinking {
+        content: String,
+    },
+    TextDelta {
+        content: String,
+    },
     ToolUse {
         #[serde(default)]
         name: Option<String>,
@@ -14,14 +18,31 @@ pub enum OpencodeRawEvent {
         #[serde(default)]
         part: Option<OpencodePart>,
     },
-    ToolResult { name: String, result: String, failed: Option<bool> },
-    AskPermission { message: String, tool: String },
-    AskUser { questions: Vec<String> },
-    Error { message: String },
+    ToolResult {
+        name: String,
+        result: String,
+        failed: Option<bool>,
+    },
+    AskPermission {
+        message: String,
+        tool: String,
+    },
+    AskUser {
+        questions: Vec<String>,
+    },
+    Error {
+        message: String,
+    },
     Done,
-    StepStart { part: OpencodePart },
-    StepFinish { part: OpencodePart },
-    Text { part: OpencodePart },
+    StepStart {
+        part: OpencodePart,
+    },
+    StepFinish {
+        part: OpencodePart,
+    },
+    Text {
+        part: OpencodePart,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -100,7 +121,11 @@ mod tests {
         let line = r#"{"type":"tool_result","name":"read_file","result":"ok","failed":true}"#;
         let ev = parse_opencode_json_line(line).unwrap();
         match ev {
-            OpencodeRawEvent::ToolResult { name, result, failed } => {
+            OpencodeRawEvent::ToolResult {
+                name,
+                result,
+                failed,
+            } => {
                 assert_eq!(name, "read_file");
                 assert_eq!(result, "ok");
                 assert_eq!(failed, Some(true));

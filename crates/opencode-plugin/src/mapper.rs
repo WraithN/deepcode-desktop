@@ -70,7 +70,9 @@ pub fn map_opencode_sse(payload: &Value) -> Vec<ProcessEvent> {
                 .or_else(|| payload.get(KEY_TEXT))
                 .and_then(|v| v.as_str())
                 .unwrap_or(DEFAULT_EMPTY);
-            vec![ProcessEvent::Thinking { content: content.into() }]
+            vec![ProcessEvent::Thinking {
+                content: content.into(),
+            }]
         }
         EVENT_TYPE_MESSAGE_PART_UPDATED => {
             let Some(part) = payload.get(KEY_PROPERTIES).and_then(|p| p.get(KEY_PART)) else {
@@ -78,8 +80,13 @@ pub fn map_opencode_sse(payload: &Value) -> Vec<ProcessEvent> {
             };
             match part.get(KEY_TYPE).and_then(|v| v.as_str()) {
                 Some(STEP_TYPE_STEP_START) => {
-                    let text = part.get(KEY_TEXT).and_then(|v| v.as_str()).unwrap_or(DEFAULT_EMPTY);
-                    vec![ProcessEvent::Thinking { content: text.into() }]
+                    let text = part
+                        .get(KEY_TEXT)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(DEFAULT_EMPTY);
+                    vec![ProcessEvent::Thinking {
+                        content: text.into(),
+                    }]
                 }
                 Some(PART_TYPE_TOOL) | Some(PART_TYPE_TOOL_USE) => map_tool_use_part(part),
                 _ => vec![],
@@ -213,7 +220,11 @@ fn map_tool_result(payload: &Value) -> Vec<ProcessEvent> {
 /// 3. `error` 字符串 — 如果 error 不是对象而是字符串值
 /// 4. 整段 JSON 原文作为兜底
 fn extract_error_message(payload: &Value) -> String {
-    if let Some(msg) = payload.get(KEY_ERROR).and_then(|e| e.get(KEY_MESSAGE)).and_then(|v| v.as_str()) {
+    if let Some(msg) = payload
+        .get(KEY_ERROR)
+        .and_then(|e| e.get(KEY_MESSAGE))
+        .and_then(|v| v.as_str())
+    {
         if !msg.is_empty() {
             return msg.to_string();
         }
@@ -251,9 +262,48 @@ pub fn map_interaction(interaction: &InteractionRequest) -> ProcessEvent {
     }
 }
 
+/// Detect a question interaction from a tool_use input payload.
+///
+/// This is used in the SSE relay loop to recognize the opencode `question` tool
+/// while a run is still in progress, so the gatewayd run can be paused and the
+/// frontend prompted for a response.
+pub fn detect_question_tool_input(input: &Value) -> Option<InteractionRequest> {
+    parse_question(input)
+}
+
 fn parse_question(input: &Value) -> Option<InteractionRequest> {
     let questions_value = input.get(KEY_QUESTIONS).cloned().unwrap_or(Value::Null);
-    let questions = serde_json::from_value::<Vec<QuestionItem>>(questions_value).ok()?;
+
+    // 优先兼容旧格式：questions 数组元素为 {id, text}。
+    if let Ok(questions) = serde_json::from_value::<Vec<QuestionItem>>(questions_value.clone()) {
+        if !questions.is_empty() {
+            return Some(InteractionRequest::Question { questions });
+        }
+    }
+
+    // 新版 opencode question 工具格式：questions 数组元素为
+    // {header, question, options: [{label, description}]}。
+    let arr = questions_value.as_array()?;
+    let mut questions = Vec::new();
+    for q in arr {
+        let text = q
+            .get("header")
+            .or_else(|| q.get("question"))
+            .or_else(|| q.get("text"))
+            .and_then(|v| v.as_str())?;
+        let options = q.get("options").and_then(|v| v.as_array()).cloned();
+        let id = options
+            .and_then(|opts| opts.first().cloned())
+            .and_then(|opt| opt.get("label").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_else(|| "confirm".to_string());
+        questions.push(QuestionItem {
+            id,
+            text: text.to_string(),
+        });
+    }
+    if questions.is_empty() {
+        return None;
+    }
     Some(InteractionRequest::Question { questions })
 }
 
@@ -269,7 +319,10 @@ fn parse_permission(part: &Value) -> Option<InteractionRequest> {
         .or_else(|| part.get(KEY_TOOL_NAME_ALT))
         .and_then(|v| v.as_str())
         .unwrap_or(DEFAULT_UNKNOWN);
-    let action = part.get(KEY_ACTION).and_then(|v| v.as_str()).unwrap_or(DEFAULT_EMPTY);
+    let action = part
+        .get(KEY_ACTION)
+        .and_then(|v| v.as_str())
+        .unwrap_or(DEFAULT_EMPTY);
     Some(InteractionRequest::Permission {
         tool_name: tool_name.to_string(),
         action: action.to_string(),
@@ -323,7 +376,12 @@ mod tests {
         });
         let events = map_opencode_sse(&payload);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0], ProcessEvent::TextDelta { text: "hello".into() });
+        assert_eq!(
+            events[0],
+            ProcessEvent::TextDelta {
+                text: "hello".into()
+            }
+        );
     }
 
     #[test]
@@ -334,7 +392,12 @@ mod tests {
         });
         let events = map_opencode_sse(&payload);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0], ProcessEvent::Thinking { content: "planning".into() });
+        assert_eq!(
+            events[0],
+            ProcessEvent::Thinking {
+                content: "planning".into()
+            }
+        );
     }
 
     #[test]
@@ -345,7 +408,12 @@ mod tests {
         });
         let events = map_opencode_sse(&payload);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0], ProcessEvent::Thinking { content: "reasoning".into() });
+        assert_eq!(
+            events[0],
+            ProcessEvent::Thinking {
+                content: "reasoning".into()
+            }
+        );
     }
 
     #[test]
@@ -361,7 +429,12 @@ mod tests {
         });
         let events = map_opencode_sse(&payload);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0], ProcessEvent::Thinking { content: "step one".into() });
+        assert_eq!(
+            events[0],
+            ProcessEvent::Thinking {
+                content: "step one".into()
+            }
+        );
     }
 
     #[test]

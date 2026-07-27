@@ -21,8 +21,16 @@ pub enum InstanceError {
     #[error("Process error: {0}")]
     ProcessError(String),
     #[error("MCP error: {0}")]
-    #[deprecated(since = "0.2.0", note = "MCP stack is being removed; use ProcessError instead")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "MCP stack is being removed; use ProcessError instead"
+    )]
     McpError(String),
+    /// 当前 run 被交互式工具（如 question）暂停，等待用户响应。
+    /// 这不是真正的错误，插件已在 SSE relay loop 中 emit agent.question/agent.done，
+    /// 需要上层直接结束本 run，避免触发重试或错误广播。
+    #[error("Interaction cancelled: {0}")]
+    InteractionCancelled(String),
 }
 
 #[cfg(test)]

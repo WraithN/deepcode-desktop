@@ -68,6 +68,22 @@ pub trait AgentInstance: Send + Sync {
         message: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
 
+    /// Send a response to an interaction using the conversation id.
+    ///
+    /// The default implementation delegates to [`respond`] with the conversation id
+    /// as the session id, which is sufficient for plugins that do not maintain a
+    /// separate internal session mapping. Plugins like opencode that map conversation
+    /// ids to internal agent session ids should override this method.
+    fn respond_by_conversation(
+        &self,
+        conversation_id: &str,
+        message: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>> {
+        let conversation_id = conversation_id.to_string();
+        let message = message.to_string();
+        Box::pin(async move { self.respond(&conversation_id, &message).await })
+    }
+
     fn stop(&self) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>>;
 
     /// Gracefully stop the instance, waiting up to `timeout` for the process to

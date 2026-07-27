@@ -146,18 +146,10 @@ impl HttpHandle {
                 let mut buffer = Vec::new();
                 match connect_sse_stream(&client, &url).await {
                     Ok(stream) => {
-                        process_sse_stream(
-                            stream,
-                            &mut buffer,
-                            &internal_tx,
-                            &sender,
-                        )
-                        .await;
+                        process_sse_stream(stream, &mut buffer, &internal_tx, &sender).await;
                     }
                     Err(e) => {
-                        log::warn!(
-                            "{LOG_PREFIX}: SSE connect error: {e}, retrying..."
-                        );
+                        log::warn!("{LOG_PREFIX}: SSE connect error: {e}, retrying...");
                     }
                 }
                 sleep(Duration::from_secs(RETRY_DELAY_SECS)).await;

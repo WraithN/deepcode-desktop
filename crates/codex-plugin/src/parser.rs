@@ -2,6 +2,8 @@ use agent_core::process::event::ProcessEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::constants::*;
+
 /// A single JSON-RPC message on the Codex app-server wire.
 ///
 /// Codex omits the standard `"jsonrpc":"2.0"` header, so this loose shape
@@ -48,7 +50,7 @@ pub fn parse_codex_value(value: &Value) -> Option<CodexMessage> {
 pub fn extract_thread_id(msg: &CodexMessage) -> Option<String> {
     msg.params
         .as_ref()
-        .and_then(|p| p.get("threadId").or_else(|| p.get("thread_id")))
+        .and_then(|p| p.get(KEY_THREAD_ID).or_else(|| p.get(KEY_THREAD_ID_ALT)))
         .and_then(|v| v.as_str())
         .map(String::from)
         .or_else(|| {
@@ -61,57 +63,80 @@ pub fn extract_thread_id(msg: &CodexMessage) -> Option<String> {
         })
 }
 
+/// Extracts the text field from a Codex delta object.
+///
+/// Tries the common shapes used by agent message and reasoning deltas:
+/// `{"delta":{"text":"..."}}` and `{"delta":"..."}`.
+fn extract_delta_text(params: &Value) -> Option<String> {
+    let delta = params.get(KEY_DELTA)?;
+    if let Some(text) = delta.get(KEY_TEXT).and_then(|v| v.as_str()) {
+        return Some(text.to_string());
+    }
+    delta.as_str().map(|s| s.to_string())
+}
+
 /// Converts a Codex app-server notification into a normalized `ProcessEvent`.
 pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
     let method = msg.method.as_deref()?;
     let params = msg.params.as_ref()?;
 
     match method {
-        "item/agentMessage/delta" => {
-            let text = params
-                .get("delta")
-                .and_then(|d| d.get("text"))
-                .and_then(|v| v.as_str())?;
-            Some(ProcessEvent::TextDelta {
-                text: text.to_string(),
-            })
+        METHOD_ITEM_AGENT_MESSAGE_DELTA => {
+            let text = extract_delta_text(params)?;
+            Some(ProcessEvent::TextDelta { text })
         }
-        "item/started" => {
-            let item = params.get("item")?;
+        METHOD_ITEM_REASONING_SUMMARY_TEXT_DELTA | METHOD_ITEM_REASONING_TEXT_DELTA => {
+            // Codex streams reasoning summaries (`summaryTextDelta`) and raw reasoning
+            // text (`textDelta`) as the model thinks. Treat both as thinking so the
+            // frontend can fold them into the reasoning card instead of mixing them
+            // with the final assistant output.
+            let content = extract_delta_text(params).unwrap_or_default();
+            if content.is_empty() {
+                None
+            } else {
+                Some(ProcessEvent::Thinking { content })
+            }
+        }
+        METHOD_ITEM_REASONING_SUMMARY_PART_ADDED => {
+            // Boundary marker between reasoning summary sections; no user-visible text.
+            None
+        }
+        METHOD_ITEM_STARTED => {
+            let item = params.get(KEY_ITEM)?;
             let item_type = item
-                .get("type")
-                .or_else(|| item.get("item_type"))
+                .get(KEY_TYPE)
+                .or_else(|| item.get(KEY_ITEM_TYPE))
                 .and_then(|v| v.as_str())?;
             match item_type {
-                "command_execution" | "exec_command" | "shell" => {
-                    let command = item.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                ITEM_TYPE_COMMAND_EXECUTION | ITEM_TYPE_EXEC_COMMAND | ITEM_TYPE_SHELL => {
+                    let command = item.get(KEY_COMMAND).and_then(|v| v.as_str()).unwrap_or("");
                     Some(ProcessEvent::ToolUse {
                         name: "shell".to_string(),
                         input: serde_json::json!({ "command": command }),
                     })
                 }
-                "mcp_tool_call" | "tool_call" => {
+                ITEM_TYPE_MCP_TOOL_CALL | ITEM_TYPE_TOOL_CALL => {
                     let name = item
-                        .get("name")
+                        .get(KEY_NAME)
                         .and_then(|v| v.as_str())
                         .unwrap_or("tool")
                         .to_string();
-                    let input = item.get("arguments").cloned().unwrap_or(Value::Null);
+                    let input = item.get(KEY_ARGUMENTS).cloned().unwrap_or(Value::Null);
                     Some(ProcessEvent::ToolUse { name, input })
                 }
                 _ => None,
             }
         }
-        "item/completed" => {
-            let item = params.get("item")?;
+        METHOD_ITEM_COMPLETED => {
+            let item = params.get(KEY_ITEM)?;
             let item_type = item
-                .get("type")
-                .or_else(|| item.get("item_type"))
+                .get(KEY_TYPE)
+                .or_else(|| item.get(KEY_ITEM_TYPE))
                 .and_then(|v| v.as_str())?;
             match item_type {
-                "agent_message" => {
+                ITEM_TYPE_AGENT_MESSAGE => {
                     let text = item
-                        .get("text")
+                        .get(KEY_TEXT)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
@@ -121,11 +146,26 @@ pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
                         Some(ProcessEvent::TextDelta { text })
                     }
                 }
-                "command_execution" | "exec_command" | "shell" => {
-                    let output = item.get("output").and_then(|v| v.as_str()).unwrap_or("");
+                ITEM_TYPE_REASONING => {
+                    // Completed reasoning item carries the accumulated summary/content.
+                    // Prefer `summary` (readable) over `content` (raw) when both exist.
+                    let content = item
+                        .get(KEY_SUMMARY)
+                        .and_then(|v| v.as_str())
+                        .or_else(|| item.get(KEY_CONTENT).and_then(|v| v.as_str()))
+                        .unwrap_or("")
+                        .to_string();
+                    if content.is_empty() {
+                        None
+                    } else {
+                        Some(ProcessEvent::Thinking { content })
+                    }
+                }
+                ITEM_TYPE_COMMAND_EXECUTION | ITEM_TYPE_EXEC_COMMAND | ITEM_TYPE_SHELL => {
+                    let output = item.get(KEY_OUTPUT).and_then(|v| v.as_str()).unwrap_or("");
                     let exit_code = item
-                        .get("exit_code")
-                        .or_else(|| item.get("exitCode"))
+                        .get(KEY_EXIT_CODE)
+                        .or_else(|| item.get(KEY_EXIT_CODE_ALT))
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                     Some(ProcessEvent::ToolResult {
@@ -134,19 +174,19 @@ pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
                         failed: exit_code != 0,
                     })
                 }
-                "mcp_tool_call" | "tool_call" => {
+                ITEM_TYPE_MCP_TOOL_CALL | ITEM_TYPE_TOOL_CALL => {
                     let name = item
-                        .get("name")
+                        .get(KEY_NAME)
                         .and_then(|v| v.as_str())
                         .unwrap_or("tool")
                         .to_string();
                     let result = item
-                        .get("output")
+                        .get(KEY_OUTPUT)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     let failed = item
-                        .get("failed")
+                        .get(KEY_FAILED)
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     Some(ProcessEvent::ToolResult {
@@ -158,20 +198,20 @@ pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
                 _ => None,
             }
         }
-        "turn/completed" => Some(ProcessEvent::Done),
-        "turn/failed" => {
+        METHOD_TURN_COMPLETED => Some(ProcessEvent::Done),
+        METHOD_TURN_FAILED => {
             let message = params
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .or_else(|| params.get("message"))
+                .get(KEY_ERROR)
+                .and_then(|e| e.get(KEY_MESSAGE))
+                .or_else(|| params.get(KEY_MESSAGE))
                 .and_then(|v| v.as_str())
                 .unwrap_or("turn failed")
                 .to_string();
             Some(ProcessEvent::Error { message })
         }
-        "error" => {
+        METHOD_ERROR => {
             let message = params
-                .get("message")
+                .get(KEY_MESSAGE)
                 .and_then(|v| v.as_str())
                 .unwrap_or("codex error")
                 .to_string();
@@ -211,6 +251,68 @@ mod tests {
             "unexpected event: {:?}",
             ev
         );
+    }
+
+    #[test]
+    fn test_parse_reasoning_summary_text_delta() {
+        let line = r#"{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"t1","delta":{"text":"I need to check the file structure first."}}}"#;
+        let msg = parse_codex_line(line).unwrap();
+        let ev = to_process_event(&msg).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::Thinking { ref content } if content == "I need to check the file structure first."),
+            "unexpected event: {:?}",
+            ev
+        );
+    }
+
+    #[test]
+    fn test_parse_reasoning_text_delta() {
+        let line = r#"{"method":"item/reasoning/textDelta","params":{"threadId":"t1","delta":{"text":"Raw reasoning token"}}}"#;
+        let msg = parse_codex_line(line).unwrap();
+        let ev = to_process_event(&msg).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::Thinking { ref content } if content == "Raw reasoning token"),
+            "unexpected event: {:?}",
+            ev
+        );
+    }
+
+    #[test]
+    fn test_parse_reasoning_summary_part_added_ignored() {
+        let line = r#"{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"t1","summaryIndex":1}}"#;
+        let msg = parse_codex_line(line).unwrap();
+        assert!(to_process_event(&msg).is_none());
+    }
+
+    #[test]
+    fn test_parse_completed_reasoning_item() {
+        let line = r#"{"method":"item/completed","params":{"threadId":"t1","item":{"id":"i1","type":"reasoning","summary":"Readable reasoning summary","content":"raw reasoning"}}}"#;
+        let msg = parse_codex_line(line).unwrap();
+        let ev = to_process_event(&msg).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::Thinking { ref content } if content == "Readable reasoning summary"),
+            "unexpected event: {:?}",
+            ev
+        );
+    }
+
+    #[test]
+    fn test_parse_completed_reasoning_item_fallback_to_content() {
+        let line = r#"{"method":"item/completed","params":{"threadId":"t1","item":{"id":"i1","type":"reasoning","content":"raw reasoning content"}}}"#;
+        let msg = parse_codex_line(line).unwrap();
+        let ev = to_process_event(&msg).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::Thinking { ref content } if content == "raw reasoning content"),
+            "unexpected event: {:?}",
+            ev
+        );
+    }
+
+    #[test]
+    fn test_parse_empty_reasoning_delta_skipped() {
+        let line = r#"{"method":"item/reasoning/textDelta","params":{"threadId":"t1","delta":{"text":""}}}"#;
+        let msg = parse_codex_line(line).unwrap();
+        assert!(to_process_event(&msg).is_none());
     }
 
     #[test]

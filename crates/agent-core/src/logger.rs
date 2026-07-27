@@ -1,9 +1,9 @@
 use crate::event_sink::DynEventSink;
-use serde::{Serialize, Deserialize};
-use serde_json::Value;
-use tokio::sync::mpsc;
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::PathBuf;
+use tokio::sync::mpsc;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -80,7 +80,10 @@ impl SessionLogger {
         std::thread::spawn(move || {
             while let Some(entry) = rx.blocking_recv() {
                 // Emit via EventSink (WebSocket, HTTP SSE, etc.)
-                let _ = sink.emit("session:log", serde_json::to_value(&entry).unwrap_or_default());
+                let _ = sink.emit(
+                    "session:log",
+                    serde_json::to_value(&entry).unwrap_or_default(),
+                );
 
                 // Persist to SQLite
                 let _ = db_conn.execute(
@@ -98,7 +101,11 @@ impl SessionLogger {
 
                 // Append to local log file
                 if let Some(ref mut writer) = log_writer {
-                    let payload_str = entry.payload.as_ref().map(|v| v.to_string()).unwrap_or_default();
+                    let payload_str = entry
+                        .payload
+                        .as_ref()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
                     let line = if payload_str.is_empty() || payload_str == "null" {
                         format!(
                             "[{}] [{}] [{}] {} - {}\n",

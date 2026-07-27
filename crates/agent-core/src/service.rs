@@ -17,7 +17,9 @@ use crate::error::{InstanceError, PluginError};
 use crate::event_sink::DynEventSink;
 use crate::instance::{AgentInstance, InstanceConfig};
 use crate::logger::SessionLogger;
-use crate::models::{CreateInstanceRequest, InstanceInfo, ModelConfig, PluginInfo, UpdateModelConfigRequest};
+use crate::models::{
+    CreateInstanceRequest, InstanceInfo, ModelConfig, PluginInfo, UpdateModelConfigRequest,
+};
 use crate::plugin::AgentPlugin;
 
 /// Registry of available agent plugins keyed by their unique key.
@@ -155,15 +157,11 @@ impl AgentService {
         // returning a stale instance that points to a different workspace.
         if !req.force {
             let registry = self.instances.lock().await;
-            if let Some((id, existing)) = registry
-                .list()
-                .into_iter()
-                .find(|(_, i)| {
-                    i.agent_key() == req.agent_key
-                        && i.work_directory() == req.work_directory
-                        && i.name() == req.name
-                })
-            {
+            if let Some((id, existing)) = registry.list().into_iter().find(|(_, i)| {
+                i.agent_key() == req.agent_key
+                    && i.work_directory() == req.work_directory
+                    && i.name() == req.name
+            }) {
                 return Ok(InstanceInfo {
                     id: id.to_string(),
                     agent_key: req.agent_key.clone(),
@@ -192,10 +190,7 @@ impl AgentService {
             endpoint: instance.endpoint(),
         };
 
-        self.instances
-            .lock()
-            .await
-            .insert(id, Arc::from(instance));
+        self.instances.lock().await.insert(id, Arc::from(instance));
 
         Ok(info)
     }
@@ -230,6 +225,29 @@ impl AgentService {
             .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
 
         instance.respond(session_id, message).await
+    }
+
+    /// Respond to an interaction using the gatewayd conversation id.
+    ///
+    /// This is the preferred entry point for gatewayd / web clients, which do not
+    /// know the agent's internal session id. Plugins that maintain a conversation
+    /// -> session mapping (e.g. opencode) will resolve the mapping internally.
+    pub async fn respond_to_instance_by_conversation(
+        &self,
+        instance_id: &str,
+        conversation_id: &str,
+        message: &str,
+    ) -> Result<(), InstanceError> {
+        let instance = self
+            .instances
+            .lock()
+            .await
+            .get(instance_id)
+            .ok_or(InstanceError::NotFound(instance_id.to_string()))?;
+
+        instance
+            .respond_by_conversation(conversation_id, message)
+            .await
     }
 
     pub async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError> {
@@ -280,11 +298,18 @@ impl AgentService {
     pub async fn stop_all_instances_with_timeout(&self, timeout: Duration) {
         let ids: Vec<String> = {
             let registry = self.instances.lock().await;
-            registry.list().into_iter().map(|(id, _)| id.clone()).collect()
+            registry
+                .list()
+                .into_iter()
+                .map(|(id, _)| id.clone())
+                .collect()
         };
 
         for id in ids {
-            if let Err(e) = self.stop_and_remove_instance_with_timeout(&id, timeout).await {
+            if let Err(e) = self
+                .stop_and_remove_instance_with_timeout(&id, timeout)
+                .await
+            {
                 log::warn!("failed to gracefully stop instance {}: {}", id, e);
             }
         }
@@ -323,12 +348,7 @@ impl AgentService {
         &self,
         req: UpdateModelConfigRequest,
     ) -> Result<(), InstanceError> {
-        let instance_exists = self
-            .instances
-            .lock()
-            .await
-            .get(&req.instance_id)
-            .is_some();
+        let instance_exists = self.instances.lock().await.get(&req.instance_id).is_some();
 
         if !instance_exists {
             return Err(InstanceError::NotFound(req.instance_id.clone()));

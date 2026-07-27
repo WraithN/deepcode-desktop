@@ -2,6 +2,7 @@ use agent_core::error::InstanceError;
 use agent_core::event_sink::DynEventSink;
 use agent_core::instance::{AgentInstance, InstanceConfig, InstanceStatus, UNKNOWN_PID};
 use agent_core::logger::{LogLevel, SessionLogger};
+use agent_core::process::event::ProcessEvent;
 use agent_core::process::mapper::{emit_status_changed, EventMapper};
 use agent_core::process::transport::TransportHandle;
 use agent_core::session_map::ConversationSessionMap;
@@ -14,7 +15,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::mapper::{detect_interaction_from_parts, InteractionRequest};
-use crate::transport::{connect_opencode_sse, port_allocator, start_opencode_process, OpenCodeClient};
+use crate::transport::{
+    connect_opencode_sse, port_allocator, start_opencode_process, OpenCodeClient,
+};
 
 const LOG_SOURCE: &str = "opencode-plugin";
 const LOCALHOST: &str = "http://127.0.0.1";
@@ -62,10 +65,18 @@ pub struct OpencodeInstance {
     startup_lock: Arc<TokioMutex<()>>,
     /// 最近一次收到 agent SSE 事件的时间,供看门狗判定卡死。
     last_event_at: Arc<Mutex<Option<Instant>>>,
+    /// 用于取消当前在途 HTTP 请求的发送端。当 SSE relay loop 检测到 question
+    /// 等交互式工具时，立即取消 `send_message_http` 的阻塞等待，从而结束本 run，
+    /// 让前端可以在新 run 中发送响应，避免 opencode 不能并发处理两条消息。
+    cancel_send: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
 impl OpencodeInstance {
-    pub fn new(config: InstanceConfig, event_sink: DynEventSink, logger: Arc<SessionLogger>) -> Self {
+    pub fn new(
+        config: InstanceConfig,
+        event_sink: DynEventSink,
+        logger: Arc<SessionLogger>,
+    ) -> Self {
         Self {
             config,
             event_sink,
@@ -78,6 +89,7 @@ impl OpencodeInstance {
             transport_handle: Arc::new(TokioMutex::new(None)),
             startup_lock: Arc::new(TokioMutex::new(())),
             last_event_at: Arc::new(Mutex::new(None)),
+            cancel_send: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -188,26 +200,66 @@ impl OpencodeInstance {
         );
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(SSE_CHANNEL_CAPACITY);
-        let handle = connect_opencode_sse(&base_url, client.client().clone(), &self.config.id, tx)
-            .await?;
+        let handle =
+            connect_opencode_sse(&base_url, client.client().clone(), &self.config.id, tx).await?;
         *self.transport_handle.lock().await = Some(handle);
 
         let event_sink = self.event_sink.clone();
         let instance_id = self.config.id.clone();
         let session_map = self.session_map.clone();
         let last_event_at = self.last_event_at.clone();
+        let cancel_send = self.cancel_send.clone();
         tokio::spawn(async move {
             while let Some(payload) = rx.recv().await {
                 let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let events = crate::mapper::map_opencode_sse(&payload);
+                let mut events = crate::mapper::map_opencode_sse(&payload);
                 if !events.is_empty() {
                     // 收到 agent 事件,刷新看门狗活跃时间戳。
                     *last_event_at.lock().unwrap() = Some(Instant::now());
-                    let session_id = crate::mapper::extract_session_id(&payload).unwrap_or_default();
+                    let session_id =
+                        crate::mapper::extract_session_id(&payload).unwrap_or_default();
                     let conversation_id = session_map
                         .conversation_for_session(&session_id)
                         .unwrap_or_default();
-                    log::info!("[relay-loop] ev={event_type} oc_sid={session_id} gw_sid={conversation_id} mapped={}", events.len());
+
+                    // 检测 question 工具调用：将其转换为交互事件，并结束当前 run，
+                    // 让前端可以发送 respond。opencode 不能并发处理两条消息，
+                    // 因此必须取消在途 HTTP 请求。
+                    let mut question_detected = false;
+                    let mut question_events = Vec::new();
+                    for event in &events {
+                        if let ProcessEvent::ToolUse { name, input } = event {
+                            if name == "question" {
+                                if let Some(interaction) =
+                                    crate::mapper::detect_question_tool_input(input)
+                                {
+                                    question_detected = true;
+                                    question_events
+                                        .push(crate::mapper::map_interaction(&interaction));
+                                }
+                            }
+                        }
+                    }
+
+                    if question_detected {
+                        // 移除 question 的 ToolUse 事件，避免前端同时看到工具调用卡片和交互弹窗。
+                        events.retain(|e| {
+                            !matches!(e, ProcessEvent::ToolUse { name, .. } if name == "question")
+                        });
+                        events.extend(question_events);
+                        events.push(ProcessEvent::Done);
+                        if let Some(tx) = cancel_send.lock().unwrap().take() {
+                            let _ = tx.send(());
+                            log::info!(
+                                "[relay-loop] instance={instance_id} cancelled HTTP request for question interaction"
+                            );
+                        }
+                    }
+
+                    log::info!(
+                        "[relay-loop] ev={event_type} oc_sid={session_id} gw_sid={conversation_id} mapped={}",
+                        events.len()
+                    );
                     for event in events {
                         let mapper = EventMapper::new(instance_id.clone(), conversation_id.clone());
                         mapper.map(event, &event_sink);
@@ -221,9 +273,9 @@ impl OpencodeInstance {
     }
 
     async fn create_opencode_session(&self) -> Result<String, InstanceError> {
-        let base = self.base_url().ok_or_else(|| {
-            InstanceError::NotRunning(ERR_SERVE_NOT_STARTED.into())
-        })?;
+        let base = self
+            .base_url()
+            .ok_or_else(|| InstanceError::NotRunning(ERR_SERVE_NOT_STARTED.into()))?;
         OpenCodeClient::new(base).create_session().await
     }
 
@@ -232,9 +284,9 @@ impl OpencodeInstance {
         session_id: &str,
         message: &str,
     ) -> Result<serde_json::Value, InstanceError> {
-        let base = self.base_url().ok_or_else(|| {
-            InstanceError::NotRunning(ERR_SERVE_NOT_STARTED.into())
-        })?;
+        let base = self
+            .base_url()
+            .ok_or_else(|| InstanceError::NotRunning(ERR_SERVE_NOT_STARTED.into()))?;
         OpenCodeClient::new(base)
             .send_message(session_id, message)
             .await
@@ -316,6 +368,9 @@ impl OpencodeInstance {
     /// HTTP POST `/session/{id}/message` 会阻塞至 agent run 结束。正常情况下
     /// agent 期间持续推送 SSE 事件;若 agent 卡死(LLM API 挂起、死锁等),
     /// HTTP 既不返回也无事件。看门狗在阈值内无事件时中断本次请求。
+    ///
+    /// 另外，当 relay loop 检测到 question 等交互式工具时，会通过 `cancel_send`
+    /// 取消本次 HTTP 请求，让 run 立即结束，避免 opencode 不能并发处理两条消息。
     async fn http_with_watchdog(
         &self,
         session_id: &str,
@@ -324,12 +379,29 @@ impl OpencodeInstance {
         // 从本次发送开始计时活跃度
         *self.last_event_at.lock().unwrap() = Some(Instant::now());
 
-        tokio::select! {
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        *self.cancel_send.lock().unwrap() = Some(cancel_tx);
+
+        let result = tokio::select! {
             r = self.send_message_http(session_id, message) => r,
+            _ = cancel_rx => {
+                log::info!(
+                    "[opencode-plugin] instance={} session={} HTTP request cancelled by interaction",
+                    self.config.id,
+                    session_id
+                );
+                Err(InstanceError::InteractionCancelled(
+                    "interaction awaiting user response".into(),
+                ))
+            }
             _ = self.watchdog_until_stalled() => Err(InstanceError::ProcessError(format!(
                 "agent stalled: no SSE events for {WATCHDOG_STALL_THRESHOLD_SECS}s"
             ))),
-        }
+        };
+
+        // 请求结束（无论成败）后清空取消句柄，防止 relay loop 取消已不存在的请求。
+        *self.cancel_send.lock().unwrap() = None;
+        result
     }
 
     /// 看门狗 future:周期性检查 SSE 事件活跃度,直到判定卡死时返回。
@@ -363,6 +435,17 @@ impl OpencodeInstance {
         loop {
             match self.http_with_watchdog(session_id, message).await {
                 Ok(value) => return Ok(value),
+                // question 等交互式工具取消的请求不应重试：relay loop 已 emit 交互
+                // 事件与 agent.done，重试会重建进程并浪费 LLM 调用。
+                Err(InstanceError::InteractionCancelled(_)) => {
+                    log::info!(
+                        "[opencode-plugin] instance={} interaction cancelled, not retrying",
+                        self.config.id
+                    );
+                    return Err(InstanceError::InteractionCancelled(
+                        "interaction awaiting user response".into(),
+                    ));
+                }
                 Err(e) if attempt < MAX_SEND_RETRIES => {
                     attempt += 1;
                     log::warn!(
@@ -447,7 +530,21 @@ impl AgentInstance for OpencodeInstance {
 
             let result = self
                 .send_with_watchdog_retry(&mut session_id, &message, &conversation_id)
-                .await?;
+                .await;
+            let result = match result {
+                Ok(value) => value,
+                Err(InstanceError::InteractionCancelled(_)) => {
+                    // question 交互已被 relay loop 转换为 agent.question + agent.done，
+                    // run 已通过 agent.done 正常结束，这里直接返回成功，避免上层再广播错误。
+                    log::info!(
+                        "[opencode-plugin] instance={} conversation={} send_message cancelled by interaction; treating as success",
+                        self.config.id,
+                        conversation_id
+                    );
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
 
             self.detect_and_emit_interaction(&result, &conversation_id, &session_id);
 
@@ -465,6 +562,35 @@ impl AgentInstance for OpencodeInstance {
         let message = message.to_string();
         Box::pin(async move {
             self.ensure_started().await?;
+            self.respond_with_watchdog(&session_id, &message).await
+        })
+    }
+
+    fn respond_by_conversation(
+        &self,
+        conversation_id: &str,
+        message: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InstanceError>> + Send + '_>> {
+        let conversation_id = conversation_id.to_string();
+        let message = message.to_string();
+        Box::pin(async move {
+            // 避免与 send_message 中持有的 startup_lock 产生死锁：当 agent 正在执
+            // 行交互式工具（如 question）时，send_message 仍阻塞在 ensure_started 后的
+            // HTTP 请求上，respond 不应再尝试获取 startup_lock。只要 base_url 已设置
+            // 说明 opencode serve 已启动，可直接发送响应。
+            if self.base_url().is_none() {
+                return Err(InstanceError::NotRunning(
+                    "opencode serve not started".into(),
+                ));
+            }
+            let session_id = self
+                .find_session_for_conversation(&conversation_id)
+                .ok_or_else(|| {
+                    InstanceError::NotFound(format!(
+                        "no opencode session for conversation {}",
+                        conversation_id
+                    ))
+                })?;
             self.respond_with_watchdog(&session_id, &message).await
         })
     }

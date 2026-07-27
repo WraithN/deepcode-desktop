@@ -78,3 +78,53 @@ pub async fn update_agent_config_handler(
             .into_response(),
     }
 }
+#[derive(serde::Deserialize)]
+pub struct RespondRequest {
+    pub message: String,
+}
+
+/// 回复 agent 的交互式请求（question/permission/todo）。
+///
+/// 该端点使用 gatewayd 的 conversation id（即 session_id），由 opencode 等
+/// 插件内部解析为自身的 session id，因此 Web 客户端无需知道 agent 内部会话。
+pub async fn respond_handler(
+    State(state): State<crate::ApiState>,
+    Path((session_id, agent_id)): Path<(String, String)>,
+    Json(req): Json<RespondRequest>,
+) -> impl IntoResponse {
+    let Some(service) = state.agent_service.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Agent runtime not available"})),
+        )
+            .into_response();
+    };
+
+    let Some(session) = state.session_manager.get_session(&session_id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "session not found"})),
+        )
+            .into_response();
+    };
+
+    if !session.instances().contains(&agent_id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "agent not found in session"})),
+        )
+            .into_response();
+    }
+
+    match service
+        .respond_to_instance_by_conversation(&agent_id, &session_id, &req.message)
+        .await
+    {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "sent"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}

@@ -114,10 +114,7 @@ impl EventMapper {
         if let Value::Object(extra) = interaction {
             interaction_obj.extend(extra);
         }
-        obj.insert(
-            KEY_INTERACTION.to_string(),
-            Value::Object(interaction_obj),
-        );
+        obj.insert(KEY_INTERACTION.to_string(), Value::Object(interaction_obj));
 
         sink.emit(method, payload);
     }
@@ -155,7 +152,11 @@ impl EventMapper {
                     }),
                 );
             }
-            ProcessEvent::ToolResult { name, result, failed } => {
+            ProcessEvent::ToolResult {
+                name,
+                result,
+                failed,
+            } => {
                 self.emit_with_base(
                     sink,
                     METHOD_THINKING,
@@ -266,7 +267,9 @@ mod tests {
 
     #[test]
     fn test_map_thinking() {
-        let events = map_event(ProcessEvent::Thinking { content: "...".into() });
+        let events = map_event(ProcessEvent::Thinking {
+            content: "...".into(),
+        });
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, METHOD_THINKING);
         assert_eq!(events[0].1[KEY_CONTENT], "...");
@@ -300,7 +303,10 @@ mod tests {
         });
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, METHOD_QUESTION);
-        assert_eq!(events[0].1[KEY_INTERACTION][KEY_QUESTIONS][0][KEY_TEXT], "ok?");
+        assert_eq!(
+            events[0].1[KEY_INTERACTION][KEY_QUESTIONS][0][KEY_TEXT],
+            "ok?"
+        );
         assert_eq!(
             events[0].1[KEY_INTERACTION][KEY_TYPE],
             INTERACTION_TYPE_QUESTION
