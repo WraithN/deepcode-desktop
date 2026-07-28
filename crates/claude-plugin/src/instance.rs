@@ -480,6 +480,10 @@ impl AgentInstance for ClaudeInstance {
         &self.config.work_directory
     }
 
+    fn active_session_id(&self) -> Option<String> {
+        self.active_session_id.lock().unwrap().clone()
+    }
+
     fn send_message(
         &self,
         conversation_id: &str,

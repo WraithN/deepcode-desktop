@@ -37,6 +37,12 @@ impl InstanceConfig {
             permission_mode: None,
         }
     }
+
+    /// 设置 agent 内部 session ID，用于 --resume 恢复上下文。
+    pub fn with_session_id(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
+        self
+    }
 }
 
 /// Default polling interval used by `graceful_shutdown` while waiting for the
@@ -52,6 +58,13 @@ pub trait AgentInstance: Send + Sync {
 
     /// Optional endpoint URL for this instance (e.g. opencode serve URL).
     fn endpoint(&self) -> Option<String> {
+        None
+    }
+
+    /// 返回 agent 内部当前活跃的 session ID（如 claude 的 session_id）。
+    /// 用于 gatewayd 在 reap 前持久化，以便重建实例时通过 --resume 恢复上下文。
+    /// 默认返回 None；支持 resume 的 plugin（如 claude）应覆盖此方法。
+    fn active_session_id(&self) -> Option<String> {
         None
     }
 

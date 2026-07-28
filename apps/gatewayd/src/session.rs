@@ -45,6 +45,9 @@ pub struct Session {
     state: Arc<Mutex<Value>>,
     expired_time: Duration,
     last_input_at: Arc<Mutex<Instant>>,
+    /// 最近一次 run 结束的时间。is_expired 取 max(last_input_at, last_run_end_at)，
+    /// 防止长 run 结束后 last_input_at 已过期导致实例被立刻 reap。
+    last_run_end_at: Arc<Mutex<Instant>>,
     /// 标记当前是否有 run 正在执行。Arc 共享保证 Session 被 clone 后
     /// （如 reaper 通过 inner map 读取、start_run 通过 get_session 读取）
     /// 看到的是同一个标志位。
@@ -65,6 +68,7 @@ impl Session {
             state: Arc::new(Mutex::new(Value::Object(serde_json::Map::new()))),
             expired_time,
             last_input_at: Arc::new(Mutex::new(Instant::now())),
+            last_run_end_at: Arc::new(Mutex::new(Instant::now())),
             run_active: Arc::new(AtomicBool::new(false)),
             current_run_id: Arc::new(Mutex::new(None)),
         }
@@ -113,17 +117,22 @@ impl Session {
         let run_id = self.current_run_id.lock().unwrap().take();
         if run_id.is_some() {
             self.run_active.store(false, Ordering::SeqCst);
+            *self.last_run_end_at.lock().unwrap() = Instant::now();
         }
         run_id
     }
 
-    /// 判断 session 是否已超过 expired_time 没有用户输入。
+    /// 判断 session 是否已超过 expired_time 没有活动。
     /// run 执行期间不视为过期，避免 reaper 在长时间 run 中途杀掉 agent 进程。
+    /// run 结束后，以 max(last_input_at, last_run_end_at) 判定，防止长 run
+    /// 结束瞬间 last_input_at 已过期导致实例被立刻 reap。
     pub fn is_expired(&self) -> bool {
         if self.run_active.load(Ordering::SeqCst) {
             return false;
         }
-        let last = *self.last_input_at.lock().unwrap();
+        let input = *self.last_input_at.lock().unwrap();
+        let run_end = *self.last_run_end_at.lock().unwrap();
+        let last = input.max(run_end);
         Instant::now().duration_since(last) > self.expired_time
     }
 }
@@ -134,6 +143,10 @@ pub struct WorkspaceEntry {
     pub session_id: String,
     pub workspace_path: String,
     pub last_used: u64,
+    /// Agent 内部 session ID（如 claude 的 session_id），用于实例被 reap 后
+    /// 重建时通过 --resume 恢复上下文。reap 前由 reaper 从实例中读取并持久化。
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
 }
 
 /// On-disk representation of the sessions persistence file.  The version field
@@ -434,11 +447,15 @@ impl SessionManager {
         // roll this back so the on-disk state stays consistent with the runtime.
         self.persist_workspace(session_id, work_directory).await;
 
+        // 从持久化存储中读取 agent 内部 session ID，用于 --resume 恢复上下文。
+        let resume_session_id = self.load_agent_session_id(session_id).await;
+
         let req = CreateInstanceRequest {
             agent_key: agent_key.to_string(),
             name: name.to_string(),
             work_directory: work_directory.to_string(),
             force,
+            session_id: resume_session_id,
         };
 
         let info = match agent_service.create_instance(req).await {
@@ -502,9 +519,26 @@ impl SessionManager {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0),
+                agent_session_id: None,
             },
         );
         save_workspaces(&ws);
+    }
+
+    /// 持久化 agent 内部 session ID，用于实例被 reap 后重建时恢复上下文。
+    async fn persist_agent_session_id(&self, session_id: &str, agent_session_id: &str) {
+        let mut ws = self.workspaces.write().await;
+        if let Some(entry) = ws.get_mut(session_id) {
+            entry.agent_session_id = Some(agent_session_id.to_string());
+            save_workspaces(&ws);
+        }
+    }
+
+    /// 读取持久化的 agent 内部 session ID（若有）。
+    async fn load_agent_session_id(&self, session_id: &str) -> Option<String> {
+        let ws = self.workspaces.read().await;
+        ws.get(session_id)
+            .and_then(|e| e.agent_session_id.clone())
     }
 
     /// Remove the workspace mapping for a session and persist the change.
@@ -743,6 +777,11 @@ impl SessionManager {
 
         for (session_id, instance_ids) in expired {
             for instance_id in &instance_ids {
+                // reap 前捕获 agent 内部 session ID 并持久化，
+                // 以便重建实例时通过 --resume 恢复上下文。
+                if let Some(agent_sid) = agent_service.active_session_id(instance_id).await {
+                    self.persist_agent_session_id(&session_id, &agent_sid).await;
+                }
                 tracing::info!(
                     "[session_manager] reaping expired instance={} session={}",
                     instance_id,
@@ -807,6 +846,23 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1));
         assert!(session.is_expired());
         session.begin_run("run-1".to_string());
+        assert!(!session.is_expired());
+    }
+
+    #[test]
+    fn long_run_end_prevents_immediate_expiry() {
+        // expired_time 为 60s：模拟长 run（last_input_at 已远过期），
+        // run 结束后 last_run_end_at 刷新，60s 内不得过期。
+        let session = Session::new("s-1".to_string(), Duration::from_secs(60));
+        // 模拟 last_input_at 已过期：手动将 last_input_at 和 last_run_end_at 回拨 120s。
+        let past = Instant::now() - Duration::from_secs(120);
+        *session.last_input_at.lock().unwrap() = past;
+        *session.last_run_end_at.lock().unwrap() = past;
+        assert!(session.is_expired());
+
+        // run 结束刷新 last_run_end_at，此时不应过期。
+        session.begin_run("run-1".to_string());
+        session.end_run();
         assert!(!session.is_expired());
     }
 }

@@ -178,7 +178,8 @@ impl AgentService {
             let registry = self.instances.lock().await;
             unique_instance_id(&req.agent_key, &*registry)
         };
-        let config = InstanceConfig::new(id.clone(), req.name.clone(), req.work_directory.clone());
+        let config = InstanceConfig::new(id.clone(), req.name.clone(), req.work_directory.clone())
+            .with_session_id(req.session_id.clone());
 
         let instance = plugin.create_instance(config, self.event_sink.clone())?;
         let info = InstanceInfo {
@@ -326,6 +327,14 @@ impl AgentService {
             status: instance.status(),
             endpoint: instance.endpoint(),
         })
+    }
+
+    /// 获取实例当前活跃的 agent 内部 session ID。
+    /// 用于 gatewayd 在 reap 前持久化，以便重建实例时恢复上下文。
+    pub async fn active_session_id(&self, instance_id: &str) -> Option<String> {
+        let registry = self.instances.lock().await;
+        let instance = registry.get(instance_id)?;
+        instance.active_session_id()
     }
 
     pub async fn list_instances(&self) -> Vec<InstanceInfo> {

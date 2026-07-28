@@ -26,6 +26,11 @@ pub struct CreateInstanceRequest {
     pub work_directory: String,
     #[serde(default)]
     pub force: bool,
+    /// Agent 内部的 session ID（如 claude 的 session_id），用于 instance 被
+    /// reap 后重建时通过 --resume 恢复上下文。由 gatewayd 从持久化存储中
+    /// 查询并填充，调用方通常不需要显式传入。
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

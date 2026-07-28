@@ -130,6 +130,7 @@ async fn handle_create_instance(service: Arc<AgentService>, req: JsonRpcRequest,
         name: name.unwrap().to_string(),
         work_directory: canonical_work_dir,
         force,
+        session_id: None,
     };
 
     match service.create_instance(create_req).await {
