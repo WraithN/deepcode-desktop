@@ -29,8 +29,6 @@ pub enum RunError {
     NoAgent,
     #[error("no user message found")]
     NoUserMessage,
-    #[error("session already has an agent instance")]
-    InstanceAlreadyExists,
     #[error("session already has an active run")]
     RunAlreadyActive,
     #[error("agent error: {0}")]
@@ -405,13 +403,16 @@ impl SessionManager {
         let work_directory = resolved_work_dir.as_str();
 
         // Check whether the session already has an instance that we can reuse.
+        // force=true means "allow rebuild if needed", not "must rebuild".
+        // We always try to reuse first; only fall through to rebuild when the
+        // existing instance is dead or its agent_key/work_directory no longer match.
         let existing_id = {
             let guard = self.inner.read().await;
             let session = guard.get(session_id).ok_or_else(|| {
                 PluginError::NotFound(format!("session {session_id}"))
             })?;
             let instances = session.instances();
-            if !instances.is_empty() && !force {
+            if !instances.is_empty() {
                 Some(instances.first().unwrap().clone())
             } else {
                 None
@@ -419,23 +420,14 @@ impl SessionManager {
         };
 
         if let Some(existing_id) = existing_id {
-            let existing = agent_service
-                .get_instance(&existing_id)
-                .await
-                .ok_or_else(|| {
-                    PluginError::CreateInstanceFailed(
-                        "existing instance not found in agent service".to_string(),
-                    )
-                })?;
-            if existing.agent_key == agent_key
-                && existing.work_directory == work_directory
-                && existing.name == name
-            {
-                return Ok(existing);
+            if let Some(existing) = agent_service.get_instance(&existing_id).await {
+                if existing.agent_key == agent_key
+                    && existing.work_directory == work_directory
+                {
+                    return Ok(existing);
+                }
             }
-            return Err(PluginError::CreateInstanceFailed(
-                "session already has an agent instance with different config".to_string(),
-            ));
+            // Instance is dead or config mismatch -> fall through to create new.
         }
 
         // Persist the workspace mapping first. If instance creation fails we can
