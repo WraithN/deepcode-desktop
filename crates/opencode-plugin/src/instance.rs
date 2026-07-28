@@ -69,6 +69,12 @@ pub struct OpencodeInstance {
     /// 等交互式工具时，立即取消 `send_message_http` 的阻塞等待，从而结束本 run，
     /// 让前端可以在新 run 中发送响应，避免 opencode 不能并发处理两条消息。
     cancel_send: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    /// 从持久化存储恢复的 session ID（由 gatewayd 传入），首次发消息时优先使用。
+    /// opencode 将 session 持久化到磁盘，新 `opencode serve` 进程可通过旧 session_id
+    /// 直接发消息（POST /session/{id}/message），恢复上下文。
+    initial_session_id: Mutex<Option<String>>,
+    /// 当前活跃的 opencode session ID，供 reaper 持久化以支持 resume。
+    last_session_id: Arc<Mutex<Option<String>>>,
 }
 
 impl OpencodeInstance {
@@ -77,6 +83,7 @@ impl OpencodeInstance {
         event_sink: DynEventSink,
         logger: Arc<SessionLogger>,
     ) -> Self {
+        let initial_session_id = config.session_id.clone();
         Self {
             config,
             event_sink,
@@ -90,6 +97,8 @@ impl OpencodeInstance {
             startup_lock: Arc::new(TokioMutex::new(())),
             last_event_at: Arc::new(Mutex::new(None)),
             cancel_send: Arc::new(Mutex::new(None)),
+            initial_session_id: Mutex::new(initial_session_id),
+            last_session_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -456,6 +465,7 @@ impl OpencodeInstance {
                     self.reset_and_restart().await?;
                     *session_id = self.create_opencode_session().await?;
                     self.store_session(conversation_id, session_id);
+                    *self.last_session_id.lock().unwrap() = Some(session_id.clone());
                 }
                 Err(e) => return Err(e),
             }
@@ -508,6 +518,10 @@ impl AgentInstance for OpencodeInstance {
         self.base_url()
     }
 
+    fn active_session_id(&self) -> Option<String> {
+        self.last_session_id.lock().unwrap().clone()
+    }
+
     fn send_message(
         &self,
         conversation_id: &str,
@@ -522,11 +536,26 @@ impl AgentInstance for OpencodeInstance {
             let mut session_id = match self.find_session_for_conversation(&conversation_id) {
                 Some(sid) => sid,
                 None => {
-                    let sid = self.create_opencode_session().await?;
+                    // 优先使用持久化恢复的 session ID（opencode 将 session 持久化到磁盘，
+                    // 新进程可通过旧 session_id 直接发消息恢复上下文）。
+                    // 若恢复失败（session 已删除），send_with_watchdog_retry 会自动
+                    // 重建进程并新建 session。
+                    let initial = self.initial_session_id.lock().unwrap().take();
+                    let sid = if let Some(initial) = initial {
+                        log::info!(
+                            "[opencode-plugin] instance={} resuming persisted session={}",
+                            self.config.id,
+                            initial
+                        );
+                        initial
+                    } else {
+                        self.create_opencode_session().await?
+                    };
                     self.store_session(&conversation_id, &sid);
                     sid
                 }
             };
+            *self.last_session_id.lock().unwrap() = Some(session_id.clone());
 
             let result = self
                 .send_with_watchdog_retry(&mut session_id, &message, &conversation_id)

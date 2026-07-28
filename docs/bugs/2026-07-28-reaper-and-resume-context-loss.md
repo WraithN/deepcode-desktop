@@ -63,18 +63,19 @@
    - `reap_expired` 在杀实例前调 `agent_service.active_session_id()` 捕获并持久化
 6. **`src-tauri/src/gateway/handlers/agent.rs`**：构造 `CreateInstanceRequest` 时补 `session_id: None`
 
-### 修复 C：opencode session 续接（P1，待调研）
+### 修复 C：opencode session 续接（P1，已完成）
 
-调研结论：**opencode 无 resume 机制**。
+调研发现 opencode 将 session 持久化到磁盘，新 `opencode serve` 进程可通过旧 session_id
+直接发消息（`POST /session/{old_id}/message`）恢复上下文。实验验证：杀进程后启动新进程，
+向旧 session_id 发消息成功返回 assistant 响应。
 
-- `POST /session` 建新 session，无 parent_id / fork 参数
-- `POST /session/{id}/message` 只接受消息，无 batch 注入历史
-- session 与 `opencode serve` 进程绑定，进程死亡 = session 死亡
-- `reset_and_restart()` 清空 `session_map`，新建空 session
-
-**缓解措施**：Fix A（防止过早 reap）是当前最佳缓解--只要 instance 不被 reap，session 就活着。后续可探索：
-- opencode 本地存储（`~/.opencode/storage/`）是否可被新进程复用
-- 消息历史回放（需 opencode 协议支持 batch 注入）
+实现：
+- `opencode-plugin/instance.rs`：`OpencodeInstance` 加 `initial_session_id`（从 `config.session_id`
+  恢复）和 `last_session_id`（跟踪当前 session）
+- `send_message` 中 map 未命中时优先用 `initial_session_id`，失败则 `send_with_watchdog_retry`
+  自动重建进程并新建 session（已有重试逻辑）
+- 实现 `active_session_id()` trait 方法返回 `last_session_id`，供 reaper 持久化
+- `send_with_watchdog_retry` 重试路径也更新 `last_session_id`
 
 ## 验证结果
 
