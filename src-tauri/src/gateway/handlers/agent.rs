@@ -253,6 +253,7 @@ async fn handle_update_model_config(service: Arc<AgentService>, req: JsonRpcRequ
         show_thinking: req.params.get("showThinking").and_then(|v| v.as_bool()),
         temperature: req.params.get("temperature").and_then(|v| v.as_f64()).map(|v| v as f32),
         max_tokens: req.params.get("maxTokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+        watchdog_timeout_secs: req.params.get("watchdogTimeoutSecs").and_then(|v| v.as_u64()),
     };
 
     match service.update_model_config(update_req).await {

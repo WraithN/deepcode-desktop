@@ -68,6 +68,12 @@ pub trait AgentInstance: Send + Sync {
         None
     }
 
+    /// 设置 SSE 看门狗无事件超时阈值（秒）。
+    /// 由 `AgentService::update_model_config` 在收到模型设置更新时调用，
+    /// 使看门狗阈值可通过模型设置接口动态调整。
+    /// 默认空实现；支持看门狗的 plugin（如 opencode）应覆盖此方法。
+    fn set_watchdog_timeout(&self, _secs: u64) {}
+
     fn send_message(
         &self,
         conversation_id: &str,

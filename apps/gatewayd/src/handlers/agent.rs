@@ -26,6 +26,9 @@ pub struct UpdateAgentConfigRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// SSE 看门狗无事件超时阈值（秒），None 表示使用插件默认值（120s）。
+    #[serde(default)]
+    pub watchdog_timeout_secs: Option<u64>,
 }
 
 pub async fn update_agent_config_handler(
@@ -67,6 +70,7 @@ pub async fn update_agent_config_handler(
         show_thinking: None,
         temperature: req.temperature,
         max_tokens: req.max_tokens,
+        watchdog_timeout_secs: req.watchdog_timeout_secs,
     };
 
     match service.update_model_config(update_req).await {

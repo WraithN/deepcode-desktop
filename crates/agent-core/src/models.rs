@@ -51,6 +51,10 @@ pub struct ModelConfig {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// SSE 看门狗无事件超时阈值（秒）。超过此时长未收到任何 agent 事件即判定
+    /// 卡死并触发进程重建。None 表示使用插件默认值（opencode 为 120s）。
+    #[serde(default)]
+    pub watchdog_timeout_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -72,4 +76,6 @@ pub struct UpdateModelConfigRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub watchdog_timeout_secs: Option<u64>,
 }

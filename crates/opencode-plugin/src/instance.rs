@@ -25,10 +25,11 @@ const STARTUP_WAIT_COUNT: u32 = 20;
 const STARTUP_WAIT_MS: u64 = 500;
 const SSE_CHANNEL_CAPACITY: usize = 1000;
 
-/// SSE 事件活跃度看门狗阈值:超过此时长未收到任何 agent 事件即判定卡死。
+/// SSE 事件活跃度看门狗默认阈值:超过此时长未收到任何 agent 事件即判定卡死。
 /// agent 正常思考/工具执行期间 opencode 会流式推送 thinking/tool_use 等事件,
 /// 阈值需大于正常事件间隔。卡死(如 LLM API 挂起、死锁)时无事件,触发重建重试。
-const WATCHDOG_STALL_THRESHOLD_SECS: u64 = 120;
+/// 可通过模型设置接口(`watchdog_timeout_secs`)在运行时覆盖此默认值。
+const DEFAULT_WATCHDOG_STALL_THRESHOLD_SECS: u64 = 120;
 /// 看门狗周期性检查 SSE 活跃度的时间间隔。
 const WATCHDOG_CHECK_INTERVAL_SECS: u64 = 10;
 /// 消息发送卡死/失败时的最大重试次数,每次重试会重建 agent 进程并新建 session。
@@ -75,6 +76,9 @@ pub struct OpencodeInstance {
     initial_session_id: Mutex<Option<String>>,
     /// 当前活跃的 opencode session ID，供 reaper 持久化以支持 resume。
     last_session_id: Arc<Mutex<Option<String>>>,
+    /// SSE 看门狗无事件超时阈值（秒），可通过模型设置接口动态调整。
+    /// 初始值为 `DEFAULT_WATCHDOG_STALL_THRESHOLD_SECS`（120）。
+    watchdog_timeout: Arc<Mutex<u64>>,
 }
 
 impl OpencodeInstance {
@@ -99,6 +103,7 @@ impl OpencodeInstance {
             cancel_send: Arc::new(Mutex::new(None)),
             initial_session_id: Mutex::new(initial_session_id),
             last_session_id: Arc::new(Mutex::new(None)),
+            watchdog_timeout: Arc::new(Mutex::new(DEFAULT_WATCHDOG_STALL_THRESHOLD_SECS)),
         }
     }
 
@@ -403,9 +408,12 @@ impl OpencodeInstance {
                     "interaction awaiting user response".into(),
                 ))
             }
-            _ = self.watchdog_until_stalled() => Err(InstanceError::ProcessError(format!(
-                "agent stalled: no SSE events for {WATCHDOG_STALL_THRESHOLD_SECS}s"
-            ))),
+            _ = self.watchdog_until_stalled() => {
+                let secs = *self.watchdog_timeout.lock().unwrap();
+                Err(InstanceError::ProcessError(format!(
+                    "agent stalled: no SSE events for {secs}s"
+                )))
+            }
         };
 
         // 请求结束（无论成败）后清空取消句柄，防止 relay loop 取消已不存在的请求。
@@ -416,7 +424,7 @@ impl OpencodeInstance {
     /// 看门狗 future:周期性检查 SSE 事件活跃度,直到判定卡死时返回。
     /// 在 `select!` 中与 HTTP 请求竞争;HTTP 先完成则本 future 被 drop。
     async fn watchdog_until_stalled(&self) {
-        let threshold = Duration::from_secs(WATCHDOG_STALL_THRESHOLD_SECS);
+        let threshold = Duration::from_secs(*self.watchdog_timeout.lock().unwrap());
         let interval = Duration::from_secs(WATCHDOG_CHECK_INTERVAL_SECS);
         loop {
             tokio::time::sleep(interval).await;
@@ -432,8 +440,10 @@ impl OpencodeInstance {
         }
     }
 
-    /// 发送消息并带看门狗重试:卡死或失败时重建 agent 进程并新建 session 后重试。
-    /// 重试上限 `MAX_SEND_RETRIES`,每次重建都会刷新 opencode serve 进程。
+    /// 发送消息并带看门狗重试:卡死或失败时重建 agent 进程后复用旧 session 重试。
+    /// 重试上限 `MAX_SEND_RETRIES`,每次重建都会刷新 opencode serve 进程,但
+    /// **不创建新 session**——通过 POST /session/{old_id}/message 让新进程续上
+    /// 磁盘上持久化的历史,保证同一 threadId 内的上下文连续性。
     async fn send_with_watchdog_retry(
         &self,
         session_id: &mut String,
@@ -463,9 +473,26 @@ impl OpencodeInstance {
                         e
                     );
                     self.reset_and_restart().await?;
-                    *session_id = self.create_opencode_session().await?;
+                    // 关键：不创建新 session！复用 last_session_id，让 opencode 在
+                    // 新进程里通过 POST /session/{old_id}/message 续上磁盘上持久化的
+                    // 历史。reset_and_restart 清空了 session_map，需重新建立映射。
+                    let resumed = self
+                        .last_session_id
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .ok_or_else(|| {
+                            InstanceError::SendFailed(
+                                "no session id to resume after restart".into(),
+                            )
+                        })?;
+                    log::info!(
+                        "[opencode-plugin] instance={} resuming session={} after watchdog restart",
+                        self.config.id,
+                        resumed
+                    );
+                    *session_id = resumed;
                     self.store_session(conversation_id, session_id);
-                    *self.last_session_id.lock().unwrap() = Some(session_id.clone());
                 }
                 Err(e) => return Err(e),
             }
@@ -520,6 +547,19 @@ impl AgentInstance for OpencodeInstance {
 
     fn active_session_id(&self) -> Option<String> {
         self.last_session_id.lock().unwrap().clone()
+    }
+
+    fn set_watchdog_timeout(&self, secs: u64) {
+        let mut guard = self.watchdog_timeout.lock().unwrap();
+        if *guard != secs {
+            log::info!(
+                "[opencode-plugin] instance={} watchdog timeout updated: {}s -> {}s",
+                self.config.id,
+                *guard,
+                secs
+            );
+            *guard = secs;
+        }
     }
 
     fn send_message(

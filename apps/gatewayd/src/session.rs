@@ -443,12 +443,11 @@ impl SessionManager {
             // Instance is dead or config mismatch -> fall through to create new.
         }
 
-        // Persist the workspace mapping first. If instance creation fails we can
-        // roll this back so the on-disk state stays consistent with the runtime.
-        self.persist_workspace(session_id, work_directory).await;
-
-        // 从持久化存储中读取 agent 内部 session ID，用于 --resume 恢复上下文。
+        // 先读取 reap 时持久化的 agent session ID，再写 workspace 映射。
+        // 顺序不能反：persist_workspace 现在虽然不再清空 agent_session_id，
+        // 但保持"先读后写"的语义更清晰，也防止未来 persist 逻辑回归时擦掉值。
         let resume_session_id = self.load_agent_session_id(session_id).await;
+        self.persist_workspace(session_id, work_directory).await;
 
         let req = CreateInstanceRequest {
             agent_key: agent_key.to_string(),
@@ -508,11 +507,16 @@ impl SessionManager {
     }
 
     /// Persist the workspace mapping for a session to disk.
+    ///
+    /// 仅更新 workspace_path 和 last_used，**不触碰 agent_session_id**。
+    /// reaper 在回收实例前会调用 `persist_agent_session_id` 写入 opencode 端
+    /// 的 session id；若此处用 `insert` 整体覆盖 entry，会把 reap 写的值擦掉，
+    /// 导致下次 create_agent 读到 None、走新建 session 分支，上下文断裂。
     async fn persist_workspace(&self, session_id: &str, work_directory: &str) {
         let mut ws = self.workspaces.write().await;
-        ws.insert(
-            session_id.to_string(),
-            WorkspaceEntry {
+        let entry = ws
+            .entry(session_id.to_string())
+            .or_insert_with(|| WorkspaceEntry {
                 session_id: session_id.to_string(),
                 workspace_path: work_directory.to_string(),
                 last_used: std::time::SystemTime::now()
@@ -520,8 +524,12 @@ impl SessionManager {
                     .map(|d| d.as_secs())
                     .unwrap_or(0),
                 agent_session_id: None,
-            },
-        );
+            });
+        entry.workspace_path = work_directory.to_string();
+        entry.last_used = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         save_workspaces(&ws);
     }
 

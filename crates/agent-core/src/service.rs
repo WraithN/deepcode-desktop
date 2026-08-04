@@ -357,11 +357,13 @@ impl AgentService {
         &self,
         req: UpdateModelConfigRequest,
     ) -> Result<(), InstanceError> {
-        let instance_exists = self.instances.lock().await.get(&req.instance_id).is_some();
-
-        if !instance_exists {
-            return Err(InstanceError::NotFound(req.instance_id.clone()));
-        }
+        // 先取出实例引用并释放锁，避免在持有 instances 锁期间再次加锁。
+        let instance = {
+            let registry = self.instances.lock().await;
+            registry
+                .get(&req.instance_id)
+                .ok_or_else(|| InstanceError::NotFound(req.instance_id.clone()))?
+        };
 
         let config = ModelConfig {
             model_type: req.model_type,
@@ -372,7 +374,13 @@ impl AgentService {
             show_thinking: req.show_thinking,
             temperature: req.temperature,
             max_tokens: req.max_tokens,
+            watchdog_timeout_secs: req.watchdog_timeout_secs,
         };
+
+        // 将看门狗超时阈值推送到实例，使运行中的看门狗立即生效。
+        if let Some(secs) = config.watchdog_timeout_secs {
+            instance.set_watchdog_timeout(secs);
+        }
 
         self.model_configs
             .lock()
