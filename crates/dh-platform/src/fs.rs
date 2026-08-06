@@ -10,6 +10,13 @@ pub enum FsError {
 }
 
 pub fn data_dir() -> Result<PathBuf, FsError> {
+    // 环境变量 DH_DATA_DIR 优先（用于 direct-host 模式下 per-user 隔离）。
+    if let Ok(dir) = std::env::var("DH_DATA_DIR") {
+        if !dir.is_empty() {
+            return Ok(PathBuf::from(dir));
+        }
+    }
+
     #[cfg(target_os = "macos")]
     {
         let home = dirs::home_dir().ok_or_else(|| FsError::DataDir("No home dir".into()))?;

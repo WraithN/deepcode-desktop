@@ -57,6 +57,15 @@ pub(crate) struct RuntimeStatusReport {
     mem_percent: f64,
     sandbox_spec: String,
     agents: Vec<RuntimeAgentStatus>,
+    /// 已安装的智能体类型列表（CLI 已安装但未必正在运行）。
+    /// 仅包含 opencode / claude-code / codex 三种 gatewayd 支持的类型。
+    installed_agents: Vec<String>,
+    /// 近 7 日会话总数（按 last_active_at 统计）。
+    sessions_7d: u64,
+    /// 近 1 日会话总数（按 last_active_at 统计）。
+    sessions_1d: u64,
+    /// 最近一次会话活跃时间（RFC3339），无会话时为 None。
+    last_active_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -339,15 +348,31 @@ async fn build_report(
 ) -> RuntimeStatusReport {
     let (cpu_percent, mem_percent, sandbox_spec) = collect_metrics();
 
-    let agents: Vec<RuntimeAgentStatus> = match agent_service {
-        Some(svc) => svc
-            .list_instances()
-            .await
-            .into_iter()
-            .map(|info| map_instance(info, db_path))
-            .collect(),
-        None => Vec::new(),
+    let (agents, installed_agents) = match agent_service {
+        Some(svc) => {
+            // 已安装的智能体：通过 list_plugins() 获取，过滤出 is_installed()=true 的。
+            let installed: Vec<String> = svc
+                .list_plugins()
+                .into_iter()
+                .filter(|p| p.installed)
+                .map(|p| p.key)
+                .collect();
+            // 活跃的智能体实例：通过 list_instances() 获取当前已注册的实例。
+            let active: Vec<RuntimeAgentStatus> = svc
+                .list_instances()
+                .await
+                .into_iter()
+                .map(|info| map_instance(info, db_path))
+                .collect();
+            (active, installed)
+        }
+        None => (Vec::new(), Vec::new()),
     };
+
+    // 统计近 7 日 / 近 1 日会话总数及最近活跃时间。
+    let (sessions_7d, sessions_1d, last_active_at) = db_path
+        .and_then(|path| collect_session_counts(path).ok())
+        .unwrap_or_default();
 
     RuntimeStatusReport {
         workspace_id: cfg.workspace_id.clone(),
@@ -358,6 +383,10 @@ async fn build_report(
         mem_percent,
         sandbox_spec,
         agents,
+        installed_agents,
+        sessions_7d,
+        sessions_1d,
+        last_active_at,
     }
 }
 
@@ -404,6 +433,38 @@ fn map_instance(info: InstanceInfo, db_path: Option<&PathBuf>) -> RuntimeAgentSt
         version: String::new(),
         last_active,
     }
+}
+
+/// Reads total session counts and last active time from the local gatewayd SQLite database.
+///
+/// Returns `(sessions_7d, sessions_1d, last_active_at)`:
+/// - `sessions_7d`: sessions whose `last_active_at` is within the last 7 days
+/// - `sessions_1d`: sessions whose `last_active_at` is within the last 1 day
+/// - `last_active_at`: the most recent `last_active_at` as RFC3339 string, or `None`
+fn collect_session_counts(db_path: &PathBuf) -> anyhow::Result<(u64, u64, Option<String>)> {
+    let now = Utc::now();
+    let seven_days_ago = now - chrono::Duration::days(7);
+    let one_day_ago = now - chrono::Duration::days(1);
+
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    let (count_7d, count_1d, last): (i64, i64, Option<String>) = conn.query_row(
+        "SELECT \
+            SUM(CASE WHEN last_active_at >= ?1 THEN 1 ELSE 0 END), \
+            SUM(CASE WHEN last_active_at >= ?2 THEN 1 ELSE 0 END), \
+            MAX(last_active_at) \
+         FROM sessions WHERE last_active_at >= ?1",
+        rusqlite::params![
+            seven_days_ago.to_rfc3339(),
+            one_day_ago.to_rfc3339(),
+        ],
+        |row| Ok((row.get(0).unwrap_or(0), row.get(1).unwrap_or(0), row.get(2).unwrap_or(None))),
+    )?;
+
+    Ok((count_7d.max(0) as u64, count_1d.max(0) as u64, last))
 }
 
 /// Reads per-agent usage stats from the local gatewayd SQLite database.
