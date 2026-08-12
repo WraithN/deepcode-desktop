@@ -4,6 +4,7 @@ pub mod mapper;
 pub mod stdio;
 pub mod transport;
 pub mod util;
+pub mod watchdog;
 
 pub use http::HttpTransport;
 pub use mapper::EventMapper;

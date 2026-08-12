@@ -30,6 +30,7 @@ const KEY_TEXT: &str = "text";
 const KEY_CONTENT: &str = "content";
 const KEY_ID: &str = "id";
 const KEY_TOOL_NAME: &str = "toolName";
+const KEY_TOOL_USE_ID: &str = "tool_use_id";
 const KEY_ACTION: &str = "action";
 const KEY_QUESTIONS: &str = "questions";
 const KEY_TODOS: &str = "todos";
@@ -121,9 +122,11 @@ impl EventMapper {
 
     /// Converts `event` into the appropriate JSON-RPC notification and emits it.
     ///
-    /// `Init`, `UserMessage`, `AssistantMessage`, `ToolUse`, and `ToolResult` are
-    /// intentionally not mapped to frontend events because they are handled by other
-    /// consumers or are internal. Empty `TextDelta` values are skipped to avoid noise.
+    /// `Init`, `UserMessage`, and `AssistantMessage` are intentionally not mapped
+    /// to frontend events because they are handled by other consumers or are
+    /// internal. `ToolUse`/`ToolResult` are mapped to `agent.thinking` with
+    /// `type=tool_use`/`tool_result`. Empty `TextDelta` values are skipped to
+    /// avoid noise.
     pub fn map(&self, event: ProcessEvent, sink: &DynEventSink) {
         match event {
             ProcessEvent::TextDelta { text } if !text.is_empty() => {
@@ -141,33 +144,40 @@ impl EventMapper {
                     }),
                 );
             }
-            ProcessEvent::ToolUse { name, input } => {
-                self.emit_with_base(
-                    sink,
-                    METHOD_THINKING,
-                    json!({
-                        KEY_CONTENT: format!("{} {}", name, input),
-                        KEY_ID: format!("{THINKING_ID_PREFIX}{}", self.instance_id),
-                        KEY_TYPE: "tool_use",
-                    }),
-                );
+            ProcessEvent::ToolUse { name, input, id } => {
+                let mut extra = json!({
+                    KEY_CONTENT: format!("{} {}", name, input),
+                    KEY_ID: format!("{THINKING_ID_PREFIX}{}", self.instance_id),
+                    KEY_TYPE: "tool_use",
+                    KEY_TOOL_NAME: name,
+                });
+                // 上游提供稳定调用 id 时覆盖占位 thinking-id，供 gatewayd 将后续
+                // ToolResult 精确关联到本次调用；为 None 时不输出，保留占位 id
+                // 以兼容现有 thinking 卡片渲染。
+                if let (Some(obj), Some(call_id)) = (extra.as_object_mut(), id) {
+                    obj.insert(KEY_ID.to_string(), call_id.into());
+                }
+                self.emit_with_base(sink, METHOD_THINKING, extra);
             }
             ProcessEvent::ToolResult {
                 name,
                 result,
                 failed,
+                id,
             } => {
-                self.emit_with_base(
-                    sink,
-                    METHOD_THINKING,
-                    json!({
-                        KEY_CONTENT: result,
-                        KEY_ID: format!("{THINKING_ID_PREFIX}{}", self.instance_id),
-                        KEY_TYPE: "tool_result",
-                        KEY_TOOL_NAME: name,
-                        "failed": failed,
-                    }),
-                );
+                let mut extra = json!({
+                    KEY_CONTENT: result,
+                    KEY_ID: format!("{THINKING_ID_PREFIX}{}", self.instance_id),
+                    KEY_TYPE: "tool_result",
+                    KEY_TOOL_NAME: name,
+                    "failed": failed,
+                });
+                // 携带真实调用 id 时输出 tool_use_id，供 gatewayd 精确匹配对应
+                // ToolUse；为 None 时不输出，由 gatewayd 回退到 FIFO 匹配。
+                if let (Some(obj), Some(call_id)) = (extra.as_object_mut(), id) {
+                    obj.insert(KEY_TOOL_USE_ID.to_string(), call_id.into());
+                }
+                self.emit_with_base(sink, METHOD_THINKING, extra);
             }
             ProcessEvent::Permission { tool_name, action } => {
                 self.emit_interaction(
@@ -214,7 +224,7 @@ impl EventMapper {
 mod tests {
     use super::*;
     use crate::event_sink::{DynEventSink, EventSink};
-    use crate::process::event::{ProcessEvent, QuestionItem, TodoItem};
+    use crate::process::event::{ProcessEvent, QuestionItem, QuestionOption, TodoItem};
     use std::sync::{Arc, Mutex};
 
     const TEST_INSTANCE_ID: &str = "i-1";
@@ -299,6 +309,10 @@ mod tests {
             questions: vec![QuestionItem {
                 id: "q1".into(),
                 text: "ok?".into(),
+                options: Some(vec![QuestionOption {
+                    label: "确认".into(),
+                    description: Some("继续执行".into()),
+                }]),
             }],
         });
         assert_eq!(events.len(), 1);
@@ -307,10 +321,66 @@ mod tests {
             events[0].1[KEY_INTERACTION][KEY_QUESTIONS][0][KEY_TEXT],
             "ok?"
         );
+        // options 必须随问题一起透传到前端。
+        assert_eq!(
+            events[0].1[KEY_INTERACTION][KEY_QUESTIONS][0]["options"][0]["label"],
+            "确认"
+        );
         assert_eq!(
             events[0].1[KEY_INTERACTION][KEY_TYPE],
             INTERACTION_TYPE_QUESTION
         );
+    }
+
+    #[test]
+    fn test_map_tool_use_with_id() {
+        let events = map_event(ProcessEvent::ToolUse {
+            name: "bash".into(),
+            input: json!({ "command": "ls" }),
+            id: Some("call-1".into()),
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, METHOD_THINKING);
+        assert_eq!(events[0].1[KEY_TYPE], "tool_use");
+        // 真实调用 id 覆盖占位 thinking-id，toolName 一并输出。
+        assert_eq!(events[0].1[KEY_ID], "call-1");
+        assert_eq!(events[0].1[KEY_TOOL_NAME], "bash");
+    }
+
+    #[test]
+    fn test_map_tool_use_without_id_keeps_placeholder() {
+        let events = map_event(ProcessEvent::ToolUse {
+            name: "bash".into(),
+            input: json!({ "command": "ls" }),
+            id: None,
+        });
+        assert_eq!(events.len(), 1);
+        // 无真实 id 时保留 thinking- 占位 id，兼容现有渲染逻辑。
+        assert_eq!(events[0].1[KEY_ID], "thinking-i-1");
+        assert_eq!(events[0].1[KEY_TOOL_NAME], "bash");
+    }
+
+    #[test]
+    fn test_map_tool_result_tool_use_id() {
+        let events = map_event(ProcessEvent::ToolResult {
+            name: "bash".into(),
+            result: "ok".into(),
+            failed: false,
+            id: Some("call-1".into()),
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1[KEY_TYPE], "tool_result");
+        assert_eq!(events[0].1[KEY_TOOL_USE_ID], "call-1");
+
+        // id 为 None 时不输出 tool_use_id 字段。
+        let events = map_event(ProcessEvent::ToolResult {
+            name: "bash".into(),
+            result: "ok".into(),
+            failed: false,
+            id: None,
+        });
+        assert_eq!(events.len(), 1);
+        assert!(events[0].1.get(KEY_TOOL_USE_ID).is_none());
     }
 
     #[test]

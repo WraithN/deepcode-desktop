@@ -149,7 +149,37 @@ pnpm test:watch             # vitest watch 模式
 # Tauri 桌面端
 pnpm tauri dev              # 开发模式
 pnpm tauri build            # 打包桌面应用
+
+# Gatewayd 守护进程（独立 Rust 二进制，位于 apps/gatewayd）
+cargo build --release -p dh-gatewayd          # 仅构建 gatewayd
+cargo build --release                          # 构建整个 Rust 工作区
+./target/release/dh-gatewayd --help            # 查看启动参数
+./target/release/dh-gatewayd --port 2345 --admin-port 2346   # 启动（默认端口 2345/2346）
 ```
+
+> **gatewayd 说明**：`dh-gatewayd` 是 DeepHarness LLM 网关守护进程，与 Tauri 桌面端相互独立。
+> - 工作区位置：`apps/gatewayd/`（在根 `Cargo.toml` 的 workspace members 中）
+> - 产物路径：`target/release/dh-gatewayd`
+> - 默认端口：业务端口 `2345`、管理端口 `2346`
+> - 启动参数：`--port`、`--admin-port`、`--daemon`、`--agent-type`、`--attach`
+
+### 一键打包发布脚本
+> **触发约定**：当用户说「打包」（或「发布」）时，**直接运行 `scripts/release.sh`**，无需再询问。该脚本整合了 gatewayd 本地构建验证 + GitHub Actions CI 发布 + npm 验证的完整流程。
+
+```bash
+scripts/release.sh              # 完整流程（本地构建验证 + CI + npm 验证）
+scripts/release.sh --skip-local # 跳过本地构建验证，直接触发 CI
+scripts/release.sh --desktop    # 额外构建并启动桌面端（交互式 GUI 验证）
+```
+
+脚本自动完成：
+1. 读取 `Cargo.toml` workspace 版本号，生成标签 `dh-v{version}`
+2. 本地构建 `dh-gatewayd` 并冒烟测试（启动监听后退出）
+3. 创建并推送标签，触发 `.github/workflows/release-dh.yml`
+4. 监控工作流直到完成（构建 dh CLI + dh-gatewayd 多平台二进制 + npm 发布）
+5. 验证 GitHub Release 产物与 npm 发布状态（直连官方源）
+
+> **前置条件**：版本号已由 `scripts/bump-version.sh` 递增并提交（HEAD 为 `chore: bump version to X`）。脚本会检测标签是否已存在，避免重复发布。
 
 ### 开发后启动测试
 > ⚠️ **硬性规则**：每次完成代码修改并构建完成后，**必须启动 Tauri 桌面应用**，让用户在真实环境中验证功能。
@@ -284,6 +314,14 @@ export WEBKIT_DISABLE_DMABUF_RENDERER=1  # 禁用 DMA-BUF 渲染器
 - 构建命令：`pnpm tauri build`
 - 输出目标：Windows（`.msi`/`.exe`）、macOS（`.app`/`.dmg`）、Linux（`.deb`/`.AppImage`）
 - CSP 已配置，仅允许 `self`、本地 IPC、`https:` 及 `localhost:*`
+
+### Gatewayd 部署
+- 源码位置：`apps/gatewayd/`（Rust 工作区成员，crate 名 `dh-gatewayd`）
+- 构建命令：`cargo build --release -p dh-gatewayd`
+- 产物路径：`target/release/dh-gatewayd`（单一二进制，约 15MB）
+- 运行：`./target/release/dh-gatewayd --port 2345 --admin-port 2346`
+- 参数：`--port`（业务端口，默认 2345）、`--admin-port`（管理端口，默认 2346）、`--daemon`（守护进程模式）、`--agent-type`、`--attach`（启动时附加 agent 插件）
+- 冒烟验证：启动后日志输出 `Starting gatewayd on port ...`、`loaded N persisted sessions` 即为正常
 
 ---
 

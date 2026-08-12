@@ -107,12 +107,19 @@ pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
                 .get(KEY_TYPE)
                 .or_else(|| item.get(KEY_ITEM_TYPE))
                 .and_then(|v| v.as_str())?;
+            // item.id 在 item/started 与 item/completed 间保持稳定，
+            // 透传为调用 id 供下游精确关联 ToolUse 与 ToolResult。
+            let item_id = item
+                .get(KEY_ID)
+                .and_then(|v| v.as_str())
+                .map(String::from);
             match item_type {
                 ITEM_TYPE_COMMAND_EXECUTION | ITEM_TYPE_EXEC_COMMAND | ITEM_TYPE_SHELL => {
                     let command = item.get(KEY_COMMAND).and_then(|v| v.as_str()).unwrap_or("");
                     Some(ProcessEvent::ToolUse {
                         name: "shell".to_string(),
                         input: serde_json::json!({ "command": command }),
+                        id: item_id,
                     })
                 }
                 ITEM_TYPE_MCP_TOOL_CALL | ITEM_TYPE_TOOL_CALL => {
@@ -122,7 +129,11 @@ pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
                         .unwrap_or("tool")
                         .to_string();
                     let input = item.get(KEY_ARGUMENTS).cloned().unwrap_or(Value::Null);
-                    Some(ProcessEvent::ToolUse { name, input })
+                    Some(ProcessEvent::ToolUse {
+                        name,
+                        input,
+                        id: item_id,
+                    })
                 }
                 _ => None,
             }
@@ -133,6 +144,10 @@ pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
                 .get(KEY_TYPE)
                 .or_else(|| item.get(KEY_ITEM_TYPE))
                 .and_then(|v| v.as_str())?;
+            let item_id = item
+                .get(KEY_ID)
+                .and_then(|v| v.as_str())
+                .map(String::from);
             match item_type {
                 ITEM_TYPE_AGENT_MESSAGE => {
                     let text = item
@@ -172,6 +187,7 @@ pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
                         name: "shell".to_string(),
                         result: output.to_string(),
                         failed: exit_code != 0,
+                        id: item_id,
                     })
                 }
                 ITEM_TYPE_MCP_TOOL_CALL | ITEM_TYPE_TOOL_CALL => {
@@ -193,6 +209,7 @@ pub fn to_process_event(msg: &CodexMessage) -> Option<ProcessEvent> {
                         name,
                         result,
                         failed,
+                        id: item_id,
                     })
                 }
                 _ => None,
@@ -247,7 +264,34 @@ mod tests {
         let msg = parse_codex_line(line).unwrap();
         let ev = to_process_event(&msg).unwrap();
         assert!(
-            matches!(ev, ProcessEvent::ToolUse { ref name, .. } if name == "shell"),
+            matches!(ev, ProcessEvent::ToolUse { ref name, ref id, .. } if name == "shell" && id.as_deref() == Some("i1")),
+            "unexpected event: {:?}",
+            ev
+        );
+    }
+
+    #[test]
+    fn test_parse_command_tool_result_carries_item_id() {
+        // item/completed 携带与 item/started 相同的 item.id，必须透传到 ToolResult。
+        let line = r#"{"method":"item/completed","params":{"item":{"id":"i1","type":"command_execution","output":"file list","exitCode":0}}}"#;
+        let msg = parse_codex_line(line).unwrap();
+        let ev = to_process_event(&msg).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::ToolResult { ref name, ref id, failed, .. }
+                if name == "shell" && id.as_deref() == Some("i1") && !failed),
+            "unexpected event: {:?}",
+            ev
+        );
+    }
+
+    #[test]
+    fn test_parse_mcp_tool_call_carries_item_id() {
+        let line = r#"{"method":"item/started","params":{"item":{"id":"mcp-1","type":"mcp_tool_call","name":"read_file","arguments":{"path":"/tmp/a"}}}}"#;
+        let msg = parse_codex_line(line).unwrap();
+        let ev = to_process_event(&msg).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::ToolUse { ref name, ref id, .. }
+                if name == "read_file" && id.as_deref() == Some("mcp-1")),
             "unexpected event: {:?}",
             ev
         );

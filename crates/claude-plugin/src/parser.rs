@@ -31,6 +31,8 @@ const KEY_ERROR: &str = "error";
 const KEY_MESSAGE_TEXT: &str = "message";
 const KEY_NAME: &str = "name";
 const KEY_INPUT: &str = "input";
+const KEY_ID: &str = "id";
+const KEY_TOOL_USE_ID: &str = "tool_use_id";
 const KEY_IS_ERROR_CONTENT: &str = "is_error";
 const KEY_TOOL_USE_RESULT: &str = "tool_use_result";
 const KEY_STDOUT: &str = "stdout";
@@ -57,11 +59,17 @@ pub enum ClaudeRawEvent {
     ToolUse {
         name: String,
         input: Value,
+        /// claude 的稳定工具调用 id（`toolu_...`），用于 tool_result 精确关联。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     ToolResult {
         name: String,
         result: String,
         failed: Option<bool>,
+        /// 对应 tool_use content block 的 id（来自 user 消息的 `tool_use_id`）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     Result {
         result: String,
@@ -85,10 +93,16 @@ pub enum ClaudeContent {
     ToolUse {
         name: String,
         input: Value,
+        /// assistant content block `tool_use` 的 id（`toolu_...`）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     ToolResult {
         result: String,
         failed: bool,
+        /// user content block `tool_result` 的 `tool_use_id`，与对应 tool_use 一致。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
 }
 
@@ -174,9 +188,10 @@ fn parse_user_value(value: &Value) -> Option<ClaudeRawEvent> {
 
 fn first_tool_use(content: &[ClaudeContent]) -> Option<ClaudeRawEvent> {
     content.iter().find_map(|item| match item {
-        ClaudeContent::ToolUse { name, input } => Some(ClaudeRawEvent::ToolUse {
+        ClaudeContent::ToolUse { name, input, id } => Some(ClaudeRawEvent::ToolUse {
             name: name.clone(),
             input: input.clone(),
+            id: id.clone(),
         }),
         _ => None,
     })
@@ -184,10 +199,11 @@ fn first_tool_use(content: &[ClaudeContent]) -> Option<ClaudeRawEvent> {
 
 fn first_tool_result(content: &[ClaudeContent]) -> Option<ClaudeRawEvent> {
     content.iter().find_map(|item| match item {
-        ClaudeContent::ToolResult { result, failed } => Some(ClaudeRawEvent::ToolResult {
+        ClaudeContent::ToolResult { result, failed, id } => Some(ClaudeRawEvent::ToolResult {
             name: result_tool_name(result),
             result: result.clone(),
             failed: Some(*failed),
+            id: id.clone(),
         }),
         _ => None,
     })
@@ -300,6 +316,10 @@ fn parse_content_item(value: &Value) -> Option<ClaudeContent> {
         CONTENT_TYPE_TOOL_USE => Some(ClaudeContent::ToolUse {
             name: value.get(KEY_NAME)?.as_str()?.to_string(),
             input: value.get(KEY_INPUT).cloned().unwrap_or(Value::Null),
+            id: value
+                .get(KEY_ID)
+                .and_then(|v| v.as_str())
+                .map(String::from),
         }),
         CONTENT_TYPE_TOOL_RESULT => Some(ClaudeContent::ToolResult {
             result: parse_tool_result_text(value),
@@ -307,6 +327,10 @@ fn parse_content_item(value: &Value) -> Option<ClaudeContent> {
                 .get(KEY_IS_ERROR_CONTENT)
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
+            id: value
+                .get(KEY_TOOL_USE_ID)
+                .and_then(|v| v.as_str())
+                .map(String::from),
         }),
         _ => None,
     }
@@ -362,14 +386,16 @@ pub fn to_process_event(raw: &ClaudeRawEvent) -> Option<ProcessEvent> {
                 None
             }
         }
-        ClaudeRawEvent::ToolUse { name, input } => Some(ProcessEvent::ToolUse {
+        ClaudeRawEvent::ToolUse { name, input, id } => Some(ProcessEvent::ToolUse {
             name: name.clone(),
             input: input.clone(),
+            id: id.clone(),
         }),
-        ClaudeRawEvent::ToolResult { name, result, failed } => Some(ProcessEvent::ToolResult {
+        ClaudeRawEvent::ToolResult { name, result, failed, id } => Some(ProcessEvent::ToolResult {
             name: name.clone(),
             result: result.clone(),
             failed: failed.unwrap_or(false),
+            id: id.clone(),
         }),
         ClaudeRawEvent::Result { .. } => Some(ProcessEvent::Done),
         ClaudeRawEvent::Error { message } => Some(ProcessEvent::Error {
@@ -410,5 +436,52 @@ mod tests {
         // message_stop 只是消息边界，必须映射为 MessageEnd 而非 Done，
         // 否则工具调用循环中 RUN_FINISHED 会被提前发出。
         assert!(matches!(ev, ProcessEvent::MessageEnd));
+    }
+
+    #[test]
+    fn test_tool_use_carries_stable_id() {
+        // assistant content block tool_use 带 "id":"toolu_..."，必须透传到 ProcessEvent。
+        let raw = parse_claude_value(&serde_json::json!(
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"WebSearch","input":{"query":"rust"}}]}}
+        ))
+        .unwrap();
+        let ev = to_process_event(&raw).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::ToolUse { ref name, ref id, .. }
+                if name == "WebSearch" && id.as_deref() == Some("toolu_1")),
+            "unexpected event: {:?}",
+            ev
+        );
+    }
+
+    #[test]
+    fn test_tool_result_carries_tool_use_id() {
+        // user content block tool_result 带 "tool_use_id"，必须透传到 ProcessEvent。
+        let raw = parse_claude_value(&serde_json::json!(
+            {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"search results"}]}}
+        ))
+        .unwrap();
+        let ev = to_process_event(&raw).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::ToolResult { ref id, ref result, failed, .. }
+                if id.as_deref() == Some("toolu_1") && result == "search results" && !failed),
+            "unexpected event: {:?}",
+            ev
+        );
+    }
+
+    #[test]
+    fn test_tool_use_without_id_yields_none() {
+        // 缺少 id 的旧格式事件应解析为 None，而非解析失败。
+        let raw = parse_claude_value(&serde_json::json!(
+            {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}
+        ))
+        .unwrap();
+        let ev = to_process_event(&raw).unwrap();
+        assert!(
+            matches!(ev, ProcessEvent::ToolUse { id: None, .. }),
+            "unexpected event: {:?}",
+            ev
+        );
     }
 }

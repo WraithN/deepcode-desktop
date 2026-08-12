@@ -5,14 +5,16 @@ use agent_core::logger::{LogLevel, SessionLogger};
 use agent_core::process::event::ProcessEvent;
 use agent_core::process::mapper::{emit_status_changed, EventMapper};
 use agent_core::process::transport::TransportHandle;
+use agent_core::process::watchdog::{self, StallReason};
 use agent_core::session_map::ConversationSessionMap;
 use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::time::Instant;
 
 use crate::mapper::{detect_interaction_from_parts, InteractionRequest};
 use crate::transport::{
@@ -25,13 +27,12 @@ const STARTUP_WAIT_COUNT: u32 = 20;
 const STARTUP_WAIT_MS: u64 = 500;
 const SSE_CHANNEL_CAPACITY: usize = 1000;
 
-/// SSE 事件活跃度看门狗默认阈值:超过此时长未收到任何 agent 事件即判定卡死。
-/// agent 正常思考/工具执行期间 opencode 会流式推送 thinking/tool_use 等事件,
-/// 阈值需大于正常事件间隔。卡死(如 LLM API 挂起、死锁)时无事件,触发重建重试。
+/// SSE 事件静默探活窗口的默认阈值（秒）：超过此时长未收到任何 agent 事件时，
+/// 看门狗先调用活性探针确认进程是否真卡死（而非直接杀进程）。
+/// agent 正常思考/工具执行期间 opencode 会流式推送 thinking/tool_use 等事件，
+/// LLM 单次长生成期间可能还有 session.status 心跳；只有连心跳都没有时才超窗。
 /// 可通过模型设置接口(`watchdog_timeout_secs`)在运行时覆盖此默认值。
 const DEFAULT_WATCHDOG_STALL_THRESHOLD_SECS: u64 = 120;
-/// 看门狗周期性检查 SSE 活跃度的时间间隔。
-const WATCHDOG_CHECK_INTERVAL_SECS: u64 = 10;
 /// 消息发送卡死/失败时的最大重试次数,每次重试会重建 agent 进程并新建 session。
 /// 总尝试次数 = 1 + MAX_SEND_RETRIES。
 const MAX_SEND_RETRIES: u32 = 2;
@@ -46,6 +47,11 @@ const KEY_SESSION_ID: &str = "sessionID";
 const KEY_INTERACTION: &str = "interaction";
 const KEY_PARTS: &str = "parts";
 const KEY_INFO: &str = "info";
+
+/// opencode SSE 的 session.status 事件类型（busy=LLM 生成/工具执行中，
+/// retry=API 失败重试中，idle=空闲）。该事件不映射为 ProcessEvent，
+/// 仅作为心跳刷新看门狗活跃时间戳。
+const EVENT_TYPE_SESSION_STATUS: &str = "session.status";
 
 const PLUGIN_KEY: &str = "opencode";
 
@@ -64,7 +70,7 @@ pub struct OpencodeInstance {
     session_map: ConversationSessionMap,
     transport_handle: Arc<TokioMutex<Option<Box<dyn TransportHandle>>>>,
     startup_lock: Arc<TokioMutex<()>>,
-    /// 最近一次收到 agent SSE 事件的时间,供看门狗判定卡死。
+    /// 最近一次收到 agent SSE 事件的时间（含 session.status 心跳）,供看门狗判定卡死。
     last_event_at: Arc<Mutex<Option<Instant>>>,
     /// 用于取消当前在途 HTTP 请求的发送端。当 SSE relay loop 检测到 question
     /// 等交互式工具时，立即取消 `send_message_http` 的阻塞等待，从而结束本 run，
@@ -226,6 +232,12 @@ impl OpencodeInstance {
         tokio::spawn(async move {
             while let Some(payload) = rx.recv().await {
                 let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                // session.status 不映射为 ProcessEvent，仅作为心跳刷新看门狗
+                // 活跃时间戳——LLM 长生成期间 opencode 可能只推送该事件。
+                if event_type == EVENT_TYPE_SESSION_STATUS {
+                    *last_event_at.lock().unwrap() = Some(Instant::now());
+                    continue;
+                }
                 let mut events = crate::mapper::map_opencode_sse(&payload);
                 if !events.is_empty() {
                     // 收到 agent 事件,刷新看门狗活跃时间戳。
@@ -242,7 +254,7 @@ impl OpencodeInstance {
                     let mut question_detected = false;
                     let mut question_events = Vec::new();
                     for event in &events {
-                        if let ProcessEvent::ToolUse { name, input } = event {
+                        if let ProcessEvent::ToolUse { name, input, .. } = event {
                             if name == "question" {
                                 if let Some(interaction) =
                                     crate::mapper::detect_question_tool_input(input)
@@ -408,10 +420,14 @@ impl OpencodeInstance {
                     "interaction awaiting user response".into(),
                 ))
             }
-            _ = self.watchdog_until_stalled() => {
+            reason = self.watchdog_until_stalled() => {
                 let secs = *self.watchdog_timeout.lock().unwrap();
+                let detail = match reason {
+                    StallReason::ProbeFailed => "liveness probe failed",
+                    StallReason::SilenceCapExceeded => "silence hard cap exceeded",
+                };
                 Err(InstanceError::ProcessError(format!(
-                    "agent stalled: no SSE events for {secs}s"
+                    "agent stalled: no SSE events for over {secs}s ({detail})"
                 )))
             }
         };
@@ -421,23 +437,19 @@ impl OpencodeInstance {
         result
     }
 
-    /// 看门狗 future:周期性检查 SSE 事件活跃度,直到判定卡死时返回。
+    /// 看门狗 future：委托给 agent-core 的共享静默看门狗（插件无关）。
+    /// 静默超过配置窗口后先经 `liveness_probe` 探活：存活则继续等待（LLM 长
+    /// 生成场景），探活失败或超过静默硬上限才判定卡死。
     /// 在 `select!` 中与 HTTP 请求竞争;HTTP 先完成则本 future 被 drop。
-    async fn watchdog_until_stalled(&self) {
-        let threshold = Duration::from_secs(*self.watchdog_timeout.lock().unwrap());
-        let interval = Duration::from_secs(WATCHDOG_CHECK_INTERVAL_SECS);
-        loop {
-            tokio::time::sleep(interval).await;
-            let stalled = self
-                .last_event_at
-                .lock()
-                .unwrap()
-                .map(|t| t.elapsed() > threshold)
-                .unwrap_or(false);
-            if stalled {
-                return;
-            }
-        }
+    async fn watchdog_until_stalled(&self) -> StallReason {
+        let log_tag = format!("[opencode-plugin] instance={}", self.config.id);
+        watchdog::wait_until_stalled(
+            &self.last_event_at,
+            &self.watchdog_timeout,
+            || self.liveness_probe(),
+            &log_tag,
+        )
+        .await
     }
 
     /// 发送消息并带看门狗重试:卡死或失败时重建 agent 进程后复用旧 session 重试。
@@ -560,6 +572,39 @@ impl AgentInstance for OpencodeInstance {
             );
             *guard = secs;
         }
+    }
+
+    /// 活性探针：进程句柄存活 + opencode serve `/health` HTTP 探活。
+    /// 看门狗静默超窗后调用；LLM 长生成期间 opencode HTTP 服务正常响应，
+    /// 探活成功即视为存活，不会被误杀。
+    fn liveness_probe(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        Box::pin(async move {
+            // 进程句柄检查：子进程已退出或状态异常时直接判死，无需再探 HTTP。
+            let mut guard = self.serve_process.lock().await;
+            match guard.as_mut() {
+                Some(child) => {
+                    if !matches!(child.try_wait(), Ok(None)) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+            drop(guard);
+            // HTTP 探活：health_check 自带 2s 超时，外层再包一层兜底，
+            // 防止探针自身挂起导致看门狗永不返回。
+            let Some(base) = self.base_url() else {
+                return false;
+            };
+            let client = OpenCodeClient::new(base);
+            matches!(
+                tokio::time::timeout(
+                    Duration::from_secs(watchdog::PROBE_TIMEOUT_SECS),
+                    client.health_check()
+                )
+                .await,
+                Ok(true)
+            )
+        })
     }
 
     fn send_message(

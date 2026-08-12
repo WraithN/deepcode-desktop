@@ -397,7 +397,7 @@ impl ClaudeInstance {
 
         // Claude Code 的 write 工具需要实际落盘，否则前端预览/下载时文件不存在。
         // 在事件映射为前端通知前先在 workspace 内执行写入，保证 [[FILE:...]] 标记真实有效。
-        if let ProcessEvent::ToolUse { name, input } = &event {
+        if let ProcessEvent::ToolUse { name, input, .. } = &event {
             if name == "write" {
                 if let Err(e) = self.apply_write_tool(input) {
                     log::warn!("[claude-plugin] instance={} write tool failed: {}", self.config.id, e);

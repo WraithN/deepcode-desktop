@@ -40,6 +40,7 @@ pub(crate) const KEY_THREAD_ID: &str = "threadId";
 pub(crate) const KEY_THREAD_ID_ALT: &str = "thread_id";
 pub(crate) const KEY_ITEM: &str = "item";
 pub(crate) const KEY_ITEM_TYPE: &str = "item_type";
+pub(crate) const KEY_ID: &str = "id";
 pub(crate) const KEY_TYPE: &str = "type";
 pub(crate) const KEY_DELTA: &str = "delta";
 pub(crate) const KEY_TEXT: &str = "text";

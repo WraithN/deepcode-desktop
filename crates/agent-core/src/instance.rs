@@ -74,6 +74,16 @@ pub trait AgentInstance: Send + Sync {
     /// 默认空实现；支持看门狗的 plugin（如 opencode）应覆盖此方法。
     fn set_watchdog_timeout(&self, _secs: u64) {}
 
+    /// 活性探针：看门狗在静默超窗后调用，区分"agent 忙但活着"（如 LLM 长
+    /// 生成期间无 SSE 事件）与"进程真卡死"。返回 true 表示存活。
+    ///
+    /// 默认实现为弱检查（`status() == Running` 即视为存活）：进程已崩溃但
+    /// 插件未及时更新 status 时会偏乐观，因此有 HTTP/IPC 端点或进程句柄的
+    /// 插件（如 opencode）应覆盖为真实探活。
+    fn liveness_probe(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        Box::pin(async move { matches!(self.status(), InstanceStatus::Running { .. }) })
+    }
+
     fn send_message(
         &self,
         conversation_id: &str,

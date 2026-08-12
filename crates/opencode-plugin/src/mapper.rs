@@ -1,4 +1,4 @@
-use agent_core::process::event::{ProcessEvent, QuestionItem, TodoItem};
+use agent_core::process::event::{ProcessEvent, QuestionItem, QuestionOption, TodoItem};
 use serde_json::{json, Value};
 
 const KEY_TYPE: &str = "type";
@@ -24,6 +24,13 @@ const KEY_TOOL_NAME: &str = "toolName";
 const KEY_TOOL_NAME_ALT: &str = "tool_name";
 const KEY_TOOL: &str = "tool";
 const KEY_ACTION: &str = "action";
+const KEY_CALL_ID: &str = "callID";
+const KEY_ID: &str = "id";
+const KEY_HEADER: &str = "header";
+const KEY_QUESTION: &str = "question";
+const KEY_OPTIONS: &str = "options";
+const KEY_LABEL: &str = "label";
+const KEY_DESCRIPTION: &str = "description";
 
 const EVENT_TYPE_MESSAGE_PART_DELTA: &str = "message.part.delta";
 const EVENT_TYPE_THINKING: &str = "thinking";
@@ -41,6 +48,7 @@ const STEP_TYPE_STEP_START: &str = "step-start";
 
 const DEFAULT_UNKNOWN: &str = "unknown";
 const DEFAULT_EMPTY: &str = "";
+const DEFAULT_QUESTION_ID: &str = "confirm";
 
 /// Maps an OpenCode SSE JSON payload into one or more unified [`ProcessEvent`]s.
 ///
@@ -117,6 +125,14 @@ fn map_tool_use_part(part: &Value) -> Vec<ProcessEvent> {
         .unwrap_or(DEFAULT_UNKNOWN)
         .to_string();
 
+    // callID 在同一工具调用的 running/completed 更新间保持稳定，是 ToolUse 与
+    // ToolResult 精确关联的关键；旧格式 part 没有 callID 时兜底使用 part.id。
+    let id = part
+        .get(KEY_CALL_ID)
+        .or_else(|| part.get(KEY_ID))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     let state = part.get(KEY_STATE);
     let input = part
         .get(KEY_INPUT)
@@ -142,6 +158,7 @@ fn map_tool_use_part(part: &Value) -> Vec<ProcessEvent> {
         events.push(ProcessEvent::ToolUse {
             name: name.clone(),
             input,
+            id: id.clone(),
         });
     }
 
@@ -151,6 +168,7 @@ fn map_tool_use_part(part: &Value) -> Vec<ProcessEvent> {
             name,
             result: output,
             failed,
+            id,
         });
     }
 
@@ -168,10 +186,17 @@ fn map_tool_use(payload: &Value) -> Vec<ProcessEvent> {
             .or_else(|| payload.get(KEY_INPUT))
             .cloned()
             .unwrap_or_else(|| json!({}));
+        // legacy 格式可能没有调用 id 字段，缺失时为 None。
+        let id = payload
+            .get(KEY_CALL_ID)
+            .or_else(|| payload.get(KEY_ID))
+            .and_then(|v| v.as_str())
+            .map(String::from);
         if !input.is_null() && input != json!({}) {
             events.push(ProcessEvent::ToolUse {
                 name: name.to_string(),
                 input,
+                id,
             });
         }
     }
@@ -200,10 +225,17 @@ fn map_tool_result(payload: &Value) -> Vec<ProcessEvent> {
         .get(KEY_FAILED)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // legacy 顶层 tool_result 同样透传调用 id（若有）。
+    let id = payload
+        .get(KEY_CALL_ID)
+        .or_else(|| payload.get(KEY_ID))
+        .and_then(|v| v.as_str())
+        .map(String::from);
     vec![ProcessEvent::ToolResult {
         name,
         result,
         failed,
+        id,
     }]
 }
 
@@ -287,24 +319,42 @@ fn parse_question(input: &Value) -> Option<InteractionRequest> {
     let mut questions = Vec::new();
     for q in arr {
         let text = q
-            .get("header")
-            .or_else(|| q.get("question"))
-            .or_else(|| q.get("text"))
+            .get(KEY_HEADER)
+            .or_else(|| q.get(KEY_QUESTION))
+            .or_else(|| q.get(KEY_TEXT))
             .and_then(|v| v.as_str())?;
-        let options = q.get("options").and_then(|v| v.as_array()).cloned();
+        let options = q.get(KEY_OPTIONS).and_then(|v| v.as_array()).map(|opts| {
+            opts.iter().filter_map(parse_question_option).collect::<Vec<_>>()
+        });
+        // id 沿用现有取值逻辑：第一个选项的 label，无选项时兜底 "confirm"。
         let id = options
-            .and_then(|opts| opts.first().cloned())
-            .and_then(|opt| opt.get("label").and_then(|v| v.as_str()).map(String::from))
-            .unwrap_or_else(|| "confirm".to_string());
+            .as_ref()
+            .and_then(|opts| opts.first())
+            .map(|opt| opt.label.clone())
+            .unwrap_or_else(|| DEFAULT_QUESTION_ID.to_string());
         questions.push(QuestionItem {
             id,
             text: text.to_string(),
+            options,
         });
     }
     if questions.is_empty() {
         return None;
     }
     Some(InteractionRequest::Question { questions })
+}
+
+/// 解析 question 工具的单个选项 {label, description}；缺少 label 的项被丢弃。
+fn parse_question_option(value: &Value) -> Option<QuestionOption> {
+    let label = value.get(KEY_LABEL)?.as_str()?;
+    let description = value
+        .get(KEY_DESCRIPTION)
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Some(QuestionOption {
+        label: label.to_string(),
+        description,
+    })
 }
 
 fn parse_todo_write(input: &Value) -> Option<InteractionRequest> {
@@ -462,6 +512,28 @@ mod tests {
             ProcessEvent::ToolUse {
                 name: "read_file".into(),
                 input: json!({ "path": "/tmp/a.txt" }),
+                id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_map_tool_use_legacy_with_id() {
+        // legacy 格式携带 id 字段时应透传。
+        let payload = json!({
+            "type": "tool_use",
+            "name": "read_file",
+            "id": "call-legacy-1",
+            "args": { "path": "/tmp/a.txt" }
+        });
+        let events = map_opencode_sse(&payload);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            ProcessEvent::ToolUse {
+                name: "read_file".into(),
+                input: json!({ "path": "/tmp/a.txt" }),
+                id: Some("call-legacy-1".into()),
             }
         );
     }
@@ -473,6 +545,7 @@ mod tests {
             "part": {
                 "type": "tool",
                 "tool": "write",
+                "callID": "call-write-1",
                 "state": {
                     "status": "completed",
                     "output": "Wrote file.",
@@ -489,6 +562,7 @@ mod tests {
                 name: "write".into(),
                 result: "Wrote file.".into(),
                 failed: false,
+                id: Some("call-write-1".into()),
             }
         );
     }
@@ -500,6 +574,7 @@ mod tests {
             "part": {
                 "type": "tool",
                 "tool": "write",
+                "callID": "call-write-1",
                 "state": {
                     "status": "in_progress",
                     "input": { "path": "/tmp/a.txt", "content": "hello" }
@@ -513,6 +588,7 @@ mod tests {
             ProcessEvent::ToolUse {
                 name: "write".into(),
                 input: json!({ "path": "/tmp/a.txt", "content": "hello" }),
+                id: Some("call-write-1".into()),
             }
         );
     }
@@ -525,6 +601,7 @@ mod tests {
                 "part": {
                     "type": "tool",
                     "tool": "write",
+                    "callID": "call-write-2",
                     "state": {
                         "status": "completed",
                         "output": "Wrote file.",
@@ -541,7 +618,99 @@ mod tests {
                 name: "write".into(),
                 result: "Wrote file.".into(),
                 failed: false,
+                id: Some("call-write-2".into()),
             }
+        );
+    }
+
+    #[test]
+    fn test_map_tool_use_part_id_fallback() {
+        // 无 callID 时兜底使用 part.id。
+        let payload = json!({
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "type": "tool",
+                    "id": "part-1",
+                    "tool": "write",
+                    "state": {
+                        "status": "in_progress",
+                        "input": { "path": "/tmp/a.txt" }
+                    }
+                }
+            }
+        });
+        let events = map_opencode_sse(&payload);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            ProcessEvent::ToolUse {
+                name: "write".into(),
+                input: json!({ "path": "/tmp/a.txt" }),
+                id: Some("part-1".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parallel_tool_results_correlate_by_call_id() {
+        // 并行工具调用：两个 ToolUse 先后 START，结果逆序返回时，
+        // 每个 ToolResult 必须携带与各自 ToolUse 相同的 callID，
+        // 下游据此精确关联而不会张冠李戴。
+        let running = |call_id: &str, tool: &str, input: Value| {
+            json!({
+                "type": "message.part.updated",
+                "properties": {
+                    "part": {
+                        "type": "tool",
+                        "tool": tool,
+                        "callID": call_id,
+                        "state": { "status": "in_progress", "input": input }
+                    }
+                }
+            })
+        };
+        let completed = |call_id: &str, tool: &str, output: &str| {
+            json!({
+                "type": "message.part.updated",
+                "properties": {
+                    "part": {
+                        "type": "tool",
+                        "tool": tool,
+                        "callID": call_id,
+                        "state": { "status": "completed", "output": output, "input": {} }
+                    }
+                }
+            })
+        };
+
+        let events_a = map_opencode_sse(&running("call-A", "bash", json!({ "command": "ls" })));
+        let events_b = map_opencode_sse(&running("call-B", "glob", json!({ "pattern": "*.rs" })));
+        assert_eq!(events_a.len(), 1);
+        assert_eq!(events_b.len(), 1);
+        assert!(
+            matches!(&events_a[0], ProcessEvent::ToolUse { id, .. } if id.as_deref() == Some("call-A"))
+        );
+        assert!(
+            matches!(&events_b[0], ProcessEvent::ToolUse { id, .. } if id.as_deref() == Some("call-B"))
+        );
+
+        // 结果逆序返回：先 B 后 A。
+        let results_b = map_opencode_sse(&completed("call-B", "glob", "no files"));
+        let results_a = map_opencode_sse(&completed("call-A", "bash", "file list"));
+        assert_eq!(results_b.len(), 1);
+        assert_eq!(results_a.len(), 1);
+        assert!(
+            matches!(&results_b[0], ProcessEvent::ToolResult { id, name, .. }
+                if id.as_deref() == Some("call-B") && name == "glob"),
+            "B 的结果必须携带 call-B: {:?}",
+            results_b[0]
+        );
+        assert!(
+            matches!(&results_a[0], ProcessEvent::ToolResult { id, name, .. }
+                if id.as_deref() == Some("call-A") && name == "bash"),
+            "A 的结果必须携带 call-A: {:?}",
+            results_a[0]
         );
     }
 
@@ -577,6 +746,7 @@ mod tests {
                 name: "read_file".into(),
                 result: "ok".into(),
                 failed: true,
+                id: None,
             }
         );
     }
@@ -663,6 +833,7 @@ mod tests {
             questions: vec![QuestionItem {
                 id: "q1".into(),
                 text: "ok?".into(),
+                options: None,
             }],
         };
         let ev = map_interaction(&req);
@@ -671,10 +842,64 @@ mod tests {
             ProcessEvent::Question {
                 questions: vec![QuestionItem {
                     id: "q1".into(),
-                    text: "ok?".into()
+                    text: "ok?".into(),
+                    options: None,
                 }]
             }
         );
+    }
+
+    #[test]
+    fn test_parse_question_preserves_options() {
+        // 新版 question 工具格式：options 数组必须完整透传到 QuestionItem。
+        let input = json!({
+            "questions": [{
+                "header": "是否继续？",
+                "question": "是否继续执行重构？",
+                "options": [
+                    { "label": "继续", "description": "应用全部改动" },
+                    { "label": "取消" }
+                ],
+                "multiple": false
+            }]
+        });
+        let interaction = detect_question_tool_input(&input).unwrap();
+        let InteractionRequest::Question { questions } = interaction else {
+            panic!("expected Question interaction");
+        };
+        assert_eq!(questions.len(), 1);
+        // id/text 取值逻辑保持不变：id 取第一个选项的 label，text 优先 header。
+        assert_eq!(questions[0].id, "继续");
+        assert_eq!(questions[0].text, "是否继续？");
+        let options = questions[0].options.as_ref().expect("options 应被保留");
+        assert_eq!(
+            options,
+            &vec![
+                QuestionOption {
+                    label: "继续".into(),
+                    description: Some("应用全部改动".into()),
+                },
+                QuestionOption {
+                    label: "取消".into(),
+                    description: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_question_legacy_format_without_options() {
+        // 旧格式 {id, text} 仍能解析，options 为 None。
+        let input = json!({
+            "questions": [{ "id": "q1", "text": "ok?" }]
+        });
+        let interaction = detect_question_tool_input(&input).unwrap();
+        let InteractionRequest::Question { questions } = interaction else {
+            panic!("expected Question interaction");
+        };
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].id, "q1");
+        assert_eq!(questions[0].options, None);
     }
 
     #[test]

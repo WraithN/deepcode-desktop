@@ -20,6 +20,11 @@ const KEY_TOOL_NAME: &str = "toolName";
 const KEY_FAILED: &str = "failed";
 const KEY_MESSAGE: &str = "message";
 
+/// 回合结束（done/error）时为未结算工具调用补发的 RESULT 内容标记。
+/// agent 被看门狗重启或异常结束时，上游永远不会补发这些调用的 result，
+/// 若不主动关闭，前端工具卡片会永远停留在"执行中"。
+const INTERRUPTED_TOOL_RESULT_CONTENT: &str = "[中断] 工具调用未返回结果（agent 重启或回合结束）";
+
 /// Per-run state used to turn discrete JSON-RPC notifications into
 /// AG-UI Start/Content/End event sequences.
 #[derive(Debug, Default, Clone)]
@@ -27,7 +32,8 @@ pub struct AguiMapper {
     current_message_id: Option<String>,
     /// 待结算的工具调用 ID 队列（FIFO），用于无显式 ID 关联时的回退匹配。
     pending_tool_call_ids: Vec<String>,
-    /// claude tool_use id -> AG-UI tool_call_id 映射，用于精确关联 tool_result。
+    /// 上游工具调用 id（claude toolu_*/opencode callID/codex item.id）到
+    /// AG-UI tool_call_id 的映射，用于精确关联 tool_result。
     tool_call_id_map: HashMap<String, String>,
     /// 是否已发送 THINKING_START，用于避免每个 thinking delta 都重复开启/关闭。
     current_thinking_active: bool,
@@ -54,7 +60,8 @@ impl AguiMapper {
             // message_end 仅表示一条 assistant 消息结束（如 claude 工具调用循环
             // 中的 message_stop），只关闭当前文本消息；done 才表示回合结束，
             // RUN_FINISHED 由 sink 消费者在广播完本批事件后补发。
-            METHOD_MESSAGE_END | METHOD_DONE => self.map_done(base),
+            METHOD_MESSAGE_END => self.map_message_end(base),
+            METHOD_DONE => self.map_done(base),
             METHOD_ERROR => self.map_error(base, payload),
             METHOD_STATUS_CHANGED => vec![Event::Custom {
                 base,
@@ -163,10 +170,12 @@ impl AguiMapper {
 
     fn map_tool_use(&mut self, base: BaseEvent, payload: &Value) -> Vec<Event> {
         let tool_call_id = new_id();
-        // 提取 claude 的 tool_use id，用于后续 tool_result 精确关联。
-        if let Some(claude_id) = payload.get("id").and_then(|v| v.as_str()) {
+        // 提取上游的稳定工具调用 id（agent-core EventMapper 在事件携带真实
+        // 调用 id 时以其覆盖 payload 的 id 字段），用于后续 tool_result 精确关联；
+        // 无 id 字段时不插入映射，仅靠 FIFO 兜底。
+        if let Some(call_id) = payload.get("id").and_then(|v| v.as_str()) {
             self.tool_call_id_map
-                .insert(claude_id.to_string(), tool_call_id.clone());
+                .insert(call_id.to_string(), tool_call_id.clone());
         }
         self.pending_tool_call_ids.push(tool_call_id.clone());
         let raw_delta = payload
@@ -203,7 +212,7 @@ impl AguiMapper {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        // 优先用 claude 的 tool_use_id 精确关联；无 id 时回退到 FIFO 队列（最早未结算的调用）。
+        // 优先用上游的 tool_use_id 精确关联；无 id 时回退到 FIFO 队列（最早未结算的调用）。
         let tool_call_id = payload
             .get("tool_use_id")
             .or_else(|| payload.get("toolUseId"))
@@ -228,7 +237,13 @@ impl AguiMapper {
         ]
     }
 
-    fn map_done(&mut self, base: BaseEvent) -> Vec<Event> {
+    /// message_end（如 claude 的 message_stop）只关闭当前文本消息。
+    ///
+    /// 注意不能在此清空工具调用状态：claude 的工具循环是
+    /// assistant(tool_use) → message_stop → user(tool_result)，
+    /// 若在 message_stop 清空 pending_tool_call_ids / tool_call_id_map，
+    /// 跨消息到达的工具结果将丢失关联，只能落回 FIFO 兜底甚至张冠李戴。
+    fn map_message_end(&mut self, base: BaseEvent) -> Vec<Event> {
         let mut events = self.close_thinking();
         if let Some(id) = self.current_message_id.take() {
             events.push(Event::TextMessageEnd {
@@ -236,9 +251,43 @@ impl AguiMapper {
                 message_id: id,
             });
         }
-        self.pending_tool_call_ids.clear();
-        self.tool_call_id_map.clear();
         events
+    }
+
+    /// done 表示整个回合结束，关闭文本消息并清空本回合的工具调用关联状态。
+    /// 清空前先结算所有未返回结果的工具调用（补发 END+RESULT），
+    /// 避免前端工具卡片因等不到结果而永远停留在"执行中"。
+    fn map_done(&mut self, base: BaseEvent) -> Vec<Event> {
+        let mut events = Vec::new();
+        self.settle_pending_tool_calls(&mut events);
+        events.extend(self.map_message_end(base));
+        events
+    }
+
+    /// 为所有仍 pending 的工具调用补发 ToolCallEnd + ToolCallResult（中断标记），
+    /// 并清空关联状态。插件无关：opencode/claude/codex 的异常结束路径均受益。
+    /// 正常回合结束时 pending 为空，本方法不产生任何事件。
+    fn settle_pending_tool_calls(&mut self, events: &mut Vec<Event>) {
+        let pending = std::mem::take(&mut self.pending_tool_call_ids);
+        self.tool_call_id_map.clear();
+        for tool_call_id in pending {
+            events.push(Event::ToolCallEnd {
+                base: BaseEvent {
+                    timestamp: Some(now()),
+                    raw_event: None,
+                },
+                tool_call_id: tool_call_id.clone(),
+            });
+            events.push(Event::ToolCallResult {
+                base: BaseEvent {
+                    timestamp: Some(now()),
+                    raw_event: None,
+                },
+                tool_call_id,
+                message_id: self.current_message_id.clone().unwrap_or_else(new_id),
+                content: INTERRUPTED_TOOL_RESULT_CONTENT.to_string(),
+            });
+        }
     }
 
     fn map_error(&mut self, base: BaseEvent, payload: &Value) -> Vec<Event> {
@@ -475,5 +524,157 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(result_id, id_b, "RESULT must match B's START id, not A's");
+    }
+
+    #[test]
+    fn test_message_end_preserves_tool_call_correlation() {
+        // claude 工具循环：assistant(tool_use) → message_stop(MessageEnd)
+        // → user(tool_result)。MessageEnd 不能清空工具调用关联状态，
+        // 否则跨消息到达的 tool_result 无法精确匹配。
+        let mut mapper = AguiMapper::new();
+        let events = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_use", "content": "bash", "toolName": "bash", "id": "toolu_1" }),
+        );
+        let start_id = match &events[0] {
+            Event::ToolCallStart { tool_call_id, .. } => tool_call_id.clone(),
+            _ => unreachable!(),
+        };
+
+        // message_stop：只关闭文本消息，不清工具调用状态。
+        mapper.map(METHOD_MESSAGE_END, &json!({}));
+
+        // 下一条消息中的 tool_result 仍应通过 tool_use_id 精确匹配。
+        let events = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_result", "content": "ok", "tool_use_id": "toolu_1" }),
+        );
+        let result_id = match &events[1] {
+            Event::ToolCallResult { tool_call_id, .. } => tool_call_id.clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            start_id, result_id,
+            "跨 MessageEnd 的 tool_result 必须精确匹配原 START id"
+        );
+    }
+
+    #[test]
+    fn test_done_clears_tool_call_state() {
+        // Done（回合结束）才清空工具调用关联状态：回合结束后到达的
+        // tool_result 不应再匹配到上一回合的调用 id。
+        let mut mapper = AguiMapper::new();
+        let events = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_use", "content": "bash", "id": "toolu_1" }),
+        );
+        let start_id = match &events[0] {
+            Event::ToolCallStart { tool_call_id, .. } => tool_call_id.clone(),
+            _ => unreachable!(),
+        };
+
+        mapper.map(METHOD_DONE, &json!({}));
+
+        let events = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_result", "content": "late", "tool_use_id": "toolu_1" }),
+        );
+        let result_id = match &events[1] {
+            Event::ToolCallResult { tool_call_id, .. } => tool_call_id.clone(),
+            _ => unreachable!(),
+        };
+        assert_ne!(
+            start_id, result_id,
+            "Done 清空状态后，迟到的 tool_result 不应匹配旧调用 id"
+        );
+    }
+
+    #[test]
+    fn test_done_settles_pending_tool_calls() {
+        // 两个并行调用，只有一个正常返回；Done 时应为剩下的一个补发 END+RESULT，
+        // 否则其前端卡片永远停留在"执行中"。
+        let mut mapper = AguiMapper::new();
+        let events_a = mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_use", "content": "bash", "id": "call-A" }),
+        );
+        let start_a = match &events_a[0] {
+            Event::ToolCallStart { tool_call_id, .. } => tool_call_id.clone(),
+            _ => unreachable!(),
+        };
+        mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_use", "content": "glob", "id": "call-B" }),
+        );
+        mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_result", "content": "ok", "tool_use_id": "call-B" }),
+        );
+
+        let events = mapper.map(METHOD_DONE, &json!({}));
+        let ends: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Event::ToolCallEnd { .. }))
+            .collect();
+        let results: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Event::ToolCallResult { .. }))
+            .collect();
+        assert_eq!(ends.len(), 1, "Done 时应只为未结算的调用补发 END");
+        assert_eq!(results.len(), 1, "Done 时应只为未结算的调用补发 RESULT");
+        let Event::ToolCallResult {
+            tool_call_id,
+            content,
+            ..
+        } = results[0]
+        else {
+            unreachable!();
+        };
+        assert_eq!(
+            *tool_call_id, start_a,
+            "补发的 RESULT 必须关联未结算调用的 id"
+        );
+        assert!(
+            content.contains(INTERRUPTED_TOOL_RESULT_CONTENT),
+            "补发的 RESULT 应带中断标记: {content}"
+        );
+
+        // 再次 Done 不应重复补发。
+        let events = mapper.map(METHOD_DONE, &json!({}));
+        assert!(
+            !events.iter().any(|e| matches!(e, Event::ToolCallEnd { .. })),
+            "状态已清空，重复 Done 不应再次补发"
+        );
+    }
+
+    #[test]
+    fn test_done_without_pending_tool_calls_unchanged() {
+        // 正常回合（无未结算调用）：Done 不产生任何工具事件。
+        let mut mapper = AguiMapper::new();
+        mapper.map(METHOD_TOKEN, &json!({ "text": "x" }));
+        let events = mapper.map(METHOD_DONE, &json!({}));
+        assert!(!events.iter().any(|e| matches!(e, Event::ToolCallEnd { .. })));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, Event::ToolCallResult { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::TextMessageEnd { .. })));
+    }
+
+    #[test]
+    fn test_error_settles_pending_tool_calls() {
+        // RunError 路径同样需要结算未返回结果的工具调用。
+        let mut mapper = AguiMapper::new();
+        mapper.map(
+            METHOD_THINKING,
+            &json!({ "type": "tool_use", "content": "bash", "id": "call-1" }),
+        );
+        let events = mapper.map(METHOD_ERROR, &json!({ "message": "boom" }));
+        assert!(events.iter().any(|e| matches!(e, Event::ToolCallEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::ToolCallResult { content, .. } if content.contains(INTERRUPTED_TOOL_RESULT_CONTENT))));
+        assert!(events.iter().any(|e| matches!(e, Event::RunError { .. })));
     }
 }
