@@ -313,6 +313,11 @@ async fn route_stdout_line(
     }
 }
 
+/// HttpTransport 默认请求超时（秒）。
+///
+/// 与 stdio 传输层的 `REQUEST_TIMEOUT_SECS` 保持一致，防止 HTTP 请求无限挂起。
+const HTTP_TRANSPORT_TIMEOUT_SECS: u64 = 30;
+
 /// HTTP 传输层实现（MCP Streamable HTTP）。
 ///
 /// 通过 POST JSON-RPC 请求到 MCP server URL 与之通信。支持两种响应格式：
@@ -326,12 +331,24 @@ pub struct HttpTransport {
 }
 
 impl HttpTransport {
-    /// 创建 HTTP 传输层。
+    /// 创建 HTTP 传输层，使用默认请求超时。
     pub fn new(url: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
+        Self::with_timeout(
             url,
-        }
+            std::time::Duration::from_secs(HTTP_TRANSPORT_TIMEOUT_SECS),
+        )
+    }
+
+    /// 创建 HTTP 传输层，使用调用方指定的请求超时。
+    ///
+    /// crawler-service 的调用超时由 dh-backend 下发（`timeoutMs` 字段），
+    /// 网关侧据此构造带超时的 reqwest client，避免请求无限挂起。
+    pub fn with_timeout(url: String, timeout: std::time::Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("build HTTP transport reqwest client with timeout");
+        Self { client, url }
     }
 }
 

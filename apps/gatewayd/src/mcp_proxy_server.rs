@@ -20,6 +20,15 @@ const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 /// 与平台策略一致。
 pub(crate) const MCP_DEFAULT_MAX_DEPTH: i64 = 2;
 
+/// crawler 工具 `web_scrape` 的裸工具名（聚合前）。
+const WEB_SCRAPE_TOOL_NAME: &str = "web_scrape";
+
+/// `web_scrape` 带命名空间前缀后的后缀（含分隔符 `:`）。
+///
+/// `aggregate_tools` 会给工具名加 `{server}:` 前缀，crawler 的工具实际名为
+/// `crawler:web_scrape`。用后缀匹配做到命名空间无关，避免硬编码 server 名。
+const WEB_SCRAPE_TOOL_SUFFIX: &str = ":web_scrape";
+
 /// 改写工具列表中 `web_scrape.maxDepth` 的 default 值。
 ///
 /// `McpRegistry::aggregate_tools` 返回的工具 schema 由 crawler 原始声明，
@@ -27,10 +36,20 @@ pub(crate) const MCP_DEFAULT_MAX_DEPTH: i64 = 2;
 /// 让 agent 在不显式传参时使用平台期望的爬取深度。
 pub fn rewrite_tool_defaults(tools: &mut [Value], max_depth: i64) {
     for t in tools.iter_mut() {
-        if t.get("name").and_then(|v| v.as_str()) == Some("web_scrape") {
+        if tool_name_is_web_scrape(t) {
             rewrite_max_depth_default(t, max_depth);
         }
     }
+}
+
+/// 判断工具是否为 crawler 的 `web_scrape`。
+///
+/// 兼容两种形式：`aggregate_tools` 命名空间化后的 `crawler:web_scrape`
+/// （及任何 `{namespace}:web_scrape`），以及未命名空间的裸 `web_scrape`
+/// （手工构造的数据 / 未来非聚合场景）。
+fn tool_name_is_web_scrape(tool: &Value) -> bool {
+    let name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    name == WEB_SCRAPE_TOOL_NAME || name.ends_with(WEB_SCRAPE_TOOL_SUFFIX)
 }
 
 /// 就地改写单个 `web_scrape` 工具 schema 中 `maxDepth.default`。
@@ -120,5 +139,56 @@ pub async fn mcp_endpoint(
             "jsonrpc": "2.0", "id": id,
             "error": { "code": -32601, "message": "method not found" }
         }))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造一个 `web_scrape` 风格的 tool schema（含 `maxDepth.default`），
+    /// 用于验证 `rewrite_tool_defaults` 的命名空间匹配行为。
+    fn web_scrape_tool(name: &str, default: i64) -> Value {
+        json!({
+            "name": name,
+            "inputSchema": {
+                "properties": {
+                    "maxDepth": { "type": "integer", "default": default }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn rewrite_tool_defaults_rewrites_namespaced_and_bare_web_scrape() {
+        let mut tools = vec![
+            web_scrape_tool("crawler:web_scrape", 0),
+            web_scrape_tool("web_scrape", 0),
+            web_scrape_tool("other:web_scrape", 0),
+            // 非 web_scrape 工具，不应被改写。
+            web_scrape_tool("crawler:web_search", 0),
+        ];
+        rewrite_tool_defaults(&mut tools, MCP_DEFAULT_MAX_DEPTH);
+
+        assert_eq!(
+            tools[0]["inputSchema"]["properties"]["maxDepth"]["default"],
+            json!(MCP_DEFAULT_MAX_DEPTH),
+            "聚合后的 crawler:web_scrape 应被改写 default"
+        );
+        assert_eq!(
+            tools[1]["inputSchema"]["properties"]["maxDepth"]["default"],
+            json!(MCP_DEFAULT_MAX_DEPTH),
+            "未命名空间的裸 web_scrape 应被改写 default"
+        );
+        assert_eq!(
+            tools[2]["inputSchema"]["properties"]["maxDepth"]["default"],
+            json!(MCP_DEFAULT_MAX_DEPTH),
+            "其它命名空间的 :web_scrape 应被改写 default（命名空间无关）"
+        );
+        assert_eq!(
+            tools[3]["inputSchema"]["properties"]["maxDepth"]["default"],
+            json!(0),
+            "非 web_scrape 工具不应被改写"
+        );
     }
 }

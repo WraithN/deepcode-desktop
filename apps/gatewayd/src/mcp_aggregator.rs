@@ -8,6 +8,7 @@ use dh_core::mcp::types::{Tool, ToolResult};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 // ── Config ──
@@ -37,6 +38,20 @@ const BACKEND_CRAWLER_URL_FIELD: &str = "url";
 
 /// dh-backend 返回 JSON 中 crawler 最大爬取深度的字段名。
 const BACKEND_CRAWLER_MAX_DEPTH_FIELD: &str = "maxDepth";
+
+/// dh-backend 返回 JSON 中 crawler MCP 请求超时的字段名（单位：毫秒）。
+const BACKEND_CRAWLER_TIMEOUT_MS_FIELD: &str = "timeoutMs";
+
+/// 拉取 dh-backend crawler 配置的 HTTP 请求超时（秒）。
+///
+/// 防止 dh-backend 挂起导致 gatewayd 启动被无限阻塞（finding 2 修复）。
+const CRAWLER_CONFIG_FETCH_TIMEOUT_SECS: u64 = 10;
+
+/// crawler MCP 客户端请求超时的兜底值（毫秒）。
+///
+/// 当 dh-backend 未返回 `timeoutMs` 或返回非正值时使用；
+/// 与 dh-backend 侧的默认 crawler 超时（60000ms）对齐。
+const CRAWLER_MCP_TIMEOUT_FALLBACK_MS: i64 = 60_000;
 
 // ── Types ──
 
@@ -181,6 +196,19 @@ impl McpServerConfig {
     }
 }
 
+/// 根据 dh-backend 下发的 `timeoutMs`（毫秒）计算 crawler MCP 客户端请求超时。
+///
+/// `timeoutMs` 缺失或非正时回退到 `CRAWLER_MCP_TIMEOUT_FALLBACK_MS`，
+/// 保证 crawler 调用始终有明确的上限，避免请求无限挂起。
+fn crawler_request_timeout(timeout_ms: i64) -> Duration {
+    let ms = if timeout_ms > 0 {
+        timeout_ms
+    } else {
+        CRAWLER_MCP_TIMEOUT_FALLBACK_MS
+    };
+    Duration::from_millis(ms as u64)
+}
+
 /// MCP 聚合注册表
 pub struct McpRegistry {
     clients: HashMap<String, McpClientEntry>,
@@ -281,7 +309,10 @@ impl McpRegistry {
         backend_url: &str,
         token: &str,
     ) -> anyhow::Result<i64> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(CRAWLER_CONFIG_FETCH_TIMEOUT_SECS))
+            .build()
+            .map_err(|e| anyhow::anyhow!("build crawler config client: {e}"))?;
         let endpoint = format!(
             "{}{}",
             backend_url.trim_end_matches('/'),
@@ -308,6 +339,13 @@ impl McpRegistry {
             .get(BACKEND_CRAWLER_MAX_DEPTH_FIELD)
             .and_then(|v| v.as_i64())
             .unwrap_or(crate::mcp_proxy_server::MCP_DEFAULT_MAX_DEPTH);
+        // timeoutMs 是 crawler-service 的调用超时（毫秒），在拿到响应后才可知，
+        // 因此无法作用于本次拉取请求本身；将其应用于 crawler MCP 客户端，
+        // 使 agent 对 crawler 的调用尊重平台下发的超时策略。
+        let timeout_ms = body
+            .get(BACKEND_CRAWLER_TIMEOUT_MS_FIELD)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         if url.is_empty() {
             anyhow::bail!("crawler config url empty");
         }
@@ -320,7 +358,7 @@ impl McpRegistry {
             url: Some(url.into()),
             enabled: true,
         };
-        let mcp_client = McpClient::connect_http(url)
+        let mcp_client = McpClient::connect_http_with_timeout(url, crawler_request_timeout(timeout_ms))
             .await
             .map_err(|e| anyhow::anyhow!("connect crawler MCP: {e}"))?;
         self.clients.insert(

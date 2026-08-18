@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex};
 /// client 层 notification handler 表：method -> 回调。
 type NotificationHandlerMap = HashMap<String, Box<dyn Fn(Value) + Send>>;
 
+/// `connect_http` 的默认请求超时（秒），与 transport 层 HTTP 默认超时保持一致。
+const HTTP_CONNECT_TIMEOUT_SECS: u64 = 30;
+
 pub struct McpClient {
     // transport 以 trait 对象持有，支持 stdio / http 两种传输层。
     // id 路由 / pending 表已下沉到各 transport 实现内部。
@@ -51,9 +54,25 @@ impl McpClient {
     /// 通过 HTTP（MCP Streamable HTTP）连接 MCP server。
     ///
     /// 内部构建 `HttpTransport` 并包为 `Arc<dyn McpTransport>`，
-    /// 随后调用 `initialize` 完成协议握手。
+    /// 随后调用 `initialize` 完成协议握手。使用默认请求超时。
     pub async fn connect_http(url: &str) -> Result<Self, McpError> {
-        let transport: Arc<dyn McpTransport> = Arc::new(HttpTransport::new(url.to_string()));
+        Self::connect_http_with_timeout(
+            url,
+            std::time::Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS),
+        )
+        .await
+    }
+
+    /// 通过 HTTP（MCP Streamable HTTP）连接 MCP server，使用指定请求超时。
+    ///
+    /// 供 gatewayd 在从 dh-backend 拉取到 `timeoutMs` 后，用平台下发的
+    /// 超时构造 crawler MCP 客户端；缺失/非正时由调用方回退到默认值。
+    pub async fn connect_http_with_timeout(
+        url: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Self, McpError> {
+        let transport: Arc<dyn McpTransport> =
+            Arc::new(HttpTransport::with_timeout(url.to_string(), timeout));
         let client = Self {
             transport,
             request_id: AtomicU64::new(1),
