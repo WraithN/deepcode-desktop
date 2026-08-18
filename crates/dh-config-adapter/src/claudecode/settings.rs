@@ -5,9 +5,10 @@
 //! keys we own (listed in `MANAGED_KEYS`) and preserve any other user fields
 //! found in the existing file.
 
+use crate::builtin;
 use crate::constants::{MANAGED_KEYS_KEY, SENTINEL_KEY};
 use crate::error::Result;
-use dh_config::{McpServerConfig, ModelConfig, ProviderConfig, UnifiedConfig};
+use dh_config::{McpServerConfig, ModelConfig, ProviderConfig, TransportKindCfg, UnifiedConfig};
 use serde_json::{json, Map, Value};
 
 /// JSON keys this adapter owns.
@@ -82,7 +83,13 @@ fn insert_model_env(env: &mut Map<String, Value>, model: &ModelConfig) {
 
 fn build_mcp(cfg: &UnifiedConfig) -> Value {
     let mut servers = Map::new();
-    for entry in cfg.mcp.iter().filter(|e| applies_to_claudecode(e)) {
+    let builtin = builtin::builtin_mcp_servers(cfg);
+    for entry in cfg
+        .mcp
+        .iter()
+        .chain(builtin.iter())
+        .filter(|e| applies_to_claudecode(e))
+    {
         servers.insert(entry.name.clone(), build_one_mcp(entry));
     }
     Value::Object(servers)
@@ -96,6 +103,12 @@ fn applies_to_claudecode(entry: &McpServerConfig) -> bool {
 }
 
 fn build_one_mcp(entry: &McpServerConfig) -> Value {
+    // Http transport：Claude Code 使用 `{ "type": "http", "url": "..." }`。
+    if entry.transport == TransportKindCfg::Http {
+        let url = entry.url.clone().unwrap_or_default();
+        return json!({ "type": "http", "url": url });
+    }
+    // Stdio transport：沿用 command/args/env 渲染。
     let mut env = Map::new();
     for (k, v) in &entry.env {
         env.insert(k.clone(), Value::String(v.clone()));
@@ -193,10 +206,20 @@ mod tests {
             scopes: vec!["opencode".into()],
             ..Default::default()
         });
+        cfg.mcp.push(McpServerConfig {
+            name: "gatewayd".into(),
+            transport: TransportKindCfg::Http,
+            url: Some("http://127.0.0.1:2346/mcp".into()),
+            enabled: true,
+            ..Default::default()
+        });
         let v = build(&cfg, None).unwrap();
         let servers = v["mcpServers"].as_object().unwrap();
         assert!(servers.contains_key("fs"));
         assert!(!servers.contains_key("off"));
         assert!(!servers.contains_key("opencode-only"));
+        // http 类型条目渲染为 { "type": "http", "url": "..." }。
+        assert_eq!(servers["gatewayd"]["type"], "http");
+        assert_eq!(servers["gatewayd"]["url"], "http://127.0.0.1:2346/mcp");
     }
 }

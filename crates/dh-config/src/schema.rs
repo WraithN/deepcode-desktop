@@ -68,6 +68,20 @@ pub struct ModelConfig {
     pub max_tokens: Option<u32>,
 }
 
+/// MCP server 传输类型（dh-config 配置层）。
+///
+/// 与 gatewayd 运行时 `mcp_aggregator::TransportKind` 语义一致但类型独立，
+/// 命名为 `TransportKindCfg` 以避免跨 crate 命名冲突。
+///
+/// - `Stdio`：通过子进程 stdio 通信（command/args/env）。
+/// - `Http`：通过 MCP Streamable HTTP 协议访问远程 server（url）。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub enum TransportKindCfg {
+    #[default]
+    Stdio,
+    Http,
+}
+
 /// One MCP server entry.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -78,6 +92,12 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// 传输类型；缺省为 `Stdio`（向后兼容仅含 command/args/env 的旧配置）。
+    #[serde(default)]
+    pub transport: TransportKindCfg,
+    /// Http transport 用的 URL；Stdio 行可为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Restrict to specific agent adapters by key (`opencode`, `claudecode`).
@@ -293,6 +313,35 @@ enabled = ["code-review"]
         assert_eq!(cfg.mcp.len(), 1);
         assert!(cfg.mcp[0].enabled);
         assert_eq!(cfg.skills.enabled, vec!["code-review"]);
+    }
+
+    #[test]
+    fn parses_http_mcp_entry() {
+        let src = r#"
+[[mcp]]
+name = "gatewayd"
+transport = "Http"
+url = "http://127.0.0.1:2346/mcp"
+"#;
+        let cfg: UnifiedConfig = toml::from_str(src).unwrap();
+        assert_eq!(cfg.mcp.len(), 1);
+        assert_eq!(cfg.mcp[0].transport, TransportKindCfg::Http);
+        assert_eq!(
+            cfg.mcp[0].url.as_deref(),
+            Some("http://127.0.0.1:2346/mcp")
+        );
+    }
+
+    #[test]
+    fn mcp_transport_defaults_to_stdio() {
+        let src = r#"
+[[mcp]]
+name = "filesystem"
+command = "npx"
+"#;
+        let cfg: UnifiedConfig = toml::from_str(src).unwrap();
+        assert_eq!(cfg.mcp[0].transport, TransportKindCfg::Stdio);
+        assert!(cfg.mcp[0].url.is_none());
     }
 
     #[test]

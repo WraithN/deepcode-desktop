@@ -5,7 +5,7 @@
 //! [`into_result`] helper for callers that want a `Result`-shaped API.
 
 use crate::error::{ConfigError, Result};
-use crate::schema::{McpServerConfig, ModelConfig, UnifiedConfig};
+use crate::schema::{McpServerConfig, ModelConfig, TransportKindCfg, UnifiedConfig};
 use std::collections::BTreeSet;
 
 /// A single validation issue. Errors are blocking; warnings are advisory.
@@ -133,11 +133,25 @@ fn validate_mcp_entry(entry: &McpServerConfig, report: &mut ValidationReport) {
             .issues
             .push(Issue::Error("mcp entry has empty `name`".into()));
     }
-    if entry.command.is_empty() {
-        report.issues.push(Issue::Error(format!(
-            "mcp.{}: `command` is empty",
-            entry.name
-        )));
+    // 按 transport 分支校验必填字段：Stdio 需要 command，Http 需要非空 url。
+    match entry.transport {
+        TransportKindCfg::Http => {
+            let url = entry.url.as_deref().unwrap_or("");
+            if url.is_empty() {
+                report.issues.push(Issue::Error(format!(
+                    "mcp.{}: `url` is empty for http transport",
+                    entry.name
+                )));
+            }
+        }
+        TransportKindCfg::Stdio => {
+            if entry.command.is_empty() {
+                report.issues.push(Issue::Error(format!(
+                    "mcp.{}: `command` is empty",
+                    entry.name
+                )));
+            }
+        }
     }
 }
 

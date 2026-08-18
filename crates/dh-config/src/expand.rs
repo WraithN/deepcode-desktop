@@ -53,6 +53,9 @@ fn expand_mcp(mcp: &mut [McpServerConfig], ctx: &ExpandContext<'_>) -> Result<()
     for entry in mcp.iter_mut() {
         entry.name = expand(&entry.name, ctx)?;
         entry.command = expand(&entry.command, ctx)?;
+        if let Some(url) = entry.url.as_mut() {
+            *url = expand(url, ctx)?;
+        }
         for arg in entry.args.iter_mut() {
             *arg = expand(arg, ctx)?;
         }

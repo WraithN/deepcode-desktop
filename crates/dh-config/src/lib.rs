@@ -48,6 +48,6 @@ pub use placeholder::{
 };
 pub use schema::{
     McpServerConfig, ModelConfig, PlatformConfig, ProviderConfig, RulesConfig, SkillsConfig,
-    UnifiedConfig,
+    TransportKindCfg, UnifiedConfig,
 };
 pub use validate::{validate, Issue, ValidationReport};

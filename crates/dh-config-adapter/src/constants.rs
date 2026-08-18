@@ -36,6 +36,15 @@ pub const CLAUDE_MEMORY_FILE: &str = "CLAUDE.md";
 /// Subdirectory under `.claude/` storing slash command (skill) files.
 pub const CLAUDE_COMMANDS_DIRNAME: &str = "commands";
 
+// ───── OpenCode paths ─────
+
+/// Per-user OpenCode config directory name (relative to the config dir,
+/// i.e. `~/.config/opencode`).
+pub const OPENCODE_USER_DIRNAME: &str = "opencode";
+
+/// File name of the OpenCode config JSON (both user and project scopes).
+pub const OPENCODE_CONFIG_FILE: &str = "opencode.json";
+
 // ───── Default render limits ─────
 
 /// Maximum number of files an adapter is allowed to emit in one render to

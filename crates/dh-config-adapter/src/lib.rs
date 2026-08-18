@@ -6,17 +6,20 @@
 
 pub mod adapter;
 pub mod apply;
+pub mod builtin;
 pub mod claudecode;
 pub mod constants;
 pub mod diff;
 pub mod error;
 pub mod io;
+pub mod opencode;
 pub mod types;
 
 pub use adapter::{AdapterRegistry, AgentConfigAdapter, ApplyOptions, ApplyOutcome};
 pub use apply::{apply, apply_with_adapter};
 pub use claudecode::ClaudecodeAdapter;
 pub use error::{AdapterError, Result};
+pub use opencode::OpencodeAdapter;
 pub use types::{
     BackupId, ConfigScope, FileChange, FileDiff, RenderResult, RenderedFile,
 };
@@ -26,5 +29,6 @@ pub use types::{
 pub fn default_registry() -> AdapterRegistry {
     let mut r = AdapterRegistry::new();
     r.register(ClaudecodeAdapter::new());
+    r.register(OpencodeAdapter::new());
     r
 }
