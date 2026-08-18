@@ -1,64 +1,41 @@
 use super::codec::{JsonRpcRequest, JsonRpcResponse};
-use super::transport::StdioTransport;
+use super::transport::{McpTransport, StdioTransport};
 use super::types::*;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+
+/// client 层 notification handler 表：method -> 回调。
+type NotificationHandlerMap = HashMap<String, Box<dyn Fn(Value) + Send>>;
 
 pub struct McpClient {
-    transport: Arc<tokio::sync::Mutex<StdioTransport>>,
+    // transport 现在直接用 Arc<StdioTransport>（trait 方法均为 &self）。
+    // id 路由 / pending 表已下沉到 StdioTransport 内部。
+    transport: Arc<StdioTransport>,
     request_id: AtomicU64,
-    pending: Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
-    notification_handlers: Arc<Mutex<HashMap<String, Box<dyn Fn(Value) + Send>>>>,
+    // notification 分发：client 层通过 on_notification 注册 handler，
+    // transport 收到无 id 消息时回调此处的 dispatch 闭包。
+    notification_handlers: Arc<Mutex<NotificationHandlerMap>>,
     initialized: Arc<Mutex<bool>>,
 }
 
 impl McpClient {
     pub async fn spawn(command: &str, args: &[String], env: &std::collections::HashMap<String, String>, workspace: &str) -> Result<Self, McpError> {
-        let (transport, mut stdout_rx) = StdioTransport::spawn(command, args, env, workspace).await?;
-        let transport = Arc::new(tokio::sync::Mutex::new(transport));
-        let pending: Arc<tokio::sync::Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
-            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let notification_handlers: Arc<Mutex<HashMap<String, Box<dyn Fn(Value) + Send>>>> =
+        let transport = StdioTransport::spawn(command, args, env, workspace).await?;
+        let notification_handlers: Arc<Mutex<NotificationHandlerMap>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        let pending_clone = pending.clone();
+        // 注册 transport 级 notification handler：
+        // transport 在 stdout 中收到无 id 消息时回调，client 层按 method 分发到对应 handler。
         let handlers_clone = notification_handlers.clone();
-
-        // Spawn response handler task
-        tokio::spawn(async move {
-            while let Some(line) = stdout_rx.recv().await {
-                match serde_json::from_str::<JsonRpcResponse>(&line) {
-                    Ok(response) => {
-                        if let Some(id) = response.id.as_ref().and_then(|v| v.as_u64()) {
-                            if let Some(sender) = pending_clone.lock().await.remove(&id) {
-                                let _ = sender.send(response);
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Try as notification
-                        if let Ok(notification) = serde_json::from_str::<Value>(&line) {
-                            if let Some(method) = notification.get("method").and_then(|v| v.as_str()) {
-                                let handlers = handlers_clone.lock().unwrap();
-                                if let Some(handler) = handlers.get(method) {
-                                    if let Some(params) = notification.get("params") {
-                                        handler(params.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
+        transport.set_notification_handler(Box::new(move |line: String| {
+            dispatch_notification(&line, &handlers_clone);
+        }));
 
         Ok(Self {
-            transport,
+            transport: Arc::new(transport),
             request_id: AtomicU64::new(1),
-            pending,
             notification_handlers,
             initialized: Arc::new(Mutex::new(false)),
         })
@@ -168,48 +145,54 @@ impl McpClient {
         handlers.insert(method.to_string(), Box::new(handler));
     }
 
+    /// 发送 JSON-RPC 请求并等待响应。
+    ///
+    /// 委托给 `transport.send_request(json)` 拿回响应字符串，再反序列化为
+    /// `JsonRpcResponse`。id 路由 / pending 表 / 超时管理均由 transport 层处理。
     async fn send_request(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
-        let id = request.id.as_ref().and_then(|v| v.as_u64()).unwrap_or(0);
-        let (tx, rx) = oneshot::channel();
-
-        {
-            let mut pending = self.pending.lock().await;
-            pending.insert(id, tx);
-        }
-
         let json = serde_json::to_string(&request)
             .map_err(|e| McpError::ProtocolError(e.to_string()))?;
 
-        {
-            let mut transport = self.transport.lock().await;
-            transport.send(json).await?;
-        }
+        let response_str = self.transport.send_request(json).await?;
 
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(McpError::ProtocolError("Request cancelled".to_string())),
-            Err(_) => {
-                self.pending.lock().await.remove(&id);
-                Err(McpError::RequestTimeout)
-            }
-        }
+        serde_json::from_str::<JsonRpcResponse>(&response_str)
+            .map_err(|e| McpError::ProtocolError(e.to_string()))
     }
 
     async fn send_notification(&self, request: JsonRpcRequest) -> Result<(), McpError> {
         let json = serde_json::to_string(&request)
             .map_err(|e| McpError::ProtocolError(e.to_string()))?;
 
-        let mut transport = self.transport.lock().await;
-        transport.send(json).await
+        self.transport.send(json).await
     }
 
     pub async fn is_alive(&self) -> bool {
-        let mut transport = self.transport.lock().await;
-        transport.is_alive()
+        self.transport.is_alive().await
     }
 
     pub async fn shutdown(&self) -> Result<(), McpError> {
-        let mut transport = self.transport.lock().await;
-        transport.close().await
+        self.transport.close().await
+    }
+}
+
+/// 分发 notification 到 client 层注册的 handler。
+///
+/// 由 transport 的 notification_handler 回调调用：
+/// 解析 JSON 提取 method，在 `notification_handlers` 中查找对应 handler 并传入 params。
+fn dispatch_notification(
+    line: &str,
+    handlers: &Arc<Mutex<NotificationHandlerMap>>,
+) {
+    let notification: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if let Some(method) = notification.get("method").and_then(|v| v.as_str()) {
+        let handlers = handlers.lock().unwrap();
+        if let Some(handler) = handlers.get(method) {
+            if let Some(params) = notification.get("params") {
+                handler(params.clone());
+            }
+        }
     }
 }
