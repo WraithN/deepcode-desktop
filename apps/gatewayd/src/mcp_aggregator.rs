@@ -14,7 +14,38 @@ use tracing::{error, info, warn};
 
 const MCP_AGGREGATOR_ENABLED_KEY: &str = "mcp_aggregator_enabled";
 
+/// DB 中 transport 列的取值：stdio 子进程传输。
+const TRANSPORT_KIND_STDIO: &str = "stdio";
+/// DB 中 transport 列的取值：MCP Streamable HTTP 传输。
+const TRANSPORT_KIND_HTTP: &str = "http";
+
+/// HTTP transport url 必须使用的前缀。
+const HTTP_URL_PREFIXES: &[&str] = &["http://", "https://"];
+
+/// spawn_client 在 url 为空时的兜底值（仅用于 Http transport 错误信息可读性）。
+const EMPTY_URL_FALLBACK: &str = "";
+
 // ── Types ──
+
+/// MCP server 传输类型。
+///
+/// - `Stdio`：通过子进程 stdio 通信（command/args/env）。
+/// - `Http`：通过 MCP Streamable HTTP 协议访问远程 server（url）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportKind {
+    Stdio,
+    Http,
+}
+
+impl TransportKind {
+    /// 从 DB 中 transport 列的字符串解析为枚举。未知值统一回退到 Stdio。
+    fn from_db_str(s: &str) -> Self {
+        match s {
+            TRANSPORT_KIND_HTTP => TransportKind::Http,
+            _ => TransportKind::Stdio,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct McpServerConfig {
@@ -22,6 +53,10 @@ pub struct McpServerConfig {
     pub command: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
+    /// 传输类型：决定 spawn_client 走 stdio 子进程还是 HTTP 连接。
+    pub transport: TransportKind,
+    /// HTTP transport 用的 URL；Stdio 行可为 None。
+    pub url: Option<String>,
     /// Reserved for future dynamic enable/disable. Currently filtered at DB query time.
     #[allow(dead_code)]
     pub enabled: bool,
@@ -70,18 +105,45 @@ pub enum McpValidationError {
 }
 
 impl McpServerConfig {
-    /// Validate the command and arguments before spawning the server.
-    /// Returns Ok(()) if the command is safe to execute.
+    /// 校验配置安全可执行。
+    ///
+    /// 按 transport 分支：
+    /// - `Http`：只校验 url 以 `http://` 或 `https://` 开头（复用 `DisallowedCommand`
+    ///   变体，错误信息明确说明需要 http url）。
+    /// - `Stdio`：保持原有 command/args 校验逻辑不变（白名单 / bin_dir / 参数黑名单）。
     pub fn validate(&self) -> Result<(), McpValidationError> {
+        match self.transport {
+            TransportKind::Http => Self::validate_http(&self.url),
+            TransportKind::Stdio => self.validate_stdio(),
+        }
+    }
+
+    /// Http transport 校验：url 必须是 http/https 开头。
+    fn validate_http(url: &Option<String>) -> Result<(), McpValidationError> {
+        let url_str = url.as_deref().unwrap_or(EMPTY_URL_FALLBACK);
+        let is_valid = HTTP_URL_PREFIXES
+            .iter()
+            .any(|prefix| url_str.starts_with(prefix));
+        if !is_valid {
+            return Err(McpValidationError::DisallowedCommand(format!(
+                "http url required (http:// or https://), got: {}",
+                url_str
+            )));
+        }
+        Ok(())
+    }
+
+    /// Stdio transport 校验：保持原有 command 白名单 + bin_dir + 参数黑名单逻辑。
+    fn validate_stdio(&self) -> Result<(), McpValidationError> {
         let cmd = self.command.trim();
 
-        // If it's a bare command name, it must be in the allow list.
+        // 裸命令名必须在白名单内。
         if !cmd.contains(std::path::MAIN_SEPARATOR) {
             if !MCP_ALLOWED_COMMANDS.contains(&cmd) {
                 return Err(McpValidationError::DisallowedCommand(cmd.to_string()));
             }
         } else {
-            // Absolute paths must be inside the configured bin directory.
+            // 绝对路径必须位于配置的 bin 目录内。
             let path = std::path::Path::new(cmd);
             let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
             let bin_dir = std::env::var(ENV_MCP_BIN_DIR)
@@ -95,7 +157,7 @@ impl McpServerConfig {
             }
         }
 
-        // Reject dangerous argument patterns.
+        // 拒绝危险参数模式。
         for arg in &self.args {
             if MCP_ARG_BLACKLIST.iter().any(|bad| arg.contains(bad)) {
                 return Err(McpValidationError::ForbiddenArgPattern(arg.clone()));
@@ -135,19 +197,32 @@ impl McpRegistry {
         }
 
         // Load enabled servers
+        // 查询包含新增的 transport/url 列：
+        // - transport: 'stdio' | 'http'，未知值回退 Stdio
+        // - url: HTTP transport 用；stdio 行可为 NULL
         let mut stmt = conn.prepare(
-            "SELECT name, command, args, env, enabled FROM mcp_servers WHERE enabled = 1",
+            "SELECT name, command, args, env, enabled, transport, url \
+             FROM mcp_servers WHERE enabled = 1",
         )?;
         let rows = stmt.query_map([], |row| {
             let args_json: String = row.get(2)?;
             let env_json: String = row.get(3)?;
             let args: Vec<String> = serde_json::from_str(&args_json).unwrap_or_default();
             let env: HashMap<String, String> = serde_json::from_str(&env_json).unwrap_or_default();
+            // transport 列 NOT NULL DEFAULT 'stdio'，理论上必有值；
+            // 兜底处理 NULL 以防旧库 ALTER 前的极端情况。
+            let transport_str: String =
+                row.get(5).unwrap_or_else(|_| TRANSPORT_KIND_STDIO.to_string());
+            let transport = TransportKind::from_db_str(&transport_str);
+            // url 列允许 NULL（stdio 行无需 url）；rusqlite 原生将 NULL 映射为 None。
+            let url: Option<String> = row.get(6)?;
             Ok(McpServerConfig {
                 name: row.get(0)?,
                 command: row.get(1)?,
                 args,
                 env,
+                transport,
+                url,
                 enabled: row.get::<_, i64>(4)? != 0,
             })
         })?;
@@ -184,9 +259,22 @@ impl McpRegistry {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
-        let client =
-            McpClient::spawn(&config.command, &config.args, &config.env, &workspace).await?;
-        client.initialize().await?;
+        // 按 transport 分支构造 client：
+        // - Stdio：spawn 子进程，随后手动 initialize 完成协议握手
+        //   （McpClient::spawn 不会自动 initialize）。
+        // - Http：connect_http 内部已调用 initialize 完成握手，无需重复调用。
+        let client = match config.transport {
+            TransportKind::Stdio => {
+                let c = McpClient::spawn(&config.command, &config.args, &config.env, &workspace)
+                    .await?;
+                c.initialize().await?;
+                c
+            }
+            TransportKind::Http => {
+                McpClient::connect_http(config.url.as_deref().unwrap_or(EMPTY_URL_FALLBACK)).await?
+            }
+        };
+
         Ok(client)
     }
 

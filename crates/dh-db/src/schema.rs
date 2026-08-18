@@ -59,8 +59,24 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     env TEXT NOT NULL DEFAULT '{}',
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- 传输类型：'stdio'（默认，子进程）或 'http'（MCP Streamable HTTP）
+    transport TEXT NOT NULL DEFAULT 'stdio',
+    -- HTTP transport 用的 URL；stdio 行可为 NULL
+    url TEXT
 );
+"#;
+
+/// 旧库兼容：为已存在的 mcp_servers 表补 transport 列。
+/// SQLite 不支持 ADD COLUMN IF NOT EXISTS，幂等性由 connection.rs 的 migrate 处理
+/// （捕获 "duplicate column name" 错误并忽略）。
+pub const ADD_MCP_SERVERS_TRANSPORT_COLUMN: &str = r#"
+ALTER TABLE mcp_servers ADD COLUMN transport TEXT NOT NULL DEFAULT 'stdio';
+"#;
+
+/// 旧库兼容：为已存在的 mcp_servers 表补 url 列（允许 NULL）。
+pub const ADD_MCP_SERVERS_URL_COLUMN: &str = r#"
+ALTER TABLE mcp_servers ADD COLUMN url TEXT;
 "#;
 
 pub const CREATE_REPORTER_QUEUE_TABLE: &str = r#"
@@ -228,6 +244,8 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     ADD_AGENT_TYPE_COLUMN,
     ADD_PAYLOAD_COLUMN,
     CREATE_MCP_SERVERS_TABLE,
+    ADD_MCP_SERVERS_TRANSPORT_COLUMN,
+    ADD_MCP_SERVERS_URL_COLUMN,
     CREATE_REPORTER_QUEUE_TABLE,
     CREATE_REPORTER_CURSOR_TABLE,
     INIT_REPORTER_CURSOR,
