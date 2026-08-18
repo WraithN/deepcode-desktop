@@ -17,6 +17,7 @@ pub mod audit;
 pub mod gateway;
 pub mod handlers;
 pub mod mcp_aggregator;
+pub mod mcp_proxy_server;
 pub mod readiness;
 pub mod reporter;
 pub mod runtime_reporter;
@@ -38,6 +39,9 @@ pub struct ApiState {
     pub(crate) session_manager: crate::session::SessionManager,
     pub(crate) ws_connections: Arc<AtomicUsize>,
     pub(crate) api_key: crate::auth::ApiKeyStore,
+    /// crawler `web_scrape.maxDepth` 的平台默认值；Task 8 启动后由 dh-backend
+    /// 拉取的配置覆盖，启动期使用 `MCP_DEFAULT_MAX_DEPTH` 占位。
+    pub(crate) crawler_max_depth: Arc<std::sync::atomic::AtomicI64>,
 }
 
 /// CLI arguments for the gateway daemon.

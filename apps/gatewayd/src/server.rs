@@ -249,6 +249,11 @@ pub(crate) async fn create_state(
             session_manager: session_manager.clone(),
             ws_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             api_key,
+            // crawler_max_depth 启动期占位为默认值；Task 8 启动后由 dh-backend
+            // 拉取的真实配置覆盖。
+            crawler_max_depth: Arc::new(std::sync::atomic::AtomicI64::new(
+                crate::mcp_proxy_server::MCP_DEFAULT_MAX_DEPTH,
+            )),
         },
         reporter_handle,
     ))
@@ -285,6 +290,11 @@ pub fn build_admin_router(state: ApiState) -> Router {
                 post(crate::mcp_aggregator::call_mcp_tool),
             );
     }
+
+    // /mcp 代理端点：面向 agent 的单一 JSON-RPC 入口。
+    // 无条件注册——`initialize` 始终可应答；`tools/list`/`tools/call` 在
+    // registry 缺失时返回 503，便于 agent 在启动早期探测端点。
+    admin_router = admin_router.route("/mcp", post(crate::mcp_proxy_server::mcp_endpoint));
 
     // AG-UI session routes
     if state.agent_service.is_some() {
