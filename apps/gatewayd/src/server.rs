@@ -224,16 +224,21 @@ pub(crate) async fn create_state(
         });
     }
 
-    let mcp_registry = match crate::mcp_aggregator::McpRegistry::load_from_db(&db_path).await {
-        Ok(registry) => {
+    // 加载本地 DB 中的 MCP servers，并在 platform 配置存在时从 dh-backend
+    // 拉取 crawler 配置注册到 registry。拉取失败仅 warn 不阻断启动，
+    // crawler_max_depth 回退到 MCP_DEFAULT_MAX_DEPTH。
+    // 返回 (registry Option, crawler_max_depth) 以便 ApiState 构造时复用。
+    let (mcp_registry, crawler_max_depth) = match crate::mcp_aggregator::McpRegistry::load_from_db(&db_path).await {
+        Ok(mut registry) => {
+            let max_depth = load_crawler_from_backend(&mut registry).await;
             if registry.is_empty() {
                 info!("No MCP servers configured");
             }
-            Some(Arc::new(Mutex::new(registry)))
+            (Some(Arc::new(Mutex::new(registry))), max_depth)
         }
         Err(e) => {
             warn!("Failed to load MCP registry: {}", e);
-            None
+            (None, crate::mcp_proxy_server::MCP_DEFAULT_MAX_DEPTH)
         }
     };
 
@@ -249,14 +254,34 @@ pub(crate) async fn create_state(
             session_manager: session_manager.clone(),
             ws_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             api_key,
-            // crawler_max_depth 启动期占位为默认值；Task 8 启动后由 dh-backend
-            // 拉取的真实配置覆盖。
-            crawler_max_depth: Arc::new(std::sync::atomic::AtomicI64::new(
-                crate::mcp_proxy_server::MCP_DEFAULT_MAX_DEPTH,
-            )),
+            // crawler_max_depth 由 dh-backend 拉取的真实配置覆盖；
+            // 未配置 platform 或拉取失败时使用 MCP_DEFAULT_MAX_DEPTH。
+            crawler_max_depth: Arc::new(std::sync::atomic::AtomicI64::new(crawler_max_depth)),
         },
         reporter_handle,
     ))
+}
+
+/// 从 dh-backend 拉取 crawler 配置并注册到 registry。
+///
+/// 复用 [`crate::runtime_reporter::platform_backend`] 提供的 platform 配置
+/// （`[platform]` TOML 段 + `DH_PLATFORM_URL` / `DH_PLATFORM_API_KEY` 环境变量）。
+/// 拉取失败仅 warn 不阻断启动，返回 [`crate::mcp_proxy_server::MCP_DEFAULT_MAX_DEPTH`]
+/// 作为 crawler_max_depth 兜底值；platform 未配置时直接返回默认值，不发起请求。
+async fn load_crawler_from_backend(
+    registry: &mut crate::mcp_aggregator::McpRegistry,
+) -> i64 {
+    let Some((backend_url, token)) = crate::runtime_reporter::platform_backend() else {
+        info!("platform backend not configured, skipping crawler remote load");
+        return crate::mcp_proxy_server::MCP_DEFAULT_MAX_DEPTH;
+    };
+    match registry.load_remote_from_backend(&backend_url, &token).await {
+        Ok(md) => md,
+        Err(e) => {
+            warn!("load crawler from backend failed: {}", e);
+            crate::mcp_proxy_server::MCP_DEFAULT_MAX_DEPTH
+        }
+    }
 }
 
 /// Build the main API router including OpenAI/Anthropic compatible endpoints.

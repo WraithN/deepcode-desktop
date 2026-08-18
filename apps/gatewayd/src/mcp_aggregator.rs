@@ -25,6 +25,19 @@ const HTTP_URL_PREFIXES: &[&str] = &["http://", "https://"];
 /// spawn_client 在 url 为空时的兜底值（仅用于 Http transport 错误信息可读性）。
 const EMPTY_URL_FALLBACK: &str = "";
 
+/// crawler MCP server 在 registry 中的固定名字。
+/// 同时也是 dh-backend 返回 JSON 中 url 字段指向的 MCP server 标识。
+const CRAWLER_SERVER_NAME: &str = "crawler";
+
+/// dh-backend 拉取 crawler 配置的 API 路径（追加到 platform.url 之后）。
+const BACKEND_CRAWLER_CONFIG_PATH: &str = "/api/v1/admin/services/crawler";
+
+/// dh-backend 返回 JSON 中 crawler MCP server 的 url 字段名。
+const BACKEND_CRAWLER_URL_FIELD: &str = "url";
+
+/// dh-backend 返回 JSON 中 crawler 最大爬取深度的字段名。
+const BACKEND_CRAWLER_MAX_DEPTH_FIELD: &str = "maxDepth";
+
 // ── Types ──
 
 /// MCP server 传输类型。
@@ -252,6 +265,73 @@ impl McpRegistry {
         }
 
         Ok(registry)
+    }
+
+    /// 从 dh-backend 拉取 crawler 配置并注册为 Http MCP server。
+    ///
+    /// 调用 dh-backend 的 `GET /api/v1/admin/services/crawler`，解析返回的
+    /// `{ url, maxDepth, timeoutMs }`，将 crawler 以 `Http` transport 注册到
+    /// registry。成功时返回拉取到的 `maxDepth`；失败时返回 `Err`，由调用方
+    /// 决定是否阻断启动（brief 要求仅 warn 不阻断，回退到默认 maxDepth）。
+    ///
+    /// 失败模式见 brief：网络错误、HTTP 非 2xx、JSON 解析失败、url 为空、
+    /// MCP 握手失败均会返回 `Err`，调用方应记录 warn 后继续启动。
+    pub async fn load_remote_from_backend(
+        &mut self,
+        backend_url: &str,
+        token: &str,
+    ) -> anyhow::Result<i64> {
+        let client = reqwest::Client::new();
+        let endpoint = format!(
+            "{}{}",
+            backend_url.trim_end_matches('/'),
+            BACKEND_CRAWLER_CONFIG_PATH
+        );
+        let resp = client
+            .get(&endpoint)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("fetch crawler config: {e}"))?;
+        if !resp.status().is_success() {
+            anyhow::bail!("dh-backend crawler config HTTP {}", resp.status());
+        }
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("parse crawler config: {e}"))?;
+        let url = body
+            .get(BACKEND_CRAWLER_URL_FIELD)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let max_depth = body
+            .get(BACKEND_CRAWLER_MAX_DEPTH_FIELD)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(crate::mcp_proxy_server::MCP_DEFAULT_MAX_DEPTH);
+        if url.is_empty() {
+            anyhow::bail!("crawler config url empty");
+        }
+        let config = McpServerConfig {
+            name: CRAWLER_SERVER_NAME.into(),
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            transport: TransportKind::Http,
+            url: Some(url.into()),
+            enabled: true,
+        };
+        let mcp_client = McpClient::connect_http(url)
+            .await
+            .map_err(|e| anyhow::anyhow!("connect crawler MCP: {e}"))?;
+        self.clients.insert(
+            CRAWLER_SERVER_NAME.into(),
+            McpClientEntry {
+                config,
+                client: Arc::new(mcp_client),
+            },
+        );
+        info!("crawler MCP server loaded from backend: {}", url);
+        Ok(max_depth)
     }
 
     async fn spawn_client(config: &McpServerConfig) -> anyhow::Result<McpClient> {

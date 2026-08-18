@@ -213,6 +213,19 @@ pub fn is_platform_reporting_configured() -> bool {
     load_config().is_some()
 }
 
+/// 返回当前生效的 dh-backend 平台地址 + API key，供其它模块复用
+/// runtime_reporter 的配置加载逻辑（file + env 合并）。
+///
+/// 与 [`start_runtime_reporter`] 使用同一份 `[platform]` 配置：
+/// - 未配置或未启用时返回 `None`
+/// - 配置有效时返回 `Some((url, api_key))`
+///
+/// 调用方（如 crawler 远程拉取）据此决定是否发起 dh-backend 请求。
+pub fn platform_backend() -> Option<(String, String)> {
+    let cfg = load_config()?;
+    Some((cfg.url, cfg.api_key))
+}
+
 /// Starts the background runtime status reporter using a caller-supplied
 /// readiness tracker. The session manager and the reporter share the
 /// same tracker so they agree on whether `create_agent` may proceed.
