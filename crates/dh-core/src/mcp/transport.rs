@@ -30,6 +30,7 @@ const SSE_NO_DATA_LINE: &str = "SSE response without data line";
 ///
 /// 上层（`McpClient`）通过该 trait 与 MCP server 通信：
 /// - [`McpTransport::send_request`] 发送 JSON-RPC 请求并同步等待响应字符串
+/// - [`McpTransport::send`] 发送 fire-and-forget 消息（notification，无需响应）
 /// - [`McpTransport::set_notification_handler`] 注册无 id 消息的回调
 ///
 /// `StdioTransport`（子进程 stdio）与 `HttpTransport`（Task 4，HTTP SSE）分别实现该 trait。
@@ -43,6 +44,12 @@ pub trait McpTransport: Send + Sync {
     /// transport 内部维护 `id -> oneshot::Sender` 的 pending 表，
     /// 在 stdout reader 任务中按 id 路由响应。
     async fn send_request(&self, json: String) -> Result<String, McpError>;
+
+    /// 发送 fire-and-forget 消息（notification，无需响应）。
+    ///
+    /// 入参为序列化后的 JSON-RPC notification 字符串。
+    /// stdio 传输层直接写入 stdin 并立即返回；HTTP 传输层 POST 后忽略响应体。
+    async fn send(&self, json: String) -> Result<(), McpError>;
 
     /// 检查底层连接/进程是否存活。
     async fn is_alive(&self) -> bool;
@@ -153,23 +160,6 @@ impl StdioTransport {
             next_id: AtomicU64::new(1),
         })
     }
-
-    /// 发送原始 JSON 行（用于 notification 等无需响应的场景）。
-    ///
-    /// 仅写入 stdin 并 flush，不等待响应。
-    pub async fn send(&self, message: String) -> Result<(), McpError> {
-        let mut stdin = self.stdin.lock().await;
-        let json = format!("{}\n", message);
-        stdin
-            .write_all(json.as_bytes())
-            .await
-            .map_err(|e| McpError::ProcessError(e.to_string()))?;
-        stdin
-            .flush()
-            .await
-            .map_err(|e| McpError::ProcessError(e.to_string()))?;
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -203,6 +193,21 @@ impl McpTransport for StdioTransport {
                 Err(McpError::RequestTimeout)
             }
         }
+    }
+
+    /// 发送 fire-and-forget 消息：仅写入 stdin 并 flush，不等待响应。
+    async fn send(&self, json: String) -> Result<(), McpError> {
+        let mut stdin = self.stdin.lock().await;
+        let line = format!("{}\n", json);
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| McpError::ProcessError(e.to_string()))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| McpError::ProcessError(e.to_string()))?;
+        Ok(())
     }
 
     async fn is_alive(&self) -> bool {
@@ -364,6 +369,28 @@ impl McpTransport for HttpTransport {
                 .ok_or_else(|| McpError::ProtocolError(SSE_NO_DATA_LINE.to_string()));
         }
         Ok(body)
+    }
+
+    /// 发送 fire-and-forget 消息：POST 到 MCP server，忽略响应体。
+    ///
+    /// notification 无需响应，POST 后只要状态码成功即视为发送完成。
+    async fn send(&self, json: String) -> Result<(), McpError> {
+        let resp = self
+            .client
+            .post(&self.url)
+            .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE_JSON)
+            .header(reqwest::header::ACCEPT, ACCEPT_VALUE)
+            .body(json)
+            .send()
+            .await
+            .map_err(|e| McpError::ProcessError(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(McpError::ProcessError(format!(
+                "{HTTP_ERROR_PREFIX}{}",
+                resp.status()
+            )));
+        }
+        Ok(())
     }
 
     async fn is_alive(&self) -> bool {
