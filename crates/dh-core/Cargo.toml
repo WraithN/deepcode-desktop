@@ -15,3 +15,7 @@ tokio.workspace = true
 tracing.workspace = true
 log = "0.4"
 async-trait = "0.1"
+reqwest.workspace = true
+
+[dev-dependencies]
+mockito = "1"

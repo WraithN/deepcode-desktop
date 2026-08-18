@@ -13,6 +13,18 @@ use tokio::sync::{oneshot, Mutex as TokioMutex};
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// 优雅关闭子进程的超时时间（秒）
 const SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+/// JSON 内容类型
+const CONTENT_TYPE_JSON: &str = "application/json";
+/// SSE `data:` 行前缀
+const SSE_DATA_PREFIX: &str = "data: ";
+/// SSE 内容类型（用于响应 Content-Type 匹配）
+const TEXT_EVENT_STREAM: &str = "text/event-stream";
+/// Accept 头部值：优先 JSON，兼容 SSE
+const ACCEPT_VALUE: &str = "application/json, text/event-stream";
+/// HTTP 错误前缀
+const HTTP_ERROR_PREFIX: &str = "HTTP ";
+/// SSE 响应缺少 data 行的错误消息
+const SSE_NO_DATA_LINE: &str = "SSE response without data line";
 
 /// MCP 传输层抽象。
 ///
@@ -296,6 +308,90 @@ async fn route_stdout_line(
     }
 }
 
+/// HTTP 传输层实现（MCP Streamable HTTP）。
+///
+/// 通过 POST JSON-RPC 请求到 MCP server URL 与之通信。支持两种响应格式：
+/// - `application/json`：直接返回 body
+/// - `text/event-stream`（SSE）：取首个 `data:` 行的 payload
+///
+/// 用于连接 crawler-service 的 `/mcp` 端点（Task 2）。
+pub struct HttpTransport {
+    client: reqwest::Client,
+    url: String,
+}
+
+impl HttpTransport {
+    /// 创建 HTTP 传输层。
+    pub fn new(url: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            url,
+        }
+    }
+}
+
+#[async_trait]
+impl McpTransport for HttpTransport {
+    async fn send_request(&self, json: String) -> Result<String, McpError> {
+        let resp = self
+            .client
+            .post(&self.url)
+            .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE_JSON)
+            .header(reqwest::header::ACCEPT, ACCEPT_VALUE)
+            .body(json)
+            .send()
+            .await
+            .map_err(|e| McpError::ProcessError(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(McpError::ProcessError(format!(
+                "{HTTP_ERROR_PREFIX}{}",
+                resp.status()
+            )));
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| McpError::ProcessError(e.to_string()))?;
+        // SSE 响应：取首个 data: 行的 payload；JSON 响应：直接返回 body。
+        if content_type.contains(TEXT_EVENT_STREAM) {
+            return extract_sse_payload(&body)
+                .ok_or_else(|| McpError::ProtocolError(SSE_NO_DATA_LINE.to_string()));
+        }
+        Ok(body)
+    }
+
+    async fn is_alive(&self) -> bool {
+        true
+    }
+
+    async fn close(&self) -> Result<(), McpError> {
+        Ok(())
+    }
+
+    fn set_notification_handler(&self, _handler: Box<dyn Fn(String) + Send>) {
+        // HTTP 传输层走请求-响应模型，暂不处理无 id 的 notification。
+    }
+}
+
+/// 从 SSE 响应 body 中提取首个 `data:` 行的 payload。
+///
+/// SSE 格式：每行形如 `field: value`，其中 `data:` 字段携带 JSON-RPC 响应。
+/// 返回首个 `data:` 行的内容（已去掉 `data: ` 前缀）。
+fn extract_sse_payload(body: &str) -> Option<String> {
+    for line in body.lines() {
+        if let Some(payload) = line.strip_prefix(SSE_DATA_PREFIX) {
+            return Some(payload.to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +401,47 @@ mod tests {
         // 编译期断言：StdioTransport 满足 McpTransport trait（无需构造实例）。
         fn _assert<T: McpTransport>() {}
         _assert::<StdioTransport>();
+    }
+}
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use mockito::Server;
+
+    #[tokio::test]
+    async fn http_transport_posts_jsonrpc_and_returns_response() {
+        let mut server = Server::new_async().await;
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+        let resp = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+        let m = server
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(resp)
+            .create_async()
+            .await;
+        let t = HttpTransport::new(format!("{}/mcp", server.url()));
+        let out = t.send_request(body.to_string()).await.unwrap();
+        assert!(out.contains(r#""tools":[]"#));
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn http_transport_returns_err_on_5xx() {
+        let mut server = Server::new_async().await;
+        // 绑定到 _m 以保证 mock 在请求期间存活；mockito guard drop 时会移除该 mock。
+        let _m = server
+            .mock("POST", "/mcp")
+            .with_status(503)
+            .create_async()
+            .await;
+        let t = HttpTransport::new(format!("{}/mcp", server.url()));
+        let r = t
+            .send_request(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string(),
+            )
+            .await;
+        assert!(r.is_err());
     }
 }
