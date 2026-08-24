@@ -4,6 +4,10 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
+    // 通知（notification）的 id 必须省略，不能序列化为 "id": null。
+    // MCP Streamable HTTP 服务端（如 crawler-service）的 JSONRPCMessageSchema 会拒绝
+    // 带 "id": null 的通知消息，返回 400 "Parse error: Invalid JSON-RPC message"。
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Value>,
     pub method: String,
     #[serde(default)]

@@ -47,6 +47,14 @@ const KEY_SESSION_ID: &str = "sessionID";
 const KEY_INTERACTION: &str = "interaction";
 const KEY_PARTS: &str = "parts";
 const KEY_INFO: &str = "info";
+const KEY_TIME: &str = "time";
+const KEY_CREATED: &str = "created";
+
+/// 空 run 检测的时间容差（毫秒）。正常 run 时 opencode 返回的 assistant 消息
+/// `info.time.created` 必然晚于（或略等于）消息发送时间；僵尸 session 恢复后
+/// opencode 会直接返回历史旧消息，其 `info.time.created` 远早于发送时间。
+/// 用 60s 容差足以区分「正常 run」与「僵尸 session 回显旧消息」。
+const STALE_REPLY_TOLERANCE_MS: u64 = 60_000;
 
 /// opencode SSE 的 session.status 事件类型（busy=LLM 生成/工具执行中，
 /// retry=API 失败重试中，idle=空闲）。该事件不映射为 ProcessEvent，
@@ -58,6 +66,32 @@ const PLUGIN_KEY: &str = "opencode";
 const ERR_SERVE_NOT_READY: &str = "opencode serve did not become ready";
 const ERR_SERVE_NOT_STARTED: &str = "opencode serve not started";
 const LOG_SERVE_STARTED_PREFIX: &str = "opencode serve started on ";
+
+/// 当前 Unix 毫秒时间戳。
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 判断 opencode 返回的消息是否是「旧消息回显」（空 run 信号）。
+///
+/// 正常 run 时 opencode 会 process 新消息并返回新的 assistant 消息，
+/// 其 `info.time.created` 晚于发送时间；僵尸 session 恢复后 loop 直接退出、
+/// 不 process 新消息，POST /message 返回的是历史最后一条 assistant 消息，
+/// 其 `info.time.created` 远早于发送时间。据此判定空 run。
+fn is_stale_reply(value: &serde_json::Value, sent_at_ms: u64) -> bool {
+    let created = value
+        .get(KEY_INFO)
+        .and_then(|i| i.get(KEY_TIME))
+        .and_then(|t| t.get(KEY_CREATED))
+        .and_then(|v| v.as_u64());
+    match created {
+        Some(c) => c + STALE_REPLY_TOLERANCE_MS < sent_at_ms,
+        None => false,
+    }
+}
 
 pub struct OpencodeInstance {
     config: InstanceConfig,
@@ -461,11 +495,32 @@ impl OpencodeInstance {
         session_id: &mut String,
         message: &str,
         conversation_id: &str,
+        sent_at_ms: u64,
     ) -> Result<serde_json::Value, InstanceError> {
         let mut attempt = 0u32;
         loop {
             match self.http_with_watchdog(session_id, message).await {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    // 空 run 检测：僵尸 session 恢复后 opencode 直接返回历史旧消息、
+                    // 而非 process 新消息。此时放弃旧 session、新建 session 重试，
+                    // 避免 run 静默结束（前端无输出却收到 agent.done）。
+                    if attempt < MAX_SEND_RETRIES && is_stale_reply(&value, sent_at_ms) {
+                        attempt += 1;
+                        log::warn!(
+                            "[opencode-plugin] instance={} stale reply (zombie session {}), creating new session and retrying {}/{}",
+                            self.config.id,
+                            session_id,
+                            attempt,
+                            MAX_SEND_RETRIES
+                        );
+                        let new_sid = self.create_opencode_session().await?;
+                        *session_id = new_sid.clone();
+                        self.store_session(conversation_id, &new_sid);
+                        *self.last_session_id.lock().unwrap() = Some(new_sid);
+                        continue;
+                    }
+                    return Ok(value);
+                }
                 // question 等交互式工具取消的请求不应重试：relay loop 已 emit 交互
                 // 事件与 agent.done，重试会重建进程并浪费 LLM 调用。
                 Err(InstanceError::InteractionCancelled(_)) => {
@@ -642,8 +697,10 @@ impl AgentInstance for OpencodeInstance {
             };
             *self.last_session_id.lock().unwrap() = Some(session_id.clone());
 
+            // 记录发送时间戳，供 send_with_watchdog_retry 检测空 run（僵尸 session 回显旧消息）。
+            let sent_at_ms = now_millis();
             let result = self
-                .send_with_watchdog_retry(&mut session_id, &message, &conversation_id)
+                .send_with_watchdog_retry(&mut session_id, &message, &conversation_id, sent_at_ms)
                 .await;
             let result = match result {
                 Ok(value) => value,
